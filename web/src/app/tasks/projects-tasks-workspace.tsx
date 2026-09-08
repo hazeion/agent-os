@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browserTimezone, inputTimestamp, localInputTimestamp, planningTimestamp } from "@/lib/planning-time";
 
 import type { TaskDependencyMapProps } from "./task-dependency-map";
@@ -178,6 +178,7 @@ export function ProjectsTasksWorkspace() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [compactPlanningLayout, setCompactPlanningLayout] = useState(false);
   const [projectNavigationOpen, setProjectNavigationOpen] = useState(false);
+  const [layoutRevealVersion, setLayoutRevealVersion] = useState(0);
   const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
   const [taskDependencies, setTaskDependencies] = useState<PublicPlanningTaskDependencies | null>(null);
   const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
@@ -249,6 +250,9 @@ export function ProjectsTasksWorkspace() {
   const pendingChecklistFocus = useRef<string | null>(null);
   const inspectorHeading = useRef<HTMLHeadingElement>(null);
   const inspectorPanel = useRef<HTMLElement>(null);
+  const workbenchElement = useRef<HTMLElement>(null);
+  const compactLayoutRef = useRef(false);
+  const pendingLayoutReveal = useRef<HTMLElement | null>(null);
   const projectHeading = useRef<HTMLHeadingElement>(null);
   const taskListHeading = useRef<HTMLHeadingElement>(null);
   const boardElement = useRef<HTMLDivElement>(null);
@@ -401,15 +405,32 @@ export function ProjectsTasksWorkspace() {
     const updateLayout = () => {
       if (cancelled) return;
       const compact = window.innerWidth <= 1100;
-      // Keep the same form nodes and reveal focused Project controls when a
-      // resize would otherwise hide the active input and its caret.
-      if (compact && projectNavigationContent.current?.contains(document.activeElement)) setProjectNavigationOpen(true);
+      const active = document.activeElement;
+      // An earlier desktop visit to Projects must not leave its full list
+      // above a focused mobile Task editor. Preserve it only for current focus.
+      if (compact && !compactLayoutRef.current) setProjectNavigationOpen(!!projectNavigationContent.current?.contains(active));
+      compactLayoutRef.current = compact;
+      if (active instanceof HTMLElement && workbenchElement.current?.contains(active) && active.matches("input, textarea, select, [contenteditable='true']")) {
+        pendingLayoutReveal.current = active;
+        setLayoutRevealVersion((current) => current + 1);
+      }
       setCompactPlanningLayout(compact);
     };
     window.addEventListener("resize", updateLayout);
     void Promise.resolve().then(updateLayout);
     return () => { cancelled = true; window.removeEventListener("resize", updateLayout); };
   }, []);
+
+  useLayoutEffect(() => {
+    const target = pendingLayoutReveal.current;
+    pendingLayoutReveal.current = null;
+    if (!target?.isConnected || document.activeElement !== target) return;
+    const header = inspectorPanel.current?.contains(target) ? inspectorPanel.current.querySelector<HTMLElement>(".planning-inspector-header") : null;
+    const margin = target.style.scrollMarginTop;
+    target.style.scrollMarginTop = `${Math.ceil(header?.getBoundingClientRect().height ?? 0) + 12}px`;
+    try { target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" }); }
+    finally { target.style.scrollMarginTop = margin; }
+  }, [compactPlanningLayout, layoutRevealVersion, projectNavigationOpen]);
 
   useEffect(() => {
     if (projectNavigationOpen && pendingProjectFocus.current) {
@@ -1315,7 +1336,7 @@ export function ProjectsTasksWorkspace() {
     <button aria-pressed={task.id === selectedTaskId} data-planning-task-id={task.id} disabled={busy} onClick={() => selectTask(task)} type="button"><span><strong>{task.title}</strong>{task.description_preview ? <small>{task.description_preview}</small> : <small>No description</small>}<em>{task.workflow_stage.replace("_", " ")} · {task.priority}{task.planned_for_today ? " · today" : ""}</em></span>{task.due_date ? <time dateTime={task.due_date}>Due {task.due_date}</time> : null}</button>
   </li>;
   const stages: PublicPlanningTask["workflow_stage"][] = ["inbox", "planned", "in_progress", "waiting", "review", "done"];
-  return <section aria-label="Projects and Tasks" className="projects-tasks-workspace planning-workbench">
+  return <section aria-label="Projects and Tasks" className="projects-tasks-workspace planning-workbench" ref={workbenchElement}>
     <nav aria-label="Project and saved view navigation" className="projects-pane planning-navigation">
       <button aria-controls="planning-project-controls" aria-expanded={projectNavigationOpen} className="planning-navigation-toggle" hidden={!compactPlanningLayout} onClick={() => setProjectNavigationOpen((current) => !current)} type="button">Projects and saved views</button>
       <div className="planning-navigation-content" hidden={compactPlanningLayout && !projectNavigationOpen} id="planning-project-controls" onFocusCapture={() => { if (!compactPlanningLayout) setProjectNavigationOpen(true); }} ref={projectNavigationContent}>

@@ -214,6 +214,42 @@ test("resizing keeps editor nodes, drafts, and caret ranges intact", async () =>
   } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
 });
 
+test("resize collapses earlier Project navigation and reveals the focused Task input without refocusing", async () => {
+  const originalWidth = window.innerWidth;
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); mutationRefreshFixture();
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    await screen.findByLabelText("Name");
+    await user.click(screen.getByRole("button", { name: "Cancel Project" }));
+    await waitFor(() => assert.equal(document.activeElement, screen.getByRole("button", { name: "New" })));
+    await user.click(screen.getByRole("button", { name: /Ship Alpha/ }));
+    await user.click(await screen.findByRole("button", { name: "Edit details" }));
+    const title = screen.getByLabelText("Title") as HTMLInputElement;
+    await user.type(title, " visible draft"); title.setSelectionRange(3, 8);
+    const reveal: unknown[] = [];
+    const originalFocus = title.focus.bind(title); let focusCalls = 0;
+    title.focus = (options) => { focusCalls += 1; originalFocus(options); };
+    title.scrollIntoView = (options) => reveal.push({ options, margin: title.style.scrollMarginTop, focused: document.activeElement === title });
+    const header = document.querySelector(".planning-inspector-header") as HTMLElement;
+    header.getBoundingClientRect = () => ({ height: 96 } as DOMRect);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    fireEvent(window, new dom.window.Event("resize"));
+    await waitFor(() => assert.equal(screen.getByRole("button", { name: "Projects and saved views" }).getAttribute("aria-expanded"), "false"));
+    assert.equal((document.getElementById("planning-project-controls") as HTMLElement).hidden, true);
+    assert.deepEqual(reveal, [{ options: { block: "nearest", inline: "nearest", behavior: "auto" }, margin: "108px", focused: true }]);
+    assert.equal(title.style.scrollMarginTop, "");
+    assert.equal(title.value, "Ship Alpha visible draft");
+    assert.deepEqual([title.selectionStart, title.selectionEnd], [3, 8]);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    fireEvent(window, new dom.window.Event("resize"));
+    await waitFor(() => assert.equal(reveal.length, 2));
+    assert.equal(focusCalls, 0);
+    assert.equal(document.activeElement, title);
+    assert.deepEqual([title.selectionStart, title.selectionEnd], [3, 8]);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
 test("a different Task resets only inspector scroll while same-Task selection and resize preserve it", async () => {
   const originalWidth = window.innerWidth;
   try {
