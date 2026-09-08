@@ -769,6 +769,10 @@ button {
 
 .planning-workbench { grid-template-columns: minmax(144px, .3fr) minmax(240px, .7fr) minmax(380px, 1fr); align-items: start; }
 .planning-navigation { position: sticky; top: 12px; max-height: calc(100dvh - 100px); overflow-y: auto; }
+.planning-navigation-content { display: grid; gap: 10px; }
+.planning-navigation-content[hidden] { display: none; }
+.planning-navigation-content > p { margin: 0; color: var(--text-tertiary); font-size: .78rem; }
+.planning-navigation-toggle:not([hidden]) { min-height: 44px; padding: 7px 10px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); text-align: left; }
 .planning-heading-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
 .planning-heading-actions button,
 .planning-board-navigation button { min-height: 34px; padding: 5px 9px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
@@ -867,6 +871,9 @@ button {
 .planning-execution { display: grid; gap: 7px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
 .planning-execution > p { margin: 0; color: var(--text-secondary); font-size: .74rem; }
 .planning-execution > .console-kicker { color: var(--text-tertiary); }
+.planning-execution > button,
+.planning-review-actions > button,
+.planning-run-once-confirmation > button { justify-self: start; width: fit-content; max-width: 100%; }
 .planning-execution ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .planning-execution li { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px 8px; min-width: 0; padding: 6px 7px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--row); color: var(--text-secondary); font-size: .72rem; overflow-wrap: anywhere; }
 .planning-execution li time,
@@ -915,9 +922,10 @@ button {
 .planning-dependencies > button { justify-self: start; }
 
 @media (max-width: 1100px) and (min-width: 521px) {
-  .planning-workbench { grid-template-columns: minmax(180px, .3fr) minmax(0, 1fr); }
+  .planning-workbench { grid-template-columns: minmax(0, 1fr); }
   .planning-navigation,
   .planning-inspector { position: static; }
+  .planning-navigation { max-height: none; overflow: visible; }
   .planning-inspector { grid-column: 1 / -1; }
   .planning-mobile-jump { display: inline-block; }
 }
@@ -1009,9 +1017,8 @@ button {
   .planning-workbench { grid-template-columns: minmax(0, 1fr); }
   .planning-navigation,
   .planning-inspector { position: static; }
-  .planning-navigation { order: 3; max-height: none; overflow: visible; }
-  .planning-task-pane { order: 1; }
-  .planning-inspector { order: 2; max-height: none; overflow: visible; }
+  .planning-navigation { max-height: none; overflow: visible; }
+  .planning-inspector { max-height: none; overflow: visible; }
   .planning-mobile-jump { display: inline-block; }
   .planning-inspector-header { top: 0; margin-top: 0; padding-top: 9px; }
   .planning-inspector-header h2 { scroll-margin-top: 12px; }

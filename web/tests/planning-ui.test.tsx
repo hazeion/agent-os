@@ -13,6 +13,8 @@ for (const name of ["CSS", "document", "HTMLElement", "KeyboardEvent", "MouseEve
   Object.defineProperty(globalThis, name, { configurable: true, value: dom.window[name] });
 }
 Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true, writable: true });
+// Unqualified workbench tests use the production desktop acceptance width.
+Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
 if (!globalThis.CSS) Object.defineProperty(globalThis, "CSS", { configurable: true, value: { escape: (value: string) => value.replace(/[^A-Za-z0-9_-]/gu, "_") } });
 else if (!globalThis.CSS.escape) globalThis.CSS.escape = (value) => value.replace(/[^A-Za-z0-9_-]/gu, "_");
 HTMLElement.prototype.scrollIntoView = () => undefined;
@@ -131,7 +133,7 @@ test("mobile Task selection and compact jumps reach the inspector, Tasks, and Pr
     const title = within(inspector).getByLabelText("Title") as HTMLInputElement;
     await user.type(title, " draft");
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
-    window.dispatchEvent(new dom.window.Event("resize"));
+    fireEvent(window, new dom.window.Event("resize"));
     assert.equal(title.value, "Ship Alpha draft");
     await user.click(within(inspector).getByRole("button", { name: "Back to Tasks" }));
     assert.equal(document.activeElement?.getAttribute("data-planning-task-id"), task.id);
@@ -139,6 +141,96 @@ test("mobile Task selection and compact jumps reach the inspector, Tasks, and Pr
     assert.equal(document.activeElement, screen.getByRole("heading", { name: "Projects" }));
     assert.equal(title.value, "Ship Alpha draft");
     assert.equal(fixture.counts.get(`/api/planning/tasks/${task.id}/edit`), undefined);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
+test("compact Project disclosure keeps sequential keyboard order aligned with the visible planner", async () => {
+  const originalWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); mutationRefreshFixture();
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    const disclosure = await screen.findByRole("button", { name: "Projects and saved views" });
+    await screen.findByRole("button", { name: /Ship Alpha/ });
+    assert.equal(disclosure.getAttribute("aria-expanded"), "false");
+    assert.equal(screen.queryByRole("button", { name: "Select Alpha Project" }), null);
+    await user.tab(); assert.equal(document.activeElement, disclosure);
+    await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Choose Project" }));
+    await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Add" }));
+    await user.tab(); assert.equal(document.activeElement, screen.getByRole("searchbox", { name: "Search Projects and Tasks" }));
+    await user.click(disclosure);
+    assert.equal(disclosure.getAttribute("aria-expanded"), "true");
+    await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "New" }));
+    await user.click(disclosure);
+    assert.equal(document.activeElement, disclosure);
+    await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Choose Project" }));
+    const nav = screen.getByLabelText("Project and saved view navigation");
+    const pane = document.querySelector(".planning-task-pane")!;
+    const inspector = screen.getByLabelText("Task inspector");
+    assert.ok(nav.compareDocumentPosition(pane) & Node.DOCUMENT_POSITION_FOLLOWING);
+    assert.ok(pane.compareDocumentPosition(inspector) & Node.DOCUMENT_POSITION_FOLLOWING);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
+test("tablet Task selection bypasses the collapsed Project list and focuses its inspector", async () => {
+  const originalWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); mutationRefreshFixture();
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await screen.findByRole("button", { name: "Projects and saved views" });
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+    await waitFor(() => assert.equal(document.activeElement, within(screen.getByLabelText("Task inspector")).getByRole("heading", { name: "Ship Alpha" })));
+    assert.equal(screen.queryByRole("button", { name: "Select Alpha Project" }), null);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
+test("resizing keeps editor nodes, drafts, and caret ranges intact", async () => {
+  const originalWidth = window.innerWidth;
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); mutationRefreshFixture();
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+    await user.click(await screen.findByRole("button", { name: "Edit details" }));
+    const title = screen.getByLabelText("Title") as HTMLInputElement;
+    await user.type(title, " draft"); title.setSelectionRange(2, 7);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    fireEvent(window, new dom.window.Event("resize"));
+    await screen.findByRole("button", { name: "Projects and saved views" });
+    assert.equal(document.activeElement, title);
+    assert.equal(title.value, "Ship Alpha draft");
+    assert.deepEqual([title.selectionStart, title.selectionEnd], [2, 7]);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    fireEvent(window, new dom.window.Event("resize"));
+    await user.click(screen.getByRole("button", { name: "New" }));
+    const name = await screen.findByLabelText("Name") as HTMLInputElement;
+    await user.type(name, "Project draft"); name.setSelectionRange(1, 5);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    fireEvent(window, new dom.window.Event("resize"));
+    await waitFor(() => assert.equal(screen.getByRole("button", { name: "Projects and saved views" }).getAttribute("aria-expanded"), "true"));
+    assert.equal(document.activeElement, name);
+    assert.equal(name.value, "Project draft");
+    assert.deepEqual([name.selectionStart, name.selectionEnd], [1, 5]);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
+test("a different Task resets only inspector scroll while same-Task selection and resize preserve it", async () => {
+  const originalWidth = window.innerWidth;
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+    fixture.rows.push({ ...fixture.rows[0], id: "task_beta_scroll", title: "Scroll Beta" });
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+    const inspector = screen.getByLabelText("Task inspector"); inspector.scrollTop = 750;
+    await user.click(screen.getByRole("button", { name: /Scroll Beta/ }));
+    await waitFor(() => assert.equal(inspector.scrollTop, 0));
+    inspector.scrollTop = 123;
+    await user.click(screen.getByRole("button", { name: /Scroll Beta/ }));
+    assert.equal(inspector.scrollTop, 123);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    fireEvent(window, new dom.window.Event("resize"));
+    await screen.findByRole("button", { name: "Projects and saved views" });
+    assert.equal(inspector.scrollTop, 123);
   } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
 });
 

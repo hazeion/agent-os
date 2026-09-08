@@ -176,6 +176,8 @@ export function ProjectsTasksWorkspace() {
   const [taskAgent, setTaskAgent] = useState("");
   const [taskDue, setTaskDue] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [compactPlanningLayout, setCompactPlanningLayout] = useState(false);
+  const [projectNavigationOpen, setProjectNavigationOpen] = useState(false);
   const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
   const [taskDependencies, setTaskDependencies] = useState<PublicPlanningTaskDependencies | null>(null);
   const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
@@ -246,10 +248,14 @@ export function ProjectsTasksWorkspace() {
   const taskInput = useRef<HTMLInputElement>(null);
   const pendingChecklistFocus = useRef<string | null>(null);
   const inspectorHeading = useRef<HTMLHeadingElement>(null);
+  const inspectorPanel = useRef<HTMLElement>(null);
   const projectHeading = useRef<HTMLHeadingElement>(null);
   const taskListHeading = useRef<HTMLHeadingElement>(null);
   const boardElement = useRef<HTMLDivElement>(null);
   const pendingInspectorFocus = useRef(false);
+  const projectNavigationContent = useRef<HTMLDivElement>(null);
+  const pendingProjectFocus = useRef(false);
+  const pendingTaskListFocus = useRef(false);
   const newProjectButton = useRef<HTMLButtonElement>(null);
   const addTaskButton = useRef<HTMLButtonElement>(null);
   const projectSelectionGeneration = useRef(0);
@@ -285,6 +291,7 @@ export function ProjectsTasksWorkspace() {
     if (selectedTaskRef.current !== taskId) {
       selectedTaskRef.current = taskId;
       pendingInspectorFocus.current = taskId !== null;
+      if (taskId && window.innerWidth <= 1100) setProjectNavigationOpen(false);
       taskSelectionGeneration.current += 1;
       executionGeneration.current += 1;
       delegationGeneration.current += 1;
@@ -344,6 +351,7 @@ export function ProjectsTasksWorkspace() {
   }
 
   function selectProject(projectId: string) {
+    if (window.innerWidth <= 1100 && projectNavigationOpen) { pendingTaskListFocus.current = true; setProjectNavigationOpen(false); }
     if (selectedProjectRef.current === projectId) { projectSelectionGeneration.current += 1; requestedTaskResolved.current = true; return; }
     setLoadingMore(false);
     taskPagesRefreshing.current = true; setRefreshingTaskPages(true);
@@ -387,6 +395,34 @@ export function ProjectsTasksWorkspace() {
       closeTaskForm();
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    const updateLayout = () => {
+      if (cancelled) return;
+      const compact = window.innerWidth <= 1100;
+      // Keep the same form nodes and reveal focused Project controls when a
+      // resize would otherwise hide the active input and its caret.
+      if (compact && projectNavigationContent.current?.contains(document.activeElement)) setProjectNavigationOpen(true);
+      setCompactPlanningLayout(compact);
+    };
+    window.addEventListener("resize", updateLayout);
+    void Promise.resolve().then(updateLayout);
+    return () => { cancelled = true; window.removeEventListener("resize", updateLayout); };
+  }, []);
+
+  useEffect(() => {
+    if (projectNavigationOpen && pendingProjectFocus.current) {
+      pendingProjectFocus.current = false;
+      projectHeading.current?.focus({ preventScroll: true });
+      projectHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+    if (!projectNavigationOpen && pendingTaskListFocus.current) {
+      pendingTaskListFocus.current = false;
+      taskListHeading.current?.focus({ preventScroll: true });
+      taskListHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+  }, [projectNavigationOpen, selectedProjectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -613,7 +649,8 @@ export function ProjectsTasksWorkspace() {
   useEffect(() => {
     if (!selectedTaskId || !pendingInspectorFocus.current) return;
     pendingInspectorFocus.current = false;
-    if (window.innerWidth <= 900) {
+    if (inspectorPanel.current) inspectorPanel.current.scrollTop = 0;
+    if (window.innerWidth <= 1100) {
       inspectorHeading.current?.focus({ preventScroll: true });
       inspectorHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
     }
@@ -625,9 +662,9 @@ export function ProjectsTasksWorkspace() {
     const target = document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(taskId)}"] > button`);
     if (!target) return;
     requestedTaskFocus.current = null;
-    const focusTarget = window.innerWidth <= 900 ? inspectorHeading.current ?? target : target;
+    const focusTarget = window.innerWidth <= 1100 ? inspectorHeading.current ?? target : target;
     focusTarget.focus({ preventScroll: true });
-    focusTarget.scrollIntoView({ block: window.innerWidth <= 900 ? "start" : "center", behavior: "auto" });
+    focusTarget.scrollIntoView({ block: window.innerWidth <= 1100 ? "start" : "center", behavior: "auto" });
     setNotice(`Opened Task ${target.parentElement?.dataset.taskTitle ?? ""}.`);
   }, [tasks]);
 
@@ -1267,7 +1304,8 @@ export function ProjectsTasksWorkspace() {
     heading?.focus({ preventScroll: true }); heading?.scrollIntoView({ block: "center", behavior: "auto" });
   }
   function jumpToProjects() {
-    projectHeading.current?.focus({ preventScroll: true }); projectHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    if (!projectNavigationOpen) { pendingProjectFocus.current = true; setProjectNavigationOpen(true); }
+    else { projectHeading.current?.focus({ preventScroll: true }); projectHeading.current?.scrollIntoView({ block: "start", behavior: "auto" }); }
   }
   function scrollBoard(direction: number) {
     const board = boardElement.current;
@@ -1279,11 +1317,14 @@ export function ProjectsTasksWorkspace() {
   const stages: PublicPlanningTask["workflow_stage"][] = ["inbox", "planned", "in_progress", "waiting", "review", "done"];
   return <section aria-label="Projects and Tasks" className="projects-tasks-workspace planning-workbench">
     <nav aria-label="Project and saved view navigation" className="projects-pane planning-navigation">
+      <button aria-controls="planning-project-controls" aria-expanded={projectNavigationOpen} className="planning-navigation-toggle" hidden={!compactPlanningLayout} onClick={() => setProjectNavigationOpen((current) => !current)} type="button">Projects and saved views</button>
+      <div className="planning-navigation-content" hidden={compactPlanningLayout && !projectNavigationOpen} id="planning-project-controls" onFocusCapture={() => { if (!compactPlanningLayout) setProjectNavigationOpen(true); }} ref={projectNavigationContent}>
       <div className="projects-tasks-heading"><div><p className="console-kicker">Projects</p><h2 ref={projectHeading} tabIndex={-1}>Projects</h2></div><button disabled={busy} onClick={() => { closeTaskForm(); setProjectForm(true); window.setTimeout(() => projectInput.current?.focus(), 0); }} ref={newProjectButton} type="button">New</button></div>
       {projectForm ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void submitProject(); }}><label><span>Name</span><input onChange={(event) => { if ([...event.target.value].length <= 121) setProjectName(event.target.value); }} ref={projectInput} value={projectName} /></label><div><button aria-label="Create Project" disabled={busy || !projectName.trim() || [...projectName.trim()].length > 120} type="submit">Create</button><button aria-label="Cancel Project" disabled={busy} onClick={() => { setProjectForm(false); setProjectName(""); window.setTimeout(() => newProjectButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
       <div aria-label="Project visibility" className="saved-view-navigation"><p className="console-kicker">Project view</p>{(["active", "all", "archived"] as const).map((visibility) => <button aria-pressed={projectVisibility === visibility} disabled={busy} key={visibility} onClick={() => selectProjectVisibility(visibility)} type="button">{visibility === "all" ? "All Projects" : visibility === "active" ? "Active Projects" : "Archived Projects"}</button>)}</div>
       {state === "loading" ? <p>Loading Projects…</p> : state === "unavailable" || state === "error" ? <p>Projects are temporarily unavailable.</p> : visibleProjects.length ? <ul>{visibleProjects.map((project) => <li key={project.id}><button aria-current={project.id === selectedProjectId ? "true" : undefined} aria-label={`Select ${project.name} Project`} data-project-id={project.id} disabled={busy} onClick={() => selectProject(project.id)} type="button"><strong>{project.name}</strong><span>{project.status}</span></button></li>)}</ul> : overview?.projects.length ? projectVisibility === "archived" ? <section aria-label="Archived Project recovery"><p>No archived Projects.</p><p>Archived Projects can be restored here when needed.</p><button disabled={busy} onClick={() => selectProjectVisibility("active")} type="button">Show active Projects</button></section> : projectVisibility === "active" ? <section aria-label="Archived Project recovery"><p>No active Projects.</p><p>Open Archived Projects to restore one.</p><button disabled={busy} onClick={() => selectProjectVisibility("archived")} type="button">View archived Projects</button></section> : <p>No Projects match this view.</p> : <p>No Projects yet.</p>}
       <div className="saved-view-navigation"><p className="console-kicker">Saved view</p>{(["all", "today", "waiting", "review", "someday", "completed"] as const).map((item) => <button aria-pressed={savedView === item} disabled={busy} key={item} onClick={() => setSavedView(item)} type="button">{item === "all" ? "All tasks" : item}</button>)}</div>
+      </div>
     </nav>
     <div className="project-tasks-pane planning-task-pane">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2 ref={taskListHeading} tabIndex={-1}>{selectedProject?.name ?? "Tasks"}</h2></div><div className="planning-heading-actions"><button aria-label="Choose Project" className="planning-mobile-jump" onClick={jumpToProjects} type="button">Projects</button><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div></div>
@@ -1304,7 +1345,7 @@ export function ProjectsTasksWorkspace() {
       {savedView === "someday" && (tasksState === "ready" || tasksState === "empty") && !tasks.some((task) => task.deferred) ? <div className="planning-empty-guidance"><p>No deferred Tasks are shown. Open a Task in All tasks and choose Move to Someday.</p><button onClick={() => setSavedView("all")} type="button">Browse all tasks</button></div> : null}
       {taskCursor ? <button className="project-tasks-more" disabled={loadingMore || refreshingTaskPages} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
-    <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">
+    <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector" ref={inspectorPanel}>
       <div className="projects-tasks-heading planning-inspector-header"><div><p className="console-kicker">Task details</p><h2 ref={inspectorHeading} tabIndex={-1}>{selectedTask?.title ?? "Select a Task"}</h2></div>{selectedTask ? <div className="planning-heading-actions"><button className="planning-mobile-jump" onClick={jumpToTasks} type="button">Back to Tasks</button><button aria-label="Choose Project from Task details" className="planning-mobile-jump" onClick={jumpToProjects} type="button">Projects</button>{editingTask ? <><button disabled={busy || !editTitle.trim() || editSubtasks.some((item) => !item.title.trim())} form="planning-task-editor" type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></> : <button disabled={busy || !taskDetail || taskDetail.id !== selectedTask.id || taskDetail.revision !== selectedTask.revision || dependenciesState === "loading"} onClick={startTaskEdit} type="button">{taskDetail && taskDetail.id === selectedTask.id && taskDetail.revision === selectedTask.revision && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}</div> : null}</div>
       {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <>
         {editingTask && taskDetail ? <form id="planning-task-editor" className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>
