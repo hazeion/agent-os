@@ -200,6 +200,26 @@ test("responsive shell contracts retain the completed Emerald tokens", () => {
   assert.ok(statSync(resolve(webRoot, "public/mentat-mark-emerald.png")).size < 25_000);
 });
 
+test("native planning fields and map controls retain visible token-based focus and icons", () => {
+  const css = source("src/app/globals.css");
+  const map = source("src/app/tasks/task-dependency-map.tsx");
+  assert.match(css, /:where\(a, button, select, input, textarea\):focus-visible\s*\{[^}]*outline: 2px solid var\(--accent\);[^}]*outline-offset: 2px;/);
+  assert.match(css, /:where\(input\[type="checkbox"\]\)\s*\{[^}]*accent-color: var\(--accent\);/);
+  for (const selector of [".history-copy input", ".console-composer textarea"]) {
+    const block = css.slice(css.indexOf(`${selector} {`)).split("}")[0];
+    assert.doesNotMatch(block, /outline:\s*(?:none|0)/);
+  }
+  const controls = map.split(".mentat-task-dependency-map__flow .react-flow__controls {")[1]?.split("`}</style>")[0];
+  assert.ok(controls);
+  assert.doesNotMatch(controls, /#[0-9a-f]{3,8}\b/iu);
+  assert.match(controls, /background: var\(--panel-raised\)/);
+  assert.match(controls, /color: var\(--text-primary\)/);
+  assert.match(controls, /button svg \{[^}]*fill: currentColor;[^}]*height: 16px;[^}]*width: 16px;/);
+  assert.match(controls, /button:focus-visible \{[^}]*outline: 2px solid var\(--accent\);/);
+  assert.match(controls, /button:hover:not\(:disabled\) \{[^}]*background: var\(--row-hover\)/);
+  assert.doesNotMatch(controls, /forced-color-adjust:\s*none/);
+});
+
 test("the small runtime enhances the shell without exposing bridge authority", () => {
   const runtime = source("public/shell-runtime.js");
   assert.match(runtime, /fetch\("\/api\/bridge\/health"/);

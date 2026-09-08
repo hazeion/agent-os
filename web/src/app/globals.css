@@ -70,6 +70,10 @@ button {
   border: 0;
 }
 
+:where(input[type="checkbox"]) {
+  accent-color: var(--accent);
+}
+
 .shell-icon {
   display: block;
   flex: 0 0 auto;
@@ -1110,7 +1114,7 @@ button {
   display: none;
 }
 
-:where(a, button, select):focus-visible {
+:where(a, button, select, input, textarea):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1941,7 +1945,6 @@ button {
   padding: 5px 8px;
   border: 1px solid var(--border-default);
   border-radius: 6px;
-  outline: none;
   background: var(--row);
   color: var(--text-primary);
   font: inherit;
@@ -2748,7 +2751,6 @@ button {
   resize: vertical;
   border: 1px solid var(--border-subtle);
   border-radius: 7px;
-  outline: none;
   background: var(--row);
   color: var(--text-primary);
   font: inherit;
