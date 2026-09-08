@@ -859,6 +859,19 @@ backups retain the former standalone registry, and pre-registry format-2
 backups restore an empty migration source; both require the explicit
 convergence command before normal startup.
 
+The Next.js Agents workspace offers three fixed local Agent setup operations:
+check, preview, and confirm. Python discovers only the configured local Hermes
+default identity; browser input supplies a display name, never a runtime
+reference or capabilities. Check and preview cannot create database authority.
+Confirmation binds the name, local configuration, and canonical registry
+snapshot under the existing durable/private/Hermes locks, creates a random
+canonical Agent ID atomically, and verifies readback. The existing unique
+runtime binding and 128-Agent ceiling remain enforced. An uncertain response
+requires another Check, which can show the existing Agent without resubmission.
+Remote Hermes is ineligible; Codex uses its existing fixed identity and Vercel
+retains stopped-server CLI setup. Setup never changes Hermes profiles or
+credentials, starts work, or grants files or Inbox task creation automatically.
+
 ## Remote Hermes connection boundary
 
 The approved public-beta direction is local Mentat connected to one active
