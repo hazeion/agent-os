@@ -40,6 +40,19 @@ def trusted_vercel_message_event_id(run_id: str) -> str:
 
 
 class LocalBridgeTests(unittest.TestCase):
+    def test_agent_setup_has_three_fixed_private_post_paths(self):
+        response = {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "state": "available", "agent": None}
+        for action, body in (("check", {}), ("preview", {"name": "Research"}), ("confirm", {"name": "Research", "confirmation_id": "a" * 64, "confirmed": True})):
+            with patch.object(local_bridge, "bridge_agent_setup", return_value=(response, 200)) as capability:
+                status, payload, _headers = self.request(method="POST", path=f"/bridge/v1/agent-setup/{action}", body=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+            self.assertEqual((status, payload), (200, response))
+            capability.assert_called_once_with(action, body)
+        for method, path, body in (("GET", "/bridge/v1/agent-setup/check", None), ("POST", "/bridge/v1/agent-setup/check?extra=1", b"{}"), ("POST", "/bridge/v1/agent-setup/other", b"{}"), ("POST", "/bridge/v1/agent-setup/preview", b"x" * 1025)):
+            with patch.object(local_bridge, "bridge_agent_setup") as capability:
+                status, _payload, _headers = self.request(method=method, path=path, body=body, headers={"Content-Type": "application/json"})
+            self.assertNotEqual(status, 200)
+            capability.assert_not_called()
+
     def test_planning_task_delegation_is_a_safe_selected_task_projection(self):
         source = self._delegation_api_current()
         with patch.object(

@@ -4628,6 +4628,62 @@ def mentat_provider_connections_payload():
         return public_vercel_connections(DATA_DIR)
 
 
+def _local_hermes_agent_setup_target():
+    from agent_setup import LocalHermesSetup
+
+    if load_remote_hermes_connection(DATA_DIR).mode != "local":
+        return LocalHermesSetup("remote_selected")
+    command = hermes_command_path()
+    python = hermes_python_path()
+    if command is None or python is None:
+        return LocalHermesSetup("hermes_missing")
+    if "run.start" not in HERMES_RUNTIME.capabilities:
+        return LocalHermesSetup("unavailable")
+    discovery = discover_hermes_profiles(python, HERMES_HOME, cwd=BASE_DIR, timeout=5)
+    if discovery.get("status") != "available":
+        return LocalHermesSetup("unavailable")
+    profiles = [profile for profile in discovery.get("profiles", []) if profile.get("id") == "default" and profile.get("is_default") is True]
+    if len(profiles) != 1 or not profiles[0].get("provider") or not profiles[0].get("model"):
+        return LocalHermesSetup("hermes_unconfigured")
+    fingerprint = hashlib.sha256(json.dumps(
+        [str(HERMES_HOME), command, python, profiles[0]["provider"], profiles[0]["model"]],
+        sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    return LocalHermesSetup("available", fingerprint)
+
+
+def mentat_agent_setup(action: str, payload: object) -> tuple[dict, int]:
+    """Three fixed name-only capabilities; no browser runtime selection."""
+    from agent_setup import AgentSetupError, AgentSetupService
+
+    required = {"check": set(), "preview": {"name"}, "confirm": {"name", "confirmation_id", "confirmed"}}
+    if action not in required or not isinstance(payload, dict) or set(payload) != required[action] or action == "confirm" and payload.get("confirmed") is not True:
+        return {"error_code": "agent_setup.invalid"}, 400
+    try:
+        with HERMES_CONNECTION_OPERATION_LOCK:
+            with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+                if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                    raise AgentSetupError("unavailable")
+                # Selection is global transport authority. Even an existing
+                # local binding must not make remote mode look locally ready.
+                if load_remote_hermes_connection(DATA_DIR).mode != "local":
+                    if action == "check":
+                        return {"schema_version": 1, "state": "remote_selected", "agent": None}, 200
+                    raise AgentSetupError("unavailable")
+                service = AgentSetupService(DATA_DIR, _mentat_agent_registry(), _local_hermes_agent_setup_target)
+                if action == "check":
+                    return service.check(), 200
+                if action == "preview":
+                    return service.preview(payload["name"]), 200
+                return service.confirm(payload["name"], payload["confirmation_id"]), 200
+    except AgentSetupError as exc:
+        return {"error_code": f"agent_setup.{exc.code}"}, {"invalid": 400, "conflict": 409}.get(exc.code, 503)
+    except (AgentRegistryConflict, AgentRegistryLimitError):
+        return {"error_code": "agent_setup.conflict"}, 409
+    except (AgentRegistryError, AgentRuntimeError, MentatDatabaseError, OSError, ValueError, sqlite3.Error):
+        return {"error_code": "agent_setup.unavailable"}, 503
+
+
 def create_mentat_agent(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent payload must be a JSON object."}, 400

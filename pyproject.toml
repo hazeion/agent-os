@@ -45,6 +45,7 @@ packages = ["mentat"]
 include-package-data = false
 py-modules = [
   "agent_registry",
+  "agent_setup",
   "agent_registry_migration",
   "agent_runtime",
   "agent_console_artifacts",

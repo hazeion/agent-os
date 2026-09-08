@@ -911,6 +911,15 @@ function synchronizeShell() {
 
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
+  const setup = event.target instanceof Element ? event.target.closest("[data-agent-setup-open]") : null;
+  if (setup) {
+    const panel = setup.closest("[data-agent-setup-root]");
+    if (panel) void import("./agent-setup.js").then((module) => module.openAgentSetup(panel, refreshAgents)).catch(() => {
+      panel.querySelector("[data-agent-setup-body]").hidden = false;
+      panel.querySelector("[data-agent-setup-notice]").textContent = "Setup could not be loaded. Refresh this page and try again.";
+    });
+    return;
+  }
   const target = event.target instanceof Element
     ? event.target.closest("[data-agents-refresh], [data-provider-connections-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-run-response-open], [data-run-response-cancel], [data-run-response-review], [data-run-response-confirm], [data-sidebar-toggle], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;

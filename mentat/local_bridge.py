@@ -370,6 +370,33 @@ def client_is_loopback(value: object) -> bool:
         return False
 
 
+def bridge_agent_setup(action: str, body: object) -> tuple[dict, int]:
+    from agent_setup import SETUP_STATES, valid_name
+    from server import mentat_agent_setup
+
+    try:
+        value, status = mentat_agent_setup(action, body)
+        if status != 200:
+            return _conversation_file_failure(status)
+        required = {"check": {"schema_version", "state", "agent"}, "preview": {"schema_version", "name", "confirmation_id"}, "confirm": {"schema_version", "agent"}}
+        if action not in required or not isinstance(value, dict) or set(value) != required[action] or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("agent_setup_projection_invalid")
+        if action == "preview":
+            if not valid_name(value["name"]) or not isinstance(body, dict) or value["name"] != body.get("name") or not isinstance(value["confirmation_id"], str) or re.fullmatch(r"[0-9a-f]{64}", value["confirmation_id"]) is None:
+                raise ValueError("agent_setup_projection_invalid")
+        else:
+            agent = value["agent"]
+            if agent is not None and (not isinstance(agent, dict) or set(agent) != {"id", "name"} or not isinstance(agent["id"], str) or _OPAQUE_ID.fullmatch(agent["id"]) is None or not valid_name(agent["name"])):
+                raise ValueError("agent_setup_projection_invalid")
+            if action == "check" and (value["state"] not in SETUP_STATES or (value["state"] == "already_configured") != (agent is not None)):
+                raise ValueError("agent_setup_projection_invalid")
+            if action == "confirm" and (agent is None or not isinstance(body, dict) or agent["name"] != body.get("name")):
+                raise ValueError("agent_setup_projection_invalid")
+        return {**value, "service": "mentat-local-bridge", "runtime": "python", "status": "ready"}, 200
+    except Exception:
+        return _conversation_file_failure(503)
+
+
 def _public_agent_record(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {
         "id",
@@ -6609,6 +6636,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        if parsed.path in {"/bridge/v1/agent-setup/check", "/bridge/v1/agent-setup/preview", "/bridge/v1/agent-setup/confirm"} and not parsed.query:
+            body = self._action_json_body(1_024)
+            if body is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_agent_setup(parsed.path.rsplit("/", 1)[1], body)
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_PROJECTS_PATH and not parsed.query:
             body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
             if body is None or set(body) != {"name"}:
