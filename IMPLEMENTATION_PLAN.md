@@ -29,13 +29,13 @@ independent reviews for non-trivial changes. Publication is a separate step.
 2. Failed Task recovery and cascade deletion: issues #209, #208 (locally verified).
 3. Integration and planner refresh: issues #214, #213 (locally verified).
 4. Delegation availability and Conversation restore: issues #219, #220 (locally verified).
-5. Checklist, Someday, and reminder usability: issues #215, #221, #218 (active).
-6. Shared theme and task-inspector layout: issues #216, #217.
+5. Checklist, Someday, and reminder usability: issues #215, #221, #218 (locally verified).
+6. Shared theme and task-inspector layout: issues #216, #217 (active).
 7. Capability-scoped Agent onboarding: issue #212.
 
 The [Beta QA audit](https://github.com/hazeion/agent-os/issues/222) owns the
 findings and final end-to-end acceptance. The active evidence log is
-`reviews/2026-09-07-beta-qa-05-planning.md`. After QA acceptance, reconcile and
+`reviews/2026-09-07-beta-qa-06-layout.md`. After QA acceptance, reconcile and
 verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against the stabilized baseline.
 
 The runtime-neutral Python foundation, SQLite authority, Node gateway,
