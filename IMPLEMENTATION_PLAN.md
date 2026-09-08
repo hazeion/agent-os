@@ -35,7 +35,8 @@ independent reviews for non-trivial changes. Publication is a separate step.
 
 The [Beta QA audit](https://github.com/hazeion/agent-os/issues/222) owns the
 findings and final end-to-end acceptance. The active evidence log is
-`reviews/2026-09-07-beta-qa-final.md` (final validation). After QA acceptance, reconcile and
+`reviews/2026-09-07-beta-qa-final.md` (local validation complete; publication pending).
+After QA acceptance, reconcile and
 verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against the stabilized baseline.
 
 The runtime-neutral Python foundation, SQLite authority, Node gateway,

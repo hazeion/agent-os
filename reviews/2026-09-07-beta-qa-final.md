@@ -37,10 +37,20 @@ main agent without editing or publishing.
   Actual UI mutations, failure/retry, successful Codex answer, failed Task
   recovery, exact cascade cleanup, planner changes, restore/Apply, and responsive
   behavior are recorded in the batch logs.
-- Final Lighthouse audit is in progress. The unchanged gate failed before any
-  audit because Chrome's Windows executable did not complete its `--version`
-  probe. An ignored local copy reads that executable's version metadata instead;
-  it preserves pinned Chrome 152.0.7923.0 and all audit settings/score thresholds.
+- Lighthouse completed three desktop and three mobile audits using pinned
+  Chrome 152.0.7923.0 and Lighthouse 13.4.1. Desktop performance was 100/100/100;
+  mobile was 98/98/98. Accessibility, best practices, and SEO were 100 in all six.
+  These measurements meet the existing CI performance median requirement of 95,
+  but the stricter default requirement of 100 failed on mobile. No threshold or
+  product code was changed to disguise that result; full cross-platform CI has
+  not run. The CI threshold was verified at the original baseline as well.
+- The unchanged gate failed before auditing because Chrome's Windows executable
+  did not complete its `--version` probe. An ignored compatibility copy reads
+  that executable's version metadata instead. Each attempt uses a fresh browser
+  and explicitly owned profile; the launcher otherwise hit a Windows profile
+  deletion error. An independent review confirmed identical measurement,
+  threshold, retry, and timeout logic. Report this as a Windows compatibility
+  audit, not a successful invocation of the unmodified gate.
 
 ## Qualification and publication limits
 
@@ -55,5 +65,10 @@ main agent without editing or publishing.
 - This is local Windows verification, not full cross-platform CI or a claim
   that every repository test ran. No source was pushed, no PR was published,
   and GitHub issues remain open pending publication and tracker reconciliation.
+- All audit Chrome processes exited. Automatic approval review rejected removal
+  of the failed launcher's temporary profile and the six owned profiles under
+  ignored `artifacts/qa-lighthouse-profile-*`, reporting only "blocked by policy".
+  The directories remain; cleanup was not verified or claimed complete. The
+  isolated QA application preview remains available for owner review.
 - MDA implementation remains paused. After accepting/publishing this stack,
   reconcile/verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against it.

@@ -119,8 +119,10 @@ performance budget.
 
 The performance gate uses Lighthouse 13.4.1 and Chrome for Testing
 152.0.7923.0. It runs three desktop audits and three mobile audits. Every
-category must score 100. Each audit gets a fresh browser and profile. Timeouts
-and signals clean up Lighthouse, Chrome, and temporary files.
+non-performance category must score 100 in each run. The default performance
+requirement is a median of 100 per mode; the quality-gates CI workflow explicitly
+uses 95. Each audit gets a fresh browser and profile. Timeouts and signals
+clean up Lighthouse, Chrome, and temporary files.
 
 The supervisor watches Node and Python. If either process exits, it stops the
 other one within a bounded timeout. The browser gateway stops first during a
