@@ -119,6 +119,30 @@ test("checklist titles validate, keep identity and order, and complete outside t
   assert.deepEqual(fixture.rows[0].subtasks.map((item) => item.rank), [0, 1, 2]);
 });
 
+test("Someday has explicit defer and return actions that preserve the workflow stage", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+  const edits: Record<string, unknown>[] = [];
+  fixture.override = (url, init) => { if (url.pathname.endsWith("/edit")) edits.push(JSON.parse(String(init?.body))); return null; };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await screen.findByRole("button", { name: /Ship Alpha/ });
+  await user.click(screen.getByRole("button", { name: "someday" }));
+  await screen.findByText("No Tasks are deferred to Someday. Open a Task in All tasks and choose Move to Someday.");
+  await user.click(screen.getByRole("button", { name: "Browse all tasks" }));
+  await user.click(screen.getByRole("button", { name: /Ship Alpha/ }));
+  await user.click(await screen.findByRole("button", { name: "Move to Someday" }));
+  await screen.findByText("Task moved to Someday.");
+  assert.equal(fixture.rows[0].deferred, true);
+  assert.equal(fixture.rows[0].workflow_stage, "planned");
+  assert.equal(fixture.rows[0].planning_state, "planned");
+  await user.click(screen.getByRole("button", { name: "someday" }));
+  assert.ok(screen.getByRole("button", { name: /Ship Alpha/ }));
+  await user.click(screen.getByRole("button", { name: "Return from Someday" }));
+  await screen.findByText("Task returned from Someday.");
+  assert.equal(fixture.rows[0].deferred, false);
+  assert.equal(fixture.rows[0].workflow_stage, "planned");
+  assert.deepEqual(edits, [{ expected_revision: 1, changes: { deferred: true } }, { expected_revision: 2, changes: { deferred: false } }]);
+});
+
 test("delegation discovery explains setup and leaves unrelated planner controls usable", async () => {
   dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture(); const late = deferred<Response>();
   fixture.override = (url) => url.pathname.endsWith("/planning-task-delegation/options") ? late.promise : null;
