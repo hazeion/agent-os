@@ -1036,7 +1036,13 @@ export function ProjectsTasksWorkspace() {
     };
   }, [dependencyMap]);
   const selectTask = (task: PublicPlanningTaskListItem) => {
-    if (selectedTaskRef.current === task.id) return;
+    if (selectedTaskRef.current === task.id) {
+      if (window.innerWidth <= 1100) {
+        inspectorHeading.current?.focus({ preventScroll: true });
+        inspectorHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+      }
+      return;
+    }
     selectTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
   };
   async function selectMapTask(taskId: string) {

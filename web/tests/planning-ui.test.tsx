@@ -214,6 +214,31 @@ test("resizing keeps editor nodes, drafts, and caret ranges intact", async () =>
   } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
 });
 
+test("Back to Tasks followed by the same mobile Task reveals its inspector without discarding the draft or reloading", async () => {
+  const originalWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    const row = await screen.findByRole("button", { name: /Ship Alpha/ });
+    await user.click(row);
+    const inspector = screen.getByLabelText("Task inspector");
+    await user.click(await within(inspector).findByRole("button", { name: "Edit details" }));
+    const title = within(inspector).getByLabelText("Title") as HTMLInputElement;
+    await user.type(title, " retained draft");
+    const reads = [...fixture.counts.entries()];
+    const heading = within(inspector).getByRole("heading", { name: "Ship Alpha" });
+    const scrolls: unknown[] = []; heading.scrollIntoView = (options) => scrolls.push(options);
+    await user.click(within(inspector).getByRole("button", { name: "Back to Tasks" }));
+    assert.equal(document.activeElement, row);
+    await user.click(row);
+    assert.equal(document.activeElement, heading);
+    assert.deepEqual(scrolls, [{ block: "start", behavior: "auto" }]);
+    assert.equal(title.value, "Ship Alpha retained draft");
+    assert.deepEqual([...fixture.counts.entries()], reads);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
 test("resize collapses earlier Project navigation and reveals the focused Task input without refocusing", async () => {
   const originalWidth = window.innerWidth;
   try {
