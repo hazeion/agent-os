@@ -53,16 +53,35 @@ constant-time token match. Browser Origin, Cookie, and `Sec-Fetch-Site` headers
 are rejected. The bridge has no catch-all route, generic proxy, state mutation,
 SQLite access, or direct Hermes access.
 
-The Node request boundary covers every public path, including framework
-assets. It accepts only the configured loopback Host and port. Cross-site,
+The process creates one immutable Gateway Authority before admitting any
+request. Local mode is the only executable profile. Any configured remote or
+unknown mode fails process startup, and no request field can select a mode.
+The universal Next proxy delegates every public path to this authority. It
+accepts only the configured loopback Host and port; cross-site,
 mismatched-origin, and malformed fetch metadata requests fail closed.
 
-The browser can call fixed same-origin routes only: `/api/bridge/health`, the
-read-only `/api/agents`, `/api/provider-connections`, `/api/tasks`, `/api/runs`,
-and selected-Run timeline route. Node builds each private request on the
-server, checks its bounded response, and returns only the route's safe public
-fields. The Agent route exposes canonical Mentat IDs, names, runtime types,
-runtime configuration IDs, and declared capabilities. It
+A checked-in manifest inventories every exported API method/path operation and
+every shipped document, public asset, generated shell document, and framework
+static path. Explicit static `HEAD` rules win normally; when an API route has
+only a `GET` export, the authority preserves Next's implicit `HEAD` dispatch by
+selecting that exact `GET` operation. No other method receives a fallback.
+Valid unmatched local paths continue to Next solely to preserve its native
+static lookup and 404 behavior.
+
+Every API handler enters through one gateway wrapper. The wrapper matches its
+exact manifest rule before query or body validation, expensive work, or a
+bridge call, then gives the handler only the frozen rule and route-validated
+input. CI derives the route inventory from source, rejects missing or duplicate
+rules, proves every exported operation admits only its own method/path, and
+rejects legacy boundary imports or unwrapped handlers. Route-specific local
+failure envelopes remain authoritative where they differ from the shared
+fixed forbidden response.
+
+The browser can call only the fixed same-origin routes in that manifest. Node
+builds each private request on the server, checks its bounded response, and
+returns only the route's safe public fields. The Agent route exposes canonical
+Mentat IDs, names, runtime types, runtime configuration IDs, and declared
+capabilities. It
 never exposes adapter-owned runtime references, credentials, paths, raw Hermes
 data, or legacy heartbeat observations. Browser input cannot choose a bridge
 path, target, headers, or token.

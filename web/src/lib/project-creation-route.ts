@@ -1,5 +1,5 @@
 import { createBridgeProject, createBridgeProjectTask } from "./bridge-planning.ts";
-import { PLANNING_HEADERS, planningFailure, planningFixed, planningRequestAllowed } from "./planning-overview-route.ts";
+import { PLANNING_HEADERS, planningFailure, planningFixed, withPlanningGatewayRoute } from "./planning-overview-route.ts";
 import type { PublicPlanningProjectCreation, PublicPlanningTaskCreation } from "./public-planning.ts";
 
 type CreateProject = (name: string) => Promise<PublicPlanningProjectCreation>;
@@ -18,20 +18,20 @@ async function json(request: Request, maximum = 768): Promise<Record<string, unk
 }
 
 export function createProjectHandler({ create = createBridgeProject, gatewayPort = process.env.PORT }: Readonly<{ create?: CreateProject; gatewayPort?: string }> = {}) {
-  return async function postProject(request: Request) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400); const body = await json(request);
-    if (!body || Object.keys(body).join(",") !== "name" || typeof body.name !== "string" || !body.name || body.name.trim() !== body.name || [...body.name].length > 120 || /\p{C}/u.test(body.name)) return planningFixed("invalid", 400);
-    try { return Response.json(await create(body.name), { headers: PLANNING_HEADERS, status: 201 }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<string | null>("POST", "/api/projects", gatewayPort, {
+    validator: { async validate(request) { if (new URL(request.url).search) return null; const body = await json(request); return body && Object.keys(body).join(",") === "name" && typeof body.name === "string" && !!body.name && body.name.trim() === body.name && [...body.name].length <= 120 && !/\p{C}/u.test(body.name) ? body.name : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await create(value), { headers: PLANNING_HEADERS, status: 201 }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createProjectTaskHandler({ create = createBridgeProjectTask, gatewayPort = process.env.PORT }: Readonly<{ create?: CreateTask; gatewayPort?: string }> = {}) {
-  return async function postProjectTask(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400); const { projectId } = await context.params;
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u.test(projectId)) return planningFixed("invalid", 400); const body = await json(request);
-    if (!body || Object.keys(body).sort().join(",") !== "assigned_agent_id,due_date,title" || typeof body.title !== "string" || !body.title || body.title.trim() !== body.title || [...body.title].length > 160 || /\p{C}/u.test(body.title) || body.assigned_agent_id !== null && (typeof body.assigned_agent_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(body.assigned_agent_id)) || body.due_date !== null && (typeof body.due_date !== "string" || !exactDate(body.due_date))) return planningFixed("invalid", 400);
-    try { return Response.json(await create(projectId, body.title, body.assigned_agent_id as string | null, body.due_date as string | null), { headers: PLANNING_HEADERS, status: 201 }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<{ projectId: string; title: string; assignedAgentId: string | null; dueDate: string | null } | null, Params>("POST", "/api/projects/[projectId]/tasks", gatewayPort, {
+    validator: { async validate(request, _context, context) {
+      if (new URL(request.url).search) return null; const { projectId } = await context.params;
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u.test(projectId)) return null; const body = await json(request);
+      if (!body || Object.keys(body).sort().join(",") !== "assigned_agent_id,due_date,title" || typeof body.title !== "string" || !body.title || body.title.trim() !== body.title || [...body.title].length > 160 || /\p{C}/u.test(body.title) || body.assigned_agent_id !== null && (typeof body.assigned_agent_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(body.assigned_agent_id)) || body.due_date !== null && (typeof body.due_date !== "string" || !exactDate(body.due_date))) return null;
+      return { projectId, title: body.title, assignedAgentId: body.assigned_agent_id as string | null, dueDate: body.due_date as string | null };
+    } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await create(value.projectId, value.title, value.assignedAgentId, value.dueDate), { headers: PLANNING_HEADERS, status: 201 }); } catch (error) { return planningFailure(error); } },
+  });
 }

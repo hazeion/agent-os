@@ -31,7 +31,10 @@ test("Agent setup routes reject foreign origins, queries, oversized and widened 
   let calls = 0;
   const handler = createAgentSetupHandler("preview", { gatewayPort: "8888", execute: async () => { calls += 1; return { ...envelope, name: "Research", confirmation_id: "a".repeat(64) } as Awaited<ReturnType<typeof requestBridgeAgentSetup>>; } });
   const request = (body: string, origin = "http://127.0.0.1:8888", query = "") => new Request(`http://127.0.0.1:8888/api/agent-setup/preview${query}`, { method: "POST", headers: { Host: "127.0.0.1:8888", Origin: origin, "Content-Type": "application/json" }, body });
-  assert.equal((await handler(request('{"name":"Research"}', "https://foreign.example"))).status, 403);
+  const forbidden = await handler(request('{"name":"Research"}', "https://foreign.example"));
+  assert.equal(forbidden.status, 403);
+  assert.match(forbidden.headers.get("content-type") ?? "", /^application\/json\b/u);
+  assert.deepEqual(await forbidden.json(), { schema_version: 1, status: "forbidden" });
   for (const body of ['{"name":"Research","capabilities":["task.create"]}', '{"name":" padded"}', JSON.stringify({ name: "x".repeat(2000) }), '[]', '{}']) assert.equal((await handler(request(body))).status, 400);
   assert.equal((await handler(request('{"name":"Research"}', undefined, "?runtime=codex"))).status, 400);
   assert.equal(calls, 0);

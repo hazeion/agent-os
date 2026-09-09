@@ -1,6 +1,7 @@
 import { BridgeRunResponseError, confirmBridgeRunResponse, fetchBridgeRunResponseRequest } from "@/lib/bridge-run-response";
 import { readRunResponseRouteBody } from "@/lib/exact-json-body";
-import { evaluateRequestBoundary, parseGatewayPort } from "@/lib/request-boundary";
+import { GATEWAY_ROUTE_MANIFEST } from "@/lib/gateway-route-manifest";
+import { withGatewayRoute } from "@/lib/gateway-request-context";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,16 +28,28 @@ function errorResult(error: unknown) {
   return result(502, "error");
 }
 
-export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
-  const boundary = evaluateRequestBoundary({ expectedPort: parseGatewayPort(process.env.PORT), host: request.headers.get("host"), method: request.method, origin: request.headers.get("origin"), secFetchSite: request.headers.get("sec-fetch-site") });
-  if (!boundary.allowed) return result(403, "error");
-  const { runId } = await context.params;
-  const body = await readRunResponseRouteBody(request);
-  if (body === "request") {
-    try { return Response.json(await fetchBridgeRunResponseRequest(runId), { headers }); }
+const POST_RULE = GATEWAY_ROUTE_MANIFEST.find((rule) => rule.method === "POST" && rule.path === "/api/runs/[runId]/response");
+if (!POST_RULE) throw new Error("missing gateway manifest rule for POST /api/runs/[runId]/response");
+
+type RouteContext = { params: Promise<{ runId: string }> };
+type ResponseInput = { body: Awaited<ReturnType<typeof readRunResponseRouteBody>>; runId: string };
+
+const post = withGatewayRoute<ResponseInput, RouteContext>(POST_RULE, {
+  handler: async ({ value }) => {
+    if (value.body === "request") {
+      try { return Response.json(await fetchBridgeRunResponseRequest(value.runId), { headers }); }
     catch (error) { return errorResult(error); }
-  }
-  if (!body) return result(400, "error");
-  try { return Response.json(await confirmBridgeRunResponse(runId, body.response, body.confirmationId), { headers, status: 202 }); }
-  catch (error) { return errorResult(error); }
-}
+    }
+    if (!value.body) return result(400, "error");
+    try { return Response.json(await confirmBridgeRunResponse(value.runId, value.body.response, value.body.confirmationId), { headers, status: 202 }); }
+    catch (error) { return errorResult(error); }
+  },
+  validator: {
+    async validate(request, _approved, context) {
+      const { runId } = await context.params;
+      return { body: await readRunResponseRouteBody(request), runId };
+    },
+  },
+});
+
+export async function POST(request: Request, context: RouteContext) { return post(request, context); }

@@ -4,7 +4,9 @@ import {
   type PublicConversationTurnSubmission,
 } from "./bridge-conversations.ts";
 import { readConversationTurnBody } from "./exact-json-body.ts";
-import { evaluateRequestBoundary, parseGatewayPort } from "./request-boundary.ts";
+import { createGatewayAuthority, PROCESS_GATEWAY_AUTHORITY } from "./gateway-authority.ts";
+import { GATEWAY_ROUTE_MANIFEST } from "./gateway-route-manifest.ts";
+import { withGatewayRoute } from "./gateway-request-context.ts";
 
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -33,6 +35,16 @@ type SubmitTurn = (
 ) => Promise<PublicConversationTurnSubmission>;
 
 type ReadTurnBody = typeof readConversationTurnBody;
+type ConversationContext = { params: Promise<{ conversationId: string }> };
+type TurnInput = { conversationId: string; idempotencyKey: string; text: string } | null;
+
+const TURN_RULE = requiredTurnRule();
+
+function requiredTurnRule() {
+  const rule = GATEWAY_ROUTE_MANIFEST.find((candidate) => candidate.method === "POST" && candidate.path === "/api/conversations/[conversationId]/turns");
+  if (!rule) throw new Error("missing gateway manifest rule for POST /api/conversations/[conversationId]/turns");
+  return rule;
+}
 
 function fixed(status: FailureState, code: number) {
   return Response.json({ schema_version: 1, status }, { headers: HEADERS, status: code });
@@ -56,7 +68,7 @@ function failure(error: unknown) {
 }
 
 export function createConversationTurnPostHandler({
-  gatewayPort = process.env.PORT,
+  gatewayPort,
   readBody = readConversationTurnBody,
   submitTurn = submitBridgeConversationTurn,
 }: Readonly<{
@@ -64,34 +76,32 @@ export function createConversationTurnPostHandler({
   readBody?: ReadTurnBody;
   submitTurn?: SubmitTurn;
 }> = {}) {
-  return async function postConversationTurn(
-    request: Request,
-    context: { params: Promise<{ conversationId: string }> },
-  ) {
-    const decision = evaluateRequestBoundary({
-      expectedPort: parseGatewayPort(gatewayPort),
-      host: request.headers.get("host"),
-      method: request.method,
-      origin: request.headers.get("origin"),
-      secFetchSite: request.headers.get("sec-fetch-site"),
-    });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const body = await readBody(request);
-    if (!body) return fixed("invalid", 400);
-    const { conversationId } = await context.params;
-    try {
-      const result = await submitTurn(
-        conversationId,
-        body.text,
-        body.idempotencyKey,
-      );
-      return Response.json(result, {
-        headers: HEADERS,
-        status: result.duplicate ? 200 : 202,
-      });
-    } catch (error) {
-      return failure(error);
-    }
-  };
+  return withGatewayRoute<TurnInput, ConversationContext>(TURN_RULE, {
+    authority: gatewayPort === undefined ? PROCESS_GATEWAY_AUTHORITY : createGatewayAuthority({ PORT: gatewayPort }),
+    handler: async ({ value }) => {
+      if (!value) return fixed("invalid", 400);
+      try {
+        const result = await submitTurn(
+          value.conversationId,
+          value.text,
+          value.idempotencyKey,
+        );
+        return Response.json(result, {
+          headers: HEADERS,
+          status: result.duplicate ? 200 : 202,
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    validator: {
+      async validate(request, _approved, context) {
+        if (new URL(request.url).search) return null;
+        const body = await readBody(request);
+        if (!body) return null;
+        const { conversationId } = await context.params;
+        return { conversationId, idempotencyKey: body.idempotencyKey, text: body.text };
+      },
+    },
+  });
 }

@@ -1,5 +1,5 @@
 import { moveBridgePlanningTask, updateBridgePlanningProject, updateBridgePlanningTask } from "./bridge-planning.ts";
-import { PLANNING_HEADERS, planningFailure, planningFixed, planningRequestAllowed } from "./planning-overview-route.ts";
+import { PLANNING_HEADERS, planningFailure, planningFixed, withPlanningGatewayRoute } from "./planning-overview-route.ts";
 
 type Params = { params: Promise<{ kind: string; id: string; action: string }> };
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
@@ -26,12 +26,15 @@ export function createPlanningMutationHandler({
   moveTask = moveBridgePlanningTask,
   gatewayPort = process.env.PORT,
 } = {}) {
-  return async function postPlanningMutation(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const { kind, id, action } = await context.params;
-    const value = await body(request);
-    if (!value) return planningFixed("invalid", 400);
+  return withPlanningGatewayRoute<{ kind: string; id: string; action: string; value: Record<string, unknown> } | null, Params>("POST", "/api/planning/[kind]/[id]/[action]", gatewayPort, {
+    validator: { async validate(request, _context, context) {
+      if (new URL(request.url).search) return null;
+      const { kind, id, action } = await context.params; const value = await body(request);
+      return value ? { kind, id, action, value } : null;
+    } },
+    handler: async ({ value: input }) => {
+      if (!input) return planningFixed("invalid", 400);
+      const { kind, id, action, value } = input;
     try {
       if (kind === "projects" && PROJECT.test(id) && ["rename", "archive", "restore"].includes(action) && exact(value, ["expected_revision", "action", "name"]) && typeof value.action === "string" && value.action === action && positive(value.expected_revision) && (action === "rename" ? typeof value.name === "string" : value.name === null)) {
         return Response.json(await updateProject(id, value.expected_revision, action as "rename" | "archive" | "restore", value.name as string | null), { headers: PLANNING_HEADERS });
@@ -44,5 +47,6 @@ export function createPlanningMutationHandler({
       }
     } catch (error) { return planningFailure(error); }
     return planningFixed("invalid", 400);
-  };
+    },
+  });
 }

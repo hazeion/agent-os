@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluateRequestBoundary, parseGatewayPort } from "../src/lib/request-boundary.ts";
+import { evaluateGatewayAuthority, parseGatewayPort } from "../src/lib/gateway-authority.ts";
 
 const baseRequest = {
   expectedPort: 8890,
@@ -12,9 +12,9 @@ const baseRequest = {
 };
 
 test("the gateway accepts exact loopback navigation and same-origin requests", () => {
-  assert.deepEqual(evaluateRequestBoundary(baseRequest), { allowed: true });
+  assert.deepEqual(evaluateGatewayAuthority(baseRequest), { allowed: true });
   assert.deepEqual(
-    evaluateRequestBoundary({
+    evaluateGatewayAuthority({
       ...baseRequest,
       host: "localhost:8890",
       method: "POST",
@@ -33,7 +33,7 @@ test("foreign, malformed, and wrong-port Host values fail closed", () => {
     "user@127.0.0.1:8890",
     "127.0.0.1:8890/path",
   ]) {
-    assert.equal(evaluateRequestBoundary({ ...baseRequest, host }).allowed, false, host ?? "null");
+    assert.equal(evaluateGatewayAuthority({ ...baseRequest, host }).allowed, false, host ?? "null");
   }
 });
 
@@ -49,14 +49,14 @@ test("unknown, malformed, cross-site, same-site, null, mismatched, and missing m
     { ...baseRequest, method: "POST" },
   ];
   for (const request of requests) {
-    assert.equal(evaluateRequestBoundary(request).allowed, false, JSON.stringify(request));
+    assert.equal(evaluateGatewayAuthority(request).allowed, false, JSON.stringify(request));
   }
 });
 
 test("only absent, none, and same-origin fetch-site values are accepted", () => {
   for (const secFetchSite of [null, "none", "same-origin", " SAME-ORIGIN "]) {
     assert.deepEqual(
-      evaluateRequestBoundary({ ...baseRequest, secFetchSite }),
+      evaluateGatewayAuthority({ ...baseRequest, secFetchSite }),
       { allowed: true },
     );
   }
