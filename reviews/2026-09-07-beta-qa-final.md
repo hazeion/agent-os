@@ -1,5 +1,9 @@
 # Beta QA — integrated acceptance
 
+September 9 follow-up: the broader [fresh-install audit](2026-09-09-first-use-audit.md)
+found additional publication-blocking gaps. The evidence below remains the local
+September 7 result for the original fourteen findings; it is not release approval.
+
 The owner approved all fourteen findings in seven ordered batches before MDA
 work, then explicitly requested review-agent subagents after each section.
 Baseline: `8eabe696ed7f06286aa786d018f80aad30210672`. The implementation is isolated

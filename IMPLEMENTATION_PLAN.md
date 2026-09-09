@@ -35,7 +35,11 @@ independent reviews for non-trivial changes. Publication is a separate step.
 
 The [Beta QA audit](https://github.com/hazeion/agent-os/issues/222) owns the
 findings and final end-to-end acceptance. The active evidence log is
-`reviews/2026-09-07-beta-qa-final.md` (local validation complete; publication pending).
+`reviews/2026-09-09-first-use-audit.md` (publication held: new-user acceptance
+found result, continuity, live-state, layout, onboarding, and dependency gaps).
+The fourteen original Beta QA fixes remain locally implemented; the broader
+September 9 journey is not approved. Reconcile published main `e1081c4` before
+the next integrated acceptance pass.
 After QA acceptance, reconcile and
 verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against the stabilized baseline.
 
