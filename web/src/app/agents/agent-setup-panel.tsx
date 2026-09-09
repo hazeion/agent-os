@@ -7,7 +7,7 @@ export function AgentSetupPanel() {
       <div className="agent-setup-runtimes">
         <section><h3>Hermes</h3><p>This flow connects one named Mentat Agent to the configured local Hermes default identity. It does not create or clone a Hermes profile. Provider setup stays in Hermes.</p><button data-agent-setup-check type="button">Check setup</button></section>
         <section><h3>Codex</h3><p>Codex uses one local identity, normally shown as Direct Agent. Open Home to choose it and check sign-in. To sign in, run <code>codex login</code> in your terminal.</p><Link href="/" prefetch={false}>Open Home for Codex</Link></section>
-        <section><h3>Vercel</h3><p>Vercel setup and Agent creation require a stopped Mentat server and exact CLI preview/confirmation. Use <code>mentat vercel --help</code> for the supported setup commands.</p></section>
+        <section><h3>Vercel</h3><p>Vercel setup and Agent creation require a stopped Mentat server and exact CLI preview/confirmation. Use <code>python -m mentat.cli vercel --help</code> for the supported setup commands.</p></section>
       </div>
       <p aria-live="polite" data-agent-setup-notice role="status">Check local Hermes setup to continue.</p>
       <form data-agent-setup-form hidden>

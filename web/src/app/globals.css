@@ -33,12 +33,12 @@
 }
 
 html {
-  min-width: 320px;
+  min-width: 0;
   background: var(--canvas);
 }
 
 body {
-  min-width: 320px;
+  min-width: 0;
   min-height: 100vh;
   margin: 0;
   overflow-x: hidden;
@@ -847,7 +847,7 @@ button {
 .planning-board > section { display: grid; align-content: start; gap: 6px; min-width: 220px; scroll-snap-align: start; }
 .planning-board h3 { margin: 0; color: var(--text-secondary); font-size: .76rem; font-weight: 650; text-transform: capitalize; }
 .planning-board .project-task-list { max-height: none; }
-.planning-inspector { position: sticky; top: 12px; max-height: calc(100dvh - 100px); overflow-y: auto; scrollbar-gutter: stable; scroll-padding-top: 100px; }
+.planning-inspector { position: sticky; top: calc(var(--utility-height) + 12px); max-height: calc(100dvh - var(--utility-height) - 24px); overflow-y: auto; scrollbar-gutter: stable; scroll-padding-top: 100px; }
 .planning-inspector-header { position: sticky; top: -13px; z-index: 2; flex-wrap: wrap; margin: -13px -13px 0; padding: 13px; border-bottom: 1px solid var(--border-subtle); background: var(--panel); }
 .planning-inspector-header > div:first-child { flex: 1 1 180px; }
 .planning-inspector .planning-inspector-header h2 { white-space: normal; overflow-wrap: anywhere; }

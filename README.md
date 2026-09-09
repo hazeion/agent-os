@@ -86,7 +86,7 @@ npm --prefix web run build
 ```bat
 git clone https://github.com/hazeion/agent-os.git
 cd agent-os
-py -m venv .venv
+py -3.13 -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
 python scripts\mentat_setup.py
@@ -101,6 +101,11 @@ open on its own.
 Mentat works as a project planner without an agent runtime. Install Hermes for
 Hermes features, or sign in through the Codex CLI for Codex task and Agent
 Console execution.
+
+The default Windows Python launcher can select a newer unsupported interpreter.
+Use `py -3.13` as shown above, or substitute another installed Python 3.11-3.13
+version. Finish the Node install and production build after setup before
+starting Mentat.
 
 The setup helper stores settings on your computer. Hermes continues to manage
 provider credentials. To connect Mentat to Hermes on another computer, follow

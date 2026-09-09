@@ -104,6 +104,13 @@ export async function previewPlanningTaskRunOnce(taskId: string, expectedRevisio
   failure(payload, response);
 }
 
+export async function refreshPlanningTaskExecution(taskId: string, expectedRevision: number): Promise<PublicPlanningTaskExecution> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new PublicPlanningError("invalid");
+  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/refresh`, { body: JSON.stringify({ expected_revision: expectedRevision }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parsePlanningTaskExecution(payload, taskId);
+  failure(payload, response);
+}
+
 export async function confirmPlanningTaskRunOnce(taskId: string, expectedRevision: number, idempotencyKey: string, confirmationId: string): Promise<PublicPlanningTaskExecutionMutation> {
   if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !validIdempotencyKey(idempotencyKey) || !/^[0-9a-f]{64}$/u.test(confirmationId)) throw new PublicPlanningError("invalid");
   const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/run-once`, { body: JSON.stringify({ confirmation_id: confirmationId, expected_revision: expectedRevision, idempotency_key: idempotencyKey }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);

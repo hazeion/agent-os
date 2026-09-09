@@ -50,6 +50,7 @@ import {
   confirmPlanningTaskRunOnce,
   previewPlanningTaskRunOnce,
   readPlanningTaskExecution,
+  refreshPlanningTaskExecution,
   reviewPlanningTaskExecution,
 } from "@/lib/public-planning-task-execution";
 import { readPlanningTaskDelegation, type PublicPlanningTaskDelegation } from "@/lib/public-planning-task-delegation";
@@ -1235,6 +1236,19 @@ export function ProjectsTasksWorkspace() {
     const detailGeneration = ++taskDetailGeneration.current;
     try { const detail = await readPlanningTaskDetail(taskId); if (isCurrent() && detailGeneration === taskDetailGeneration.current) setTaskDetail(detail.task); } catch { /* The confirmed Task state remains available from the execution projection. */ }
   }
+  async function reconcileExecution() {
+    if (!selectedTask || busy) return;
+    const taskId = selectedTask.id;
+    setBusy(true); setNotice("Refreshing this Task's execution…");
+    try {
+      const execution = await refreshPlanningTaskExecution(taskId, selectedTask.revision);
+      if (selectedTaskRef.current !== taskId) return;
+      setTaskExecution(execution); setExecutionState("ready");
+      setTasks((current) => current.map((item) => item.id === execution.task.id ? { ...item, ...execution.task } : item));
+      setNotice("Task execution refreshed.");
+    } catch { if (selectedTaskRef.current === taskId) setNotice("Task execution could not be verified. No Run was retried."); }
+    finally { setBusy(false); }
+  }
   async function previewRunOnce() {
     if (!selectedTask || !selectedTaskExecution || busy || !selectedTaskExecution.execution.available || selectedTaskExecution.task.revision !== selectedTask.revision) return;
     const taskId = selectedTask.id;
@@ -1435,6 +1449,7 @@ export function ProjectsTasksWorkspace() {
         {executionState === "unavailable" || delegationState === "unavailable" ? <button disabled={busy} onClick={() => invalidateTaskProjections(selectedTask.id)} type="button">Reload execution and delegation</button> : null}
         <section aria-label="Task execution" className="planning-execution">
           <p className="console-kicker">Execution</p>
+          <button disabled={busy || executionState === "loading"} onClick={() => void reconcileExecution()} type="button">Refresh execution</button>
           {executionState === "loading" ? <p>Loading execution status…</p> : executionState === "unavailable" || !selectedTaskExecution ? <p>Run once and review controls are temporarily unavailable.</p> : <>
             {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.completed_at ?? attempt.updated_at}>{attempt.completed_at ? attempt.status === "completed" ? "Completed" : "Ended" : "Updated"} {attempt.completed_at ?? attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}{attempt.result?.available ? <section aria-label={`Result for ${attempt.run_id}`} className="planning-execution-result"><strong>Result</strong><p>{attempt.result.text}</p>{attempt.result.truncated ? <small>Result is truncated for safe display.</small> : null}</section> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
             {selectedTaskExecution.execution.recovery.available ? <div className="planning-review-actions"><p>This attempt ended without verified success. Return the Task to Planned to resolve the attempt while keeping its Run and history. Run once remains a separate action.</p>{recoveryConfirmation ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes", true); }}><label><span>Recovery note</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim() || recoveryConfirmation.taskId !== selectedTask.id || recoveryConfirmation.revision !== selectedTask.revision || recoveryConfirmation.runId !== selectedTaskExecution.execution.recovery.run_id || recoveryConfirmation.runRevision !== selectedTaskExecution.execution.recovery.run_revision} type="submit">Confirm return to Planned</button><button disabled={busy} onClick={() => { setRecoveryConfirmation(null); setReviewNote(""); }} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { const recovery = selectedTaskExecution.execution.recovery; if (recovery.run_id && recovery.run_revision) { setRecoveryConfirmation({ taskId: selectedTask.id, revision: selectedTask.revision, runId: recovery.run_id, runRevision: recovery.run_revision, idempotencyKey: crypto.randomUUID() }); setReviewNote(""); } }} type="button">Return to Planned</button>}</div> : null}

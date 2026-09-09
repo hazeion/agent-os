@@ -1,6 +1,7 @@
 import {
   confirmBridgePlanningTaskRunOnce,
   fetchBridgePlanningTaskExecution,
+  refreshBridgePlanningTaskExecution,
   previewBridgePlanningTaskRunOnce,
   reviewBridgePlanningTaskExecution,
 } from "./bridge-planning.ts";
@@ -12,6 +13,7 @@ type Params = { params: Promise<{ taskId: string }> };
 type RunOncePreview = (taskId: string, expectedRevision: number) => Promise<PublicPlanningRunOncePreview>;
 type RunOnceConfirm = (taskId: string, expectedRevision: number, idempotencyKey: string, confirmationId: string) => Promise<PublicPlanningTaskExecutionMutation>;
 type ReviewExecution = (taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, recovery?: TaskExecutionRecovery) => Promise<PublicPlanningTaskExecutionMutation>;
+type RefreshExecution = (taskId: string, expectedRevision: number) => Promise<PublicPlanningTaskExecution>;
 
 const TASK = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const CONFIRMATION = /^[0-9a-f]{64}$/u;
@@ -45,6 +47,16 @@ export function createPlanningTaskExecutionGetHandler({ readExecution = fetchBri
     const entries = [...new URL(request.url).searchParams.entries()];
     if (entries.length !== 1 || entries[0]![0] !== "task_id" || !TASK.test(entries[0]![1])) return planningFixed("invalid", 400);
     try { return Response.json(await readExecution(entries[0]![1]), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
+  };
+}
+
+export function createPlanningTaskExecutionRefreshHandler({ refresh = refreshBridgePlanningTaskExecution, gatewayPort = process.env.PORT }: Readonly<{ refresh?: RefreshExecution; gatewayPort?: string }> = {}) {
+  return async function refreshTaskExecution(request: Request, context: Params) {
+    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
+    if (new URL(request.url).search) return planningFixed("invalid", 400);
+    const id = await taskId(context); const value = await body(request);
+    if (!id || !value || !exact(value, ["expected_revision"]) || !positive(value.expected_revision)) return planningFixed("invalid", 400);
+    try { return Response.json(await refresh(id, value.expected_revision), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
   };
 }
 
