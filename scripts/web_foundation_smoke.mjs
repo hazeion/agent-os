@@ -995,7 +995,8 @@ async function inspectPlannerProductionJourney(client) {
     () => client.eval(`(() => {
       const task = document.querySelector('[data-planning-task-id="${taskId}"]');
       return task?.dataset.taskSelected === "true"
-        && document.querySelector('.planning-inspector h2')?.textContent?.trim() === "Task details"
+        && document.querySelector('.planning-inspector .console-kicker')?.textContent?.trim() === "Task details"
+        && document.querySelector('.planning-inspector h2')?.textContent?.trim() === "${taskTitle}"
         && document.querySelector('[aria-label="Task integrations"]') !== null;
     })()`),
     "deep-linked planner inspector",
