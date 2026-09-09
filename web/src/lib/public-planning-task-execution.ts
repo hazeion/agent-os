@@ -36,7 +36,8 @@ function validExecutionTask(value: unknown): value is PublicPlanningExecutionTas
 }
 
 function validExecutionAttempt(value: unknown): value is PublicPlanningExecutionAttempt {
-  return record(value) && keys(value, "agent_id,completed_at,completion_reason,created_at,dispatch_state,partial,review_action,review_note,review_task_revision,run_id,runtime_type,state,status,task_revision,terminal_finalized,updated_at")
+  const base = "agent_id,completed_at,completion_reason,created_at,dispatch_state,partial,review_action,review_note,review_task_revision,run_id,runtime_type,state,status,task_revision,terminal_finalized,updated_at";
+  return record(value) && (keys(value, base) || keys(value, `${base},result`))
     && typeof value.run_id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value.run_id)
     && Number.isSafeInteger(value.task_revision) && (value.task_revision as number) >= 1
     && safeIdentifier(value.agent_id, 128)
@@ -49,7 +50,8 @@ function validExecutionAttempt(value: unknown): value is PublicPlanningExecution
     && typeof value.partial === "boolean" && typeof value.terminal_finalized === "boolean" && timestamp(value.created_at) && timestamp(value.updated_at)
     && (value.completed_at === null || timestamp(value.completed_at))
     && (value.review_action === null || value.review_action === "accept" || value.review_action === "request_changes")
-    && (value.review_note === null || text(value.review_note, 2_000));
+    && (value.review_note === null || text(value.review_note, 2_000))
+    && (value.result === undefined || record(value.result) && keys(value.result, "available,text,truncated") && typeof value.result.available === "boolean" && typeof value.result.truncated === "boolean" && (value.result.text === null || text(value.result.text, 8_000)) && (value.result.available ? value.result.text !== null : value.result.text === null && !value.result.truncated));
 }
 
 function validTaskExecution(value: unknown): value is PublicPlanningTaskExecution["execution"] {

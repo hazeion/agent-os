@@ -5042,6 +5042,7 @@ def _planning_execution_public(
             "completed_at": item["completed_at"],
             "review_action": item["review_action"],
             "review_note": item["review_note"],
+            "result": item["result"],
         }
         for item in attempts
     ]

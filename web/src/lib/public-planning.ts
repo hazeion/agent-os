@@ -104,6 +104,7 @@ export type PublicPlanningExecutionAttempt = {
   completed_at: string | null;
   review_action: "accept" | "request_changes" | null;
   review_note: string | null;
+  result?: { available: boolean; text: string | null; truncated: boolean };
 };
 export type PublicPlanningExecutionTask = PublicPlanningTask & { assigned_agent_id: string | null };
 export type PublicPlanningTaskExecution = ServiceEnvelope & {

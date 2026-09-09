@@ -1663,6 +1663,31 @@ class RunRepository:
             note = row["note"]
             if note is not None and (not isinstance(note, str) or len(note) > 2000):
                 raise RunRepositoryError("run_repository.corrupt")
+            execution_result = {
+                "available": False,
+                "text": None,
+                "truncated": False,
+            }
+            if (
+                str(row["status"]) == "completed"
+                and str(row["dispatch_state"]) == "accepted"
+                and not bool(row["partial"])
+                and bool(row["terminal_finalized"])
+            ):
+                result_row = self.connection.execute(
+                    "SELECT content FROM mentat_agent_events WHERE run_id = ? "
+                    "AND event_type = ? AND content IS NOT NULL "
+                    "ORDER BY sequence DESC, id DESC LIMIT 1",
+                    (str(row["run_id"]), AgentEventType.MESSAGE.value),
+                ).fetchone()
+                if result_row is not None:
+                    text, truncated = bounded_public_excerpt(result_row["content"], 8_000)
+                    if text:
+                        execution_result = {
+                            "available": True,
+                            "text": text,
+                            "truncated": truncated,
+                        }
             result.append(
                 {
                     "run_id": str(row["run_id"]),
@@ -1684,9 +1709,45 @@ class RunRepository:
                     "completed_at": _timestamp(row["completed_at"], nullable=True),
                     "review_action": row["review_action"],
                     "review_note": note,
+                    "result": execution_result,
                 }
             )
         return tuple(result)
+
+    def task_execution_change_request(
+        self,
+        task_id: str,
+        *,
+        result_task_revision: int,
+    ) -> str | None:
+        """Return the one exact review note eligible for the next Task Run."""
+
+        identifier = _task_identifier(task_id)
+        if type(result_task_revision) is not int or result_task_revision < 1:
+            raise RunRepositoryValidationError("dispatch.revision_invalid")
+        rows = self.connection.execute(
+            """
+            SELECT review.note
+            FROM mentat_task_execution_reviews AS review
+            JOIN mentat_task_execution_attempts AS attempt
+              ON attempt.run_id = review.run_id
+            WHERE attempt.task_id = ?
+              AND attempt.state = 'changes_requested'
+              AND review.action = 'request_changes'
+              AND review.result_task_revision = ?
+            ORDER BY review.created_at DESC, review.run_id DESC
+            LIMIT 2
+            """,
+            (identifier, result_task_revision),
+        ).fetchall()
+        if len(rows) > 1:
+            raise RunRepositoryError("run_repository.corrupt")
+        if not rows:
+            return None
+        note = rows[0]["note"]
+        if not isinstance(note, str) or not note or len(note) > 2_000:
+            raise RunRepositoryError("run_repository.corrupt")
+        return note
 
     def task_execution_recovery(self, task_id: str) -> dict[str, Any] | None:
         """Identify only the latest verified unsuccessful Task attempt."""

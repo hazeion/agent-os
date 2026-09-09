@@ -2493,6 +2493,65 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "conversation.continuation_changed")
         self.assertEqual(len(runtime.calls), 1)
 
+    def test_task_change_request_is_bound_to_the_exact_next_execution(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service = self.prepare(root, runtime)
+            connection = connect(root)
+            try:
+                original = TaskRepository(connection).get("task-service")
+                planned = TaskRepository(connection).replace(
+                    {
+                        **original.document,
+                        "source": "dashboard",
+                        "workflow_stage": "planned",
+                        "planning_state": "planned",
+                        "status": "todo",
+                    },
+                    expected_revision=original.revision,
+                )
+            finally:
+                connection.close()
+            first = service.dispatch_task(
+                task_id=planned.document["id"],
+                expected_revision=planned.revision,
+                idempotency_key="task-change-request-key-1",
+                planning_execution=True,
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            service.reconcile_run(
+                run_id=first.run.id,
+                owner="task_change_request_owner",
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                review_task = TaskRepository(connection).get("task-service")
+                repository.review_task_execution(
+                    task_id="task-service",
+                    expected_revision=review_task.revision,
+                    action="request_changes",
+                    note="Include the missing acceptance criteria.",
+                    idempotency_key="task-change-request-review-key",
+                )
+                next_task = TaskRepository(connection).get("task-service")
+            finally:
+                connection.close()
+            second = service.dispatch_task(
+                task_id="task-service",
+                expected_revision=next_task.revision,
+                idempotency_key="task-change-request-key-2",
+                planning_execution=True,
+            )
+
+        self.assertEqual(second.disposition, "accepted")
+        self.assertIn(
+            "Operator-requested changes for this exact next attempt:",
+            runtime.calls[1][0].objective,
+        )
+        self.assertIn("Include the missing acceptance criteria.", runtime.calls[1][0].objective)
+
     def test_conversation_steer_targets_exact_run_without_message_or_turn_writes(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
