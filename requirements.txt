@@ -11,6 +11,10 @@ idna==3.18
 requests==2.33.0
 websockets==15.0.1
 
+# Owner-private WebAuthn and recovery-code authority.
+fido2==2.2.1
+argon2-cffi==25.1.0
+
 # Structural validation for generated raster artifacts and Console images.
 Pillow==12.3.0
 

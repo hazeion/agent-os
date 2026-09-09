@@ -61,6 +61,7 @@ from private_console_unit import (
     materialize_private_console_unit,
     private_console_unit_digest,
     remove_private_console_tree,
+    sanitize_owner_auth_restore_unit,
     validate_private_console_unit,
     validate_private_console_stage_inventory,
 )
@@ -68,11 +69,12 @@ from private_state import mentat_server_active, private_control_issue
 from private_state import console_root as private_console_root
 
 
-BACKUP_FORMAT_VERSION = 4
+BACKUP_FORMAT_VERSION = 5
 RESTORE_PROTOCOL_VERSION = 3
 LEGACY_RESTORE_PROTOCOL_VERSION = 2
 BACKUP_KIND = "mentat-general-backup"
-BACKUP_PREFIX = "mentat-backup-v4-"
+BACKUP_PREFIX = "mentat-backup-v5-"
+V4_BACKUP_PREFIX = "mentat-backup-v4-"
 V3_BACKUP_PREFIX = "mentat-backup-v3-"
 V2_BACKUP_PREFIX = "mentat-backup-v2-"
 LEGACY_BACKUP_PREFIX = "mentat-backup-v1-"
@@ -89,12 +91,12 @@ MAX_GENERAL_BACKUP_BYTES = (
     + 2 * 1024 * 1024
 )
 _TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
-_BACKUP_RE = re.compile(r"^mentat-backup-v([1234])-([0-9a-f]{24})\.zip$")
+_BACKUP_RE = re.compile(r"^mentat-backup-v([12345])-([0-9a-f]{24})\.zip$")
 _STATE_TEMP_RE = re.compile(
     r"^\.(restore-state-v1\.json)\.mentat-init-[0-9a-f]{32}\.tmp$"
 )
 _BACKUP_TEMP_RE = re.compile(
-    r"^\.(mentat-backup-v[1234]-[0-9a-f]{24}\.zip)\.mentat-init-[0-9a-f]{32}\.tmp$"
+    r"^\.(mentat-backup-v[12345]-[0-9a-f]{24}\.zip)\.mentat-init-[0-9a-f]{32}\.tmp$"
 )
 
 _EXCLUDED_CLASSES: tuple[dict[str, str], ...] = (
@@ -325,6 +327,10 @@ def _private_identity(unit: PrivateConsoleUnit, *, format_version: int) -> dict[
                 "agent_count": unit.agent_count,
             }
         )
+        if format_version >= 5:
+            # Version 5 makes the owner-auth restore rule explicit.  Older
+            # format-4 archives remain valid and migrate before use.
+            identity["owner_auth_restore"] = "invalidate_live_grants"
     return identity
 
 
@@ -397,6 +403,8 @@ def _backup_name(
 ) -> str:
     prefix = (
         BACKUP_PREFIX
+        if format_version == 5
+        else V4_BACKUP_PREFIX
         if format_version == 4
         else V3_BACKUP_PREFIX
         if format_version == 3
@@ -536,7 +544,7 @@ def _contents_from_backup(
         if format_version == 1:
             if names != base_names:
                 raise ValueError("backup_inventory_invalid")
-        elif format_version in {2, 3, 4}:
+        elif format_version in {2, 3, 4, 5}:
             manifest_items = manifest.get("items") if isinstance(manifest, dict) else None
             if not isinstance(manifest_items, list) or not all(
                 isinstance(item, dict) for item in manifest_items
@@ -1347,6 +1355,7 @@ def _validated_resume(
     live_private: PrivateConsoleUnit,
     target_binding: str,
     root_descriptor: int | None = None,
+    sanitized_source_private: PrivateConsoleUnit | None = None,
 ) -> tuple[bool, tuple[_Document, ...], bytes]:
     expected_keys = {
         "protocol_version",
@@ -1462,6 +1471,12 @@ def _validated_resume(
     allowed_private = {private_digest(recovery_private)}
     if source_private is not None:
         allowed_private.add(private_digest(source_private))
+    # Owner-auth restore publication deliberately sanitizes its private source
+    # after the immutable backup/receipt has been bound.  An interruption after
+    # that exchange must resume only from that deterministic sanitized unit or
+    # the pre-publication source, never treat it as a foreign live tree.
+    if sanitized_source_private is not None:
+        allowed_private.add(private_digest(sanitized_source_private))
     if private_digest(live_private) not in allowed_private:
         return False, (), b""
     return True, recovery_documents, recovery_raw
@@ -1530,6 +1545,11 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
             )
         state = state_hint
         if state is not None:
+            sanitized_backup_private = (
+                sanitize_owner_auth_restore_unit(backup_private)
+                if backup_private is not None
+                else None
+            )
             valid, _recovery_documents, _recovery_raw = _validated_resume(
                 target,
                 state,
@@ -1541,6 +1561,7 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
                 live_documents=target_documents,
                 live_private=target_private,
                 target_binding=binding,
+                sanitized_source_private=sanitized_backup_private,
             )
             if not valid:
                 return _blocked_preview("unsafe", "restore_state_invalid")
@@ -1973,6 +1994,11 @@ def restore_durable_backup(
                 _source_name,
                 source_binding,
             ) = _read_backup_file(Path(backup_file))
+            sanitized_source_private = (
+                sanitize_owner_auth_restore_unit(source_private)
+                if source_private is not None
+                else None
+            )
             live_documents = _load_live_documents(target, root_descriptor)
             binding = _target_binding(target, root_descriptor)
             state = _read_restore_state(target, root_descriptor)
@@ -2073,6 +2099,7 @@ def restore_durable_backup(
                     live_private=live_private,
                     target_binding=binding,
                     root_descriptor=root_descriptor,
+                    sanitized_source_private=sanitized_source_private,
                 )
                 if not valid or state.get("preview_token") != confirmation_token:
                     return _blocked_result(initial, "restore_state_changed")
@@ -2086,6 +2113,11 @@ def restore_durable_backup(
                 ) = _read_internal_backup(target, recovery_name, root_descriptor)
                 if recovery_private is None:
                     raise OSError("restore recovery private unit missing")
+            if sanitized_source_private is not None:
+                # Sanitize only after the exact backup's unsanitized identity
+                # has bound the preview and any resumable restore receipt.
+                # The restored publication itself never revives live grants.
+                source_private = sanitized_source_private
             source_by_name = {item.name: item for item in source_documents}
             recovery_by_name = {item.name: item for item in recovery_documents}
             current = _load_live_documents(target, root_descriptor)

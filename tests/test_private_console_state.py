@@ -48,6 +48,12 @@ from private_console_unit import (
 )
 from private_state import history_path, private_state_lock
 from mentat_db import SCHEMA_VERSION as DATABASE_SCHEMA_VERSION, MentatDatabaseError, connect
+from owner_auth import OwnerAuthAuthority, OwnerAuthError
+from owner_auth_webauthn import (
+    AssertionEvidence,
+    RegistrationEvidence,
+    WebAuthnVerificationError,
+)
 from run_repository import (
     RunRepository,
     runtime_binding_digest,
@@ -745,6 +751,149 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.close()
             self.assertIn(retained["id"], ids)
             self.assertNotIn(staged["id"], ids)
+
+    def test_active_owner_backup_restore_sanitizes_live_grants_and_preserves_authority(self):
+        """A real backup/restore must not publish usable owner-auth grants."""
+
+        credential_id = b"backup-restore-owner-credential"
+
+        def registration(payload, **_kwargs):
+            if payload != {"fixture": "registration"}:
+                raise WebAuthnVerificationError("invalid")
+            return RegistrationEvidence(
+                credential_id,
+                b"minimal-cose-key",
+                0,
+                False,
+                False,
+            )
+
+        def assertion(payload, **_kwargs):
+            if payload != {"fixture": "assertion", "count": 1}:
+                raise WebAuthnVerificationError("invalid")
+            return AssertionEvidence(credential_id, 1, False, False)
+
+        def assertion_credential_id(payload):
+            if payload != {"fixture": "assertion", "count": 1}:
+                raise WebAuthnVerificationError("invalid")
+            return credential_id
+
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source", "source")
+            source_authority = OwnerAuthAuthority(
+                source,
+                _registration_verifier=registration,
+                _assertion_verifier=assertion,
+                _assertion_credential_id=assertion_credential_id,
+            )
+            bootstrap = source_authority.open_bootstrap("https://mentat.example")
+            bootstrap_ceremony = source_authority.start_bootstrap_registration(
+                bootstrap.code, "primary"
+            )
+            source_session = source_authority.finish_registration(
+                bootstrap_ceremony.ceremony_id,
+                {"fixture": "registration"},
+            )
+            pending = source_authority.start_authentication()
+            source_authority.reserve_sse(source_session.cookie_value)
+
+            backup = data_backup_restore.create_durable_backup(source)
+            self.assertEqual(backup.status, "created")
+            backup_path = source / "backups" / str(backup.backup_name)
+            target = self.make_current(base, "target", "target")
+            preview = data_backup_restore.preview_durable_restore(target, backup_path)
+            self.assertEqual(preview.status, "ready")
+            restored = data_backup_restore.restore_durable_backup(
+                target,
+                backup_path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+            self.assertEqual(restored.status, "restored", restored.public_summary())
+
+            restored_authority = OwnerAuthAuthority(
+                target,
+                _registration_verifier=registration,
+                _assertion_verifier=assertion,
+                _assertion_credential_id=assertion_credential_id,
+            )
+            with self.assertRaises(OwnerAuthError):
+                restored_authority.authenticate_session(source_session.cookie_value)
+            with self.assertRaises(OwnerAuthError):
+                restored_authority.start_bootstrap_registration(bootstrap.code, "primary")
+            with self.assertRaises(OwnerAuthError):
+                restored_authority.finish_authentication(
+                    pending.ceremony_id,
+                    {"fixture": "assertion", "count": 1},
+                )
+
+            connection = connect(target)
+            try:
+                state = connection.execute(
+                    "SELECT state, canonical_origin, rp_id, bootstrap_verifier, "
+                    "bootstrap_user_handle, bootstrap_expires_at "
+                    "FROM mentat_owner_auth_state WHERE singleton = 1"
+                ).fetchone()
+                self.assertEqual(state[0], "active")
+                self.assertEqual(state[1:3], ("https://mentat.example", "mentat.example"))
+                self.assertEqual(state[3:], (None, None, None))
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_owner_auth_credentials WHERE state = 'active'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_owner_auth_recovery_codes WHERE state = 'active'"
+                    ).fetchone()[0],
+                    10,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state = 'active'"
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT state FROM mentat_owner_auth_ceremonies WHERE ceremony_id = ?",
+                        (pending.ceremony_id,),
+                    ).fetchone()[0],
+                    "cancelled",
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_owner_auth_sse_reservations"
+                    ).fetchone()[0],
+                    0,
+                )
+                notices = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT notice FROM mentat_owner_auth_notices"
+                    )
+                }
+                self.assertTrue(
+                    {
+                        "restore_invalidated_sessions",
+                        "restore_snapshot_credentials_restored",
+                    }.issubset(notices)
+                )
+            finally:
+                connection.close()
+
+            # The restored credential remains usable only through a new
+            # ceremony, proving the authority survived while all live grants
+            # from the archive did not.
+            new_ceremony = restored_authority.start_authentication()
+            renewed = restored_authority.finish_authentication(
+                new_ceremony.ceremony_id,
+                {"fixture": "assertion", "count": 1},
+            )
+            self.assertIsNotNone(
+                restored_authority.authenticate_session(renewed.cookie_value)
+            )
 
     def test_schema_nine_backup_restores_vercel_connection_and_agent_together(self):
         with TemporaryDirectory() as temporary:

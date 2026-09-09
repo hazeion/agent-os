@@ -3,6 +3,7 @@
 from pathlib import Path
 import runpy
 import sys
+from PyInstaller.utils.hooks import collect_all
 
 
 ROOT = Path(SPECPATH).parent
@@ -32,13 +33,18 @@ WEB_STANDALONE = ROOT / "web" / ".next" / "standalone"
 if not (WEB_STANDALONE / "server.js").is_file():
     raise SystemExit("Missing web/.next/standalone/server.js; run npm --prefix web run build before native packaging.")
 datas.append((str(WEB_STANDALONE), "web"))
+ARGON2_DATAS, ARGON2_BINARIES, ARGON2_HIDDENIMPORTS = collect_all("argon2")
+datas.extend(ARGON2_DATAS)
 
 analysis = Analysis(
     [str(ROOT / "packaging" / "mentat_native.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=ARGON2_BINARIES,
     datas=datas,
-    hiddenimports=[],
+    # Owner-auth loads these optional native-backed verifier modules through
+    # the private-console validation path, which PyInstaller cannot discover
+    # from its dynamic import boundary.
+    hiddenimports=ARGON2_HIDDENIMPORTS + ["fido2", "fido2.server"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

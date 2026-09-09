@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1683,6 +1683,154 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON mentat_planning_deletion_receipts(created_at DESC);
         """,
     ),
+    (
+        24,
+        """
+        -- MDA-4A owner-auth authority.  These rows are deliberately private:
+        -- all public-edge code receives only bounded results from Python.
+        CREATE TABLE mentat_owner_auth_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            state TEXT NOT NULL CHECK (state IN ('unbootstrapped', 'bootstrap_open', 'active')),
+            user_handle BLOB CHECK (user_handle IS NULL OR length(user_handle) = 32),
+            bootstrap_user_handle BLOB CHECK (bootstrap_user_handle IS NULL OR length(bootstrap_user_handle) = 32),
+            canonical_origin TEXT CHECK (canonical_origin IS NULL OR length(canonical_origin) BETWEEN 8 AND 253),
+            rp_id TEXT CHECK (rp_id IS NULL OR length(rp_id) BETWEEN 1 AND 253),
+            configuration_revision INTEGER NOT NULL DEFAULT 0 CHECK (configuration_revision >= 0),
+            bootstrap_verifier TEXT,
+            bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK (bootstrap_generation >= 0),
+            bootstrap_expires_at REAL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            updated_at REAL NOT NULL,
+            CHECK (
+                (state = 'unbootstrapped' AND user_handle IS NULL AND canonical_origin IS NULL AND rp_id IS NULL AND bootstrap_verifier IS NULL AND bootstrap_user_handle IS NULL AND bootstrap_expires_at IS NULL)
+                OR (state = 'bootstrap_open' AND user_handle IS NULL AND canonical_origin IS NOT NULL AND rp_id IS NOT NULL AND bootstrap_verifier IS NOT NULL AND bootstrap_user_handle IS NOT NULL AND bootstrap_expires_at IS NOT NULL)
+                OR (state = 'active' AND user_handle IS NOT NULL AND canonical_origin IS NOT NULL AND rp_id IS NOT NULL AND bootstrap_verifier IS NULL AND bootstrap_user_handle IS NULL AND bootstrap_expires_at IS NULL)
+            )
+        );
+
+        INSERT INTO mentat_owner_auth_state (singleton, state, updated_at)
+            VALUES (1, 'unbootstrapped', 0);
+
+        CREATE TABLE mentat_owner_auth_credentials (
+            device_id TEXT PRIMARY KEY CHECK (length(device_id) BETWEEN 22 AND 128),
+            credential_lookup_digest BLOB NOT NULL UNIQUE CHECK (length(credential_lookup_digest) = 32),
+            cose_public_key BLOB NOT NULL CHECK (length(cose_public_key) BETWEEN 1 AND 4096),
+            sign_count INTEGER NOT NULL DEFAULT 0 CHECK (sign_count >= 0),
+            backup_eligible INTEGER NOT NULL DEFAULT 0 CHECK (backup_eligible = 0),
+            backup_state INTEGER NOT NULL DEFAULT 0 CHECK (backup_state = 0),
+            state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'suspected_clone')),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            created_at REAL NOT NULL,
+            revoked_at REAL,
+            CHECK ((state = 'active' AND revoked_at IS NULL) OR (state != 'active' AND revoked_at IS NOT NULL))
+        );
+        CREATE INDEX idx_mentat_owner_auth_credentials_state
+            ON mentat_owner_auth_credentials(state, created_at);
+
+        CREATE TABLE mentat_owner_auth_sessions (
+            session_digest BLOB PRIMARY KEY CHECK (length(session_digest) = 32),
+            csrf_digest BLOB NOT NULL UNIQUE CHECK (length(csrf_digest) = 32),
+            device_id TEXT NOT NULL REFERENCES mentat_owner_auth_credentials(device_id) ON DELETE RESTRICT,
+            state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'expired')),
+            created_at REAL NOT NULL,
+            reauthenticated_at REAL NOT NULL,
+            last_seen_at REAL NOT NULL,
+            idle_expires_at REAL NOT NULL,
+            absolute_expires_at REAL NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            revoked_at REAL,
+            CHECK (idle_expires_at >= created_at AND absolute_expires_at >= created_at),
+            CHECK ((state = 'active' AND revoked_at IS NULL) OR (state != 'active' AND revoked_at IS NOT NULL))
+        );
+        CREATE INDEX idx_mentat_owner_auth_sessions_device ON mentat_owner_auth_sessions(device_id, state, created_at);
+        CREATE INDEX idx_mentat_owner_auth_sessions_expiry ON mentat_owner_auth_sessions(state, idle_expires_at, absolute_expires_at);
+
+        CREATE TABLE mentat_owner_auth_ceremonies (
+            ceremony_id TEXT PRIMARY KEY CHECK (length(ceremony_id) BETWEEN 22 AND 128),
+            purpose TEXT NOT NULL CHECK (purpose IN ('bootstrap', 'authentication', 'reauthentication', 'device_add', 'recovery')),
+            challenge_digest BLOB NOT NULL CHECK (length(challenge_digest) = 32),
+            configuration_revision INTEGER NOT NULL CHECK (configuration_revision >= 1),
+            session_digest BLOB CHECK (session_digest IS NULL OR length(session_digest) = 32),
+            session_revision INTEGER,
+            recovery_id TEXT,
+            credential_lookup_digest BLOB CHECK (credential_lookup_digest IS NULL OR length(credential_lookup_digest) = 32),
+            expires_at REAL NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending', 'consumed', 'expired', 'cancelled')),
+            created_at REAL NOT NULL,
+            consumed_at REAL,
+            CHECK ((session_digest IS NULL AND session_revision IS NULL) OR (session_digest IS NOT NULL AND session_revision >= 1)),
+            CHECK ((purpose = 'recovery') = (recovery_id IS NOT NULL)),
+            CHECK ((state = 'pending' AND consumed_at IS NULL) OR (state != 'pending' AND consumed_at IS NOT NULL))
+        );
+        CREATE INDEX idx_mentat_owner_auth_ceremonies_pending ON mentat_owner_auth_ceremonies(state, expires_at, purpose);
+
+        CREATE TABLE mentat_owner_auth_recovery_codes (
+            recovery_id TEXT PRIMARY KEY CHECK (length(recovery_id) BETWEEN 22 AND 128),
+            verifier TEXT NOT NULL CHECK (length(verifier) BETWEEN 80 AND 512),
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            state TEXT NOT NULL CHECK (state IN ('active', 'reserved', 'consumed', 'revoked')),
+            reserved_ceremony_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            CHECK ((state = 'reserved') = (reserved_ceremony_id IS NOT NULL))
+        );
+        CREATE INDEX idx_mentat_owner_auth_recovery_active ON mentat_owner_auth_recovery_codes(state, generation);
+
+        CREATE TABLE mentat_owner_auth_rate_buckets (
+            scope TEXT NOT NULL CHECK (scope IN ('authentication_start', 'recovery_submission', 'unsafe_request', 'security_management')),
+            subject_digest BLOB NOT NULL CHECK (length(subject_digest) = 32),
+            window_started_at REAL NOT NULL,
+            used INTEGER NOT NULL CHECK (used BETWEEN 0 AND 60),
+            PRIMARY KEY (scope, subject_digest)
+        );
+
+        CREATE TABLE mentat_owner_auth_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event TEXT NOT NULL CHECK (event IN ('bootstrap_opened', 'bootstrap_completed', 'authentication_failed', 'authentication_succeeded', 'recovery_reserved', 'recovery_completed', 'recovery_rotated', 'credential_revoked', 'credential_clone_suspected', 'session_revoked', 'session_reauthenticated', 'sessions_signed_out', 'restore_sanitized')),
+            subject_kind TEXT NOT NULL CHECK (subject_kind IN ('owner', 'credential', 'session', 'ceremony', 'admission')),
+            subject_digest BLOB CHECK (subject_digest IS NULL OR length(subject_digest) = 32),
+            count INTEGER NOT NULL DEFAULT 1 CHECK (count BETWEEN 1 AND 2147483647),
+            occurred_at REAL NOT NULL
+        );
+        CREATE INDEX idx_mentat_owner_auth_audit_retention ON mentat_owner_auth_audit(occurred_at, id);
+
+        -- Rejections deliberately retain only an operation class, minute, and
+        -- aggregate count.  No credential/session/IP/browser identifier can
+        -- be reconstructed from this defensive evidence.
+        CREATE TABLE mentat_owner_auth_rejection_audit (
+            admission_class TEXT NOT NULL CHECK (admission_class IN ('authentication_start', 'recovery_submission', 'unsafe_request', 'security_management', 'sse')),
+            window_started_at REAL NOT NULL,
+            count INTEGER NOT NULL CHECK (count BETWEEN 1 AND 2147483647),
+            PRIMARY KEY (admission_class, window_started_at)
+        );
+
+        -- A reservation is server-private process ownership, not an SSE
+        -- cursor.  The exact row is removed on disconnect/revocation and all
+        -- rows are reconciled at startup because no stream survives a restart.
+        CREATE TABLE mentat_owner_auth_sse_reservations (
+            reservation_id TEXT PRIMARY KEY CHECK (length(reservation_id) BETWEEN 22 AND 128),
+            session_digest BLOB NOT NULL REFERENCES mentat_owner_auth_sessions(session_digest) ON DELETE CASCADE CHECK (length(session_digest) = 32),
+            session_revision INTEGER NOT NULL CHECK (session_revision >= 1),
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX idx_mentat_owner_auth_sse_session
+            ON mentat_owner_auth_sse_reservations(session_digest, created_at);
+        CREATE TRIGGER mentat_owner_auth_sse_release_on_session_terminal
+        AFTER UPDATE OF state ON mentat_owner_auth_sessions
+        WHEN NEW.state != 'active'
+        BEGIN
+            DELETE FROM mentat_owner_auth_sse_reservations
+             WHERE session_digest = NEW.session_digest;
+        END;
+
+        CREATE TABLE mentat_owner_auth_notices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notice TEXT NOT NULL CHECK (notice IN ('restore_invalidated_sessions', 'restore_snapshot_credentials_restored')),
+            created_at REAL NOT NULL,
+            acknowledged_at REAL
+        );
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -2021,7 +2169,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2125,6 +2273,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 22 cannot be safely upgraded"
+                    )
+                if (
+                    version == 24
+                    and schema_signature_state(connection, 23) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 23 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

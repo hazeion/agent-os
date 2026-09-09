@@ -115,6 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
     _runtime_arguments(agent_registry_migration)
     agent_registry_migration.add_argument("--confirm", metavar="TOKEN")
 
+    owner_auth = commands.add_parser(
+        "owner-auth",
+        help="Perform the stopped-server owner-auth bootstrap ceremony.",
+    )
+    owner_auth_commands = owner_auth.add_subparsers(
+        dest="owner_auth_command", required=True,
+    )
+    owner_auth_bootstrap = owner_auth_commands.add_parser(
+        "bootstrap", help="Print one ten-minute local owner bootstrap code.",
+    )
+    owner_auth_bootstrap.add_argument("--origin", required=True)
+    _runtime_arguments(owner_auth_bootstrap)
+
     connection = commands.add_parser(
         "connection",
         help="Configure, test, or select local and remote Hermes.",
@@ -516,6 +529,22 @@ def run_agent_registry_migration(args: argparse.Namespace) -> int:
     return 0 if ok else 2
 
 
+def run_owner_auth(args: argparse.Namespace) -> int:
+    from owner_auth import OwnerAuthError, bootstrap_owner_auth
+
+    _runtime_config, config = _load_config(args)
+    if args.owner_auth_command != "bootstrap":
+        raise RuntimeError("unknown owner-auth command")
+    try:
+        grant = bootstrap_owner_auth(config.data_dir, args.origin)
+    except OwnerAuthError:
+        _print_json({"ok": False, "status": "blocked", "issue": "owner_auth_bootstrap_unavailable"})
+        return 2
+    # This terminal-only output is intentionally not a bridge/API response.
+    _print_json({"ok": True, "status": "bootstrap_open", "bootstrap_code": grant.code, "expires_at": grant.expires_at})
+    return 0
+
+
 def _connection_server_running(config) -> bool:
     import mentat_lifecycle
     from private_state import mentat_server_active
@@ -878,6 +907,7 @@ def main(argv: list[str] | None = None) -> int:
         "task-migration": run_task_migration,
         "task-export": run_task_export,
         "agent-registry-migration": run_agent_registry_migration,
+        "owner-auth": run_owner_auth,
         "connection": run_connection,
         "vercel": run_vercel,
     }

@@ -145,7 +145,7 @@ class DataBackupRestoreTests(unittest.TestCase):
                 )
                 manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["kind"], backup_restore.BACKUP_KIND)
-            self.assertEqual(manifest["format_version"], 4)
+            self.assertEqual(manifest["format_version"], 5)
             self.assertEqual(len(manifest["items"]), len(data_layout.SEED_FILE_NAMES) + 1)
             self.assertIn("private_console", {item["name"] for item in manifest["items"]})
             self.assertNotIn("private_console", {item["name"] for item in manifest["excluded"]})
@@ -180,13 +180,13 @@ class DataBackupRestoreTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertFalse(any("link-preview" in name for name in archive.namelist()))
 
-    def test_default_released_private_units_round_trip_for_formats_two_and_three(self):
+    def test_default_released_private_units_round_trip_for_older_formats(self):
         with TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             _seeds, source = self.make_current(base, "source", "source")
             documents = backup_restore._load_live_documents(source, None)
 
-            for format_version in (2, 3):
+            for format_version in (2, 3, 4):
                 with self.subTest(format_version=format_version):
                     raw = backup_restore._build_backup(
                         documents,

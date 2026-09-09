@@ -7411,6 +7411,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        try:
+            from owner_auth import OwnerAuthError, cleanup_owner_auth_at_startup
+
+            from server import DATA_DIR
+
+            cleanup_owner_auth_at_startup(DATA_DIR)
+        except OwnerAuthError:
+            bridge.server_close()
+            print("Mentat Local Bridge refused startup: owner_auth_startup_cleanup_unavailable", flush=True)
+            return 2
         _recover_bridge_runs_before_ready()
     except Exception:
         bridge.server_close()

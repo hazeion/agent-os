@@ -200,7 +200,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 "already_converged",
             )
             backup = data_backup_restore.create_durable_backup(root)
-            self.assertTrue((backup.backup_name or "").startswith("mentat-backup-v4-"))
+            self.assertTrue((backup.backup_name or "").startswith("mentat-backup-v5-"))
             with zipfile.ZipFile(root / "backups" / str(backup.backup_name)) as archive:
                 self.assertNotIn(
                     "private/agent-registry.sqlite3",

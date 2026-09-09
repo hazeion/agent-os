@@ -281,6 +281,37 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("pull_request_target", workflow)
 
+    def test_macos_intel_native_builds_link_source_cryptography_statically(self):
+        static_cryptography = (
+            "      - name: Configure static cryptography for macOS Intel\n"
+            "        if: runner.os == 'macOS' && matrix.architecture == 'x86_64'\n"
+            "        shell: bash\n"
+            "        run: |\n"
+            '          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"\n'
+            '          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"\n'
+            "          python -m pip cache remove cryptography\n"
+        )
+        workflow = (ROOT / ".github" / "workflows" / "native-artifacts.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(static_cryptography, workflow)
+        self.assertLess(
+            workflow.index(static_cryptography),
+            workflow.index("      - name: Install pinned native build dependencies\n"),
+        )
+
+        signed_release = (ROOT / ".github" / "workflows" / "signed-release-artifacts.yml").read_text(
+            encoding="utf-8"
+        )
+        macos_job = signed_release[
+            signed_release.index("  macos:\n") : signed_release.index("  windows:\n")
+        ]
+        self.assertIn(static_cryptography.replace("runner.os == 'macOS' && ", ""), macos_job)
+        self.assertLess(
+            macos_job.index("Configure static cryptography for macOS Intel"),
+            macos_job.index("      - name: Install pinned build dependencies\n"),
+        )
+
     def test_signed_release_payload_counts_match_native_manifest(self):
         spec_path = ROOT / "packaging" / "mentat.spec"
         spec_text = spec_path.read_text(encoding="utf-8")
