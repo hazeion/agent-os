@@ -2398,6 +2398,52 @@ class RunRepository:
             raise RunRepositoryConflict("conversation.continuation_changed")
         return self._run_record(predecessor)
 
+    def _codex_new_turn_predecessor(
+        self,
+        *,
+        conversation_id: str,
+        agent_id: str,
+        binding_digest: str,
+    ) -> str | None:
+        """Return the one exact completed Codex Run an idle Turn may continue.
+
+        This runs inside the reservation transaction, before the new Turn is
+        inserted. A Conversation with no earlier executed Turn may begin a new
+        Codex thread. Once a prior Turn exists, an unsafe predecessor never
+        permits silently starting a fresh thread.
+        """
+
+        prior = self.connection.execute(
+            """
+            SELECT t.state AS turn_state, r.*
+            FROM mentat_conversation_turns AS t
+            JOIN mentat_runs AS r ON r.id = t.latest_run_id
+            WHERE t.conversation_id = ?
+              AND t.latest_run_id IS NOT NULL
+            ORDER BY t.queue_ordinal DESC, t.id DESC
+            LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        if prior is None:
+            return None
+        if (
+            prior["turn_state"] != "consumed"
+            or prior["source"] != "console"
+            or prior["conversation_id"] != conversation_id
+            or prior["agent_id"] != agent_id
+            or prior["runtime_type"] != "codex"
+            or prior["runtime_binding_digest"] != binding_digest
+            or prior["status"] != "completed"
+            or prior["dispatch_state"] != "accepted"
+            or bool(prior["partial"])
+            or not bool(prior["terminal_finalized"])
+            or not isinstance(prior["runtime_run_ref"], str)
+            or not prior["runtime_run_ref"]
+        ):
+            raise RunRepositoryConflict("conversation.continuation_changed")
+        return str(prior["id"])
+
     def codex_continuation_for_blocked_turn(
         self,
         *,
@@ -3829,6 +3875,13 @@ class RunRepository:
                 raise RunRepositoryConflict(
                     "conversation_context.requires_idle"
                 )
+            predecessor_run_id = None
+            if create_run and runtime_type == "codex":
+                predecessor_run_id = self._codex_new_turn_predecessor(
+                    conversation_id=conversation_id,
+                    agent_id=agent_identifier,
+                    binding_digest=binding_digest,
+                )
             message_count = int(
                 self.connection.execute(
                     "SELECT COUNT(*) FROM mentat_conversation_messages"
@@ -3917,10 +3970,10 @@ class RunRepository:
                         conversation_id, turn_id, agent_revision,
                         runtime_config_revision, execution_config_json,
                         execution_config_digest, capacity_scope_digest,
-                        admitted_capacity_limit
+                        admitted_capacity_limit, resume_of_run_id
                         ) VALUES (
                         ?, 'console', NULL, NULL, NULL, ?, ?, ?, ?, ?,
-                        'reserved', 'reserved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        'reserved', 'reserved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                         )
                         """,
                         (
@@ -3941,6 +3994,7 @@ class RunRepository:
                         execution_config_digest,
                         capacity_scope_digest,
                         capacity_limit,
+                        predecessor_run_id,
                         ),
                     )
                     self.connection.execute(

@@ -2425,6 +2425,74 @@ class OrchestrationServiceTests(unittest.TestCase):
                 self.assertEqual(after.revision, blocked.revision)
                 self.assertEqual(len(runtime.calls), 1)
 
+    def test_idle_codex_follow_up_reuses_the_exact_completed_thread(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Create the first Codex response",
+                idempotency_key="idle-codex-follow-up-key-1",
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            report = service.reconcile_run(
+                run_id=first.run.id,
+                owner="idle_codex_follow_up_owner",
+            )
+            second = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Continue the exact completed Codex thread",
+                idempotency_key="idle-codex-follow-up-key-2",
+            )
+            connection = connect(root)
+            try:
+                second_run = RunRepository(connection).get_run(second.run.id)
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(report.reconciled, (first.run.id,))
+        self.assertEqual(second.disposition, "accepted")
+        self.assertIsNone(second_run.resume_of_run_id)
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(
+            runtime.calls[1][1].continuation_runtime_run_ref,
+            runtime.return_runtime_run_ref,
+        )
+
+    def test_idle_codex_follow_up_does_not_replace_a_failed_thread(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Create a Codex thread that fails",
+                idempotency_key="idle-codex-failed-key-1",
+            )
+            runtime.observed_status = RunStatus.FAILED
+            service.reconcile_run(
+                run_id=first.run.id,
+                owner="idle_codex_failed_owner",
+            )
+            with self.assertRaises(OrchestrationServiceError) as raised:
+                service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Do not replace the failed Codex thread",
+                    idempotency_key="idle-codex-failed-key-2",
+                )
+            connection = connect(root)
+            try:
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(raised.exception.code, "conversation.continuation_changed")
+        self.assertEqual(len(runtime.calls), 1)
+
     def test_conversation_steer_targets_exact_run_without_message_or_turn_writes(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

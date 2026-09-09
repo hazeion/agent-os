@@ -1819,6 +1819,28 @@ class OrchestrationService:
                 disposition=reservation.state,
             )
 
+        continuation_reference = None
+        if binding.runtime_type == "codex":
+            try:
+                with private_state_lock(self.data_dir):
+                    connection = self._connect()
+                    try:
+                        predecessor = RunRepository(
+                            connection
+                        ).conversation_continuation_predecessor(
+                            run_id=reservation.run_id,
+                        )
+                    finally:
+                        connection.close()
+                if predecessor is not None:
+                    if predecessor.runtime_run_ref is None:
+                        raise RunRepositoryError("run_repository.corrupt")
+                    continuation_reference = predecessor.runtime_run_ref
+            except RunRepositoryError as exc:
+                return self._reject_reserved_conversation_continuation(
+                    reservation,
+                    failure_code=exc.code,
+                )
         try:
             return self._execute_reserved_conversation_turn(
                 reservation=reservation,
@@ -1826,6 +1848,7 @@ class OrchestrationService:
                 record=record,
                 binding=binding,
                 runtime=runtime,
+                continuation_runtime_run_ref=continuation_reference,
             )
         finally:
             if prepared and self.conversation_attachment_cleanup is not None:
