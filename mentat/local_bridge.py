@@ -2104,7 +2104,7 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
             "run_id", "task_revision", "agent_id", "state", "review_task_revision",
             "completion_reason", "runtime_type", "status", "dispatch_state", "partial",
             "terminal_finalized", "created_at", "updated_at", "completed_at",
-            "review_action", "review_note",
+            "review_action", "review_note", "result",
         }
         if (
             not isinstance(item, dict)
@@ -2132,6 +2132,17 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
             or item.get("review_action") is not None and item["review_action"] not in {"accept", "request_changes"}
             or item.get("review_note") is not None and (
                 not _planning_text(item["review_note"], 2000)
+            )
+            or not isinstance(item.get("result"), dict)
+            or set(item["result"]) != {"available", "text", "truncated"}
+            or type(item["result"].get("available")) is not bool
+            or type(item["result"].get("truncated")) is not bool
+            or item["result"].get("text") is not None and (
+                not _planning_text(item["result"]["text"], 8_000)
+            )
+            or item["result"]["available"] and item["result"]["text"] is None
+            or not item["result"]["available"] and (
+                item["result"]["text"] is not None or item["result"]["truncated"]
             )
         ):
             raise BridgeConversationProjectionError("planning_execution_invalid")

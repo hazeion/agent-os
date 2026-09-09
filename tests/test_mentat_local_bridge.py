@@ -505,6 +505,7 @@ class LocalBridgeTests(unittest.TestCase):
             "updated_at": "2026-08-18T12:01:00+00:00",
             "completed_at": "2026-08-18T12:01:00+00:00",
             "review_action": None, "review_note": None,
+            "result": {"available": True, "text": "Verified Task result.", "truncated": False},
         }
         source = {
             "schema_version": 1, "task": task,
