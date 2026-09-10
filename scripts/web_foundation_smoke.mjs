@@ -1027,10 +1027,10 @@ async function inspectPlannerProductionJourney(client) {
     input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "Review sessions", inputType: "insertText" }));
   })()`);
   await waitFor(
-    () => client.eval(`document.querySelector('[aria-label="Open Task ${taskTitle}"]') instanceof HTMLButtonElement`),
+    () => client.eval(`Array.from(document.querySelectorAll('button[aria-label]')).some((button) => button.getAttribute('aria-label')?.startsWith('Open Task ${taskTitle} in '))`),
     "planner search result",
   );
-  await client.eval(`document.querySelector('[aria-label="Open Task ${taskTitle}"]')?.click()`);
+  await client.eval(`Array.from(document.querySelectorAll('button[aria-label]')).find((button) => button.getAttribute('aria-label')?.startsWith('Open Task ${taskTitle} in '))?.click()`);
   await waitFor(
     () => client.eval(`(() => {
       const params = new URLSearchParams(location.search);
