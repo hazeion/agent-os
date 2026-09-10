@@ -5,7 +5,7 @@ import {
   previewBridgePlanningTaskRunOnce,
   reviewBridgePlanningTaskExecution,
 } from "./bridge-planning.ts";
-import { PLANNING_HEADERS, planningFailure, planningFixed, planningRequestAllowed } from "./planning-overview-route.ts";
+import { PLANNING_HEADERS, planningFailure, planningFixed, withPlanningGatewayRoute } from "./planning-overview-route.ts";
 import type { PublicPlanningRunOncePreview, PublicPlanningTaskExecution, PublicPlanningTaskExecutionMutation } from "./public-planning.ts";
 import { validTaskExecutionRecovery, type TaskExecutionRecovery } from "./public-planning-task-execution.ts";
 
@@ -42,58 +42,54 @@ async function body(request: Request): Promise<Record<string, unknown> | null> {
 async function taskId(context: Params): Promise<string | null> { const { taskId } = await context.params; return TASK.test(taskId) ? taskId : null; }
 
 export function createPlanningTaskExecutionGetHandler({ readExecution = fetchBridgePlanningTaskExecution, gatewayPort = process.env.PORT }: Readonly<{ readExecution?: (taskId: string) => Promise<PublicPlanningTaskExecution>; gatewayPort?: string }> = {}) {
-  return async function getPlanningTaskExecution(request: Request) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
+  return withPlanningGatewayRoute<string | null>("GET", "/api/agent-console/planning-task-execution", gatewayPort, {
+    validator: { validate(request) {
     const entries = [...new URL(request.url).searchParams.entries()];
-    if (entries.length !== 1 || entries[0]![0] !== "task_id" || !TASK.test(entries[0]![1])) return planningFixed("invalid", 400);
-    try { return Response.json(await readExecution(entries[0]![1]), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+    return entries.length === 1 && entries[0]![0] === "task_id" && TASK.test(entries[0]![1]) ? entries[0]![1] : null;
+    } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await readExecution(value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createPlanningTaskExecutionRefreshHandler({ refresh = refreshBridgePlanningTaskExecution, gatewayPort = process.env.PORT }: Readonly<{ refresh?: RefreshExecution; gatewayPort?: string }> = {}) {
-  return async function refreshTaskExecution(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await taskId(context); const value = await body(request);
-    if (!id || !value || !exact(value, ["expected_revision"]) || !positive(value.expected_revision)) return planningFixed("invalid", 400);
-    try { return Response.json(await refresh(id, value.expected_revision), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<readonly [string, number] | null, Params>("POST", "/api/planning/tasks/[taskId]/execution/refresh", gatewayPort, {
+    validator: { async validate(request, _context, context) {
+      if (new URL(request.url).search) return null;
+      const id = await taskId(context); const value = await body(request);
+      return id && value && exact(value, ["expected_revision"]) && positive(value.expected_revision) ? [id, value.expected_revision] as const : null;
+    } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await refresh(...value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createPlanningTaskRunOncePreviewHandler({ preview = previewBridgePlanningTaskRunOnce, gatewayPort = process.env.PORT }: Readonly<{ preview?: RunOncePreview; gatewayPort?: string }> = {}) {
-  return async function previewTaskRunOnce(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await taskId(context); const value = await body(request);
-    if (!id || !value || !exact(value, ["expected_revision"]) || !positive(value.expected_revision)) return planningFixed("invalid", 400);
-    try { return Response.json(await preview(id, value.expected_revision), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<readonly [string, number] | null, Params>("POST", "/api/planning/tasks/[taskId]/execution/run-once/preview", gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const id = await taskId(context); const value = await body(request); return id && value && exact(value, ["expected_revision"]) && positive(value.expected_revision) ? [id, value.expected_revision] as const : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await preview(...value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createPlanningTaskRunOnceConfirmHandler({ confirm = confirmBridgePlanningTaskRunOnce, gatewayPort = process.env.PORT }: Readonly<{ confirm?: RunOnceConfirm; gatewayPort?: string }> = {}) {
-  return async function confirmTaskRunOnce(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await taskId(context); const value = await body(request);
-    if (!id || !value || !exact(value, ["confirmation_id", "expected_revision", "idempotency_key"]) || !positive(value.expected_revision) || !idempotencyKey(value.idempotency_key) || typeof value.confirmation_id !== "string" || !CONFIRMATION.test(value.confirmation_id)) return planningFixed("invalid", 400);
-    try { return Response.json(await confirm(id, value.expected_revision, value.idempotency_key, value.confirmation_id), { headers: PLANNING_HEADERS, status: 202 }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<readonly [string, number, string, string] | null, Params>("POST", "/api/planning/tasks/[taskId]/execution/run-once", gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const id = await taskId(context); const value = await body(request); return id && value && exact(value, ["confirmation_id", "expected_revision", "idempotency_key"]) && positive(value.expected_revision) && idempotencyKey(value.idempotency_key) && typeof value.confirmation_id === "string" && CONFIRMATION.test(value.confirmation_id) ? [id, value.expected_revision, value.idempotency_key, value.confirmation_id] as const : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await confirm(...value), { headers: PLANNING_HEADERS, status: 202 }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createPlanningTaskExecutionReviewHandler({ review = (taskId, revision, action, note, key, recovery) => reviewBridgePlanningTaskExecution(taskId, revision, action, note, key, undefined, undefined, recovery), gatewayPort = process.env.PORT }: Readonly<{ review?: ReviewExecution; gatewayPort?: string }> = {}) {
-  return async function reviewTaskExecution(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await taskId(context); const value = await body(request);
-    if (!id || !value || !positive(value.expected_revision) || !idempotencyKey(value.idempotency_key) || (value.action !== "accept" && value.action !== "request_changes")) return planningFixed("invalid", 400);
-    const recovery = "recovery_run_id" in value || "expected_run_revision" in value
-      ? { recovery_run_id: value.recovery_run_id, expected_run_revision: value.expected_run_revision }
-      : undefined;
-    if (recovery !== undefined && (value.action !== "request_changes" || !validTaskExecutionRecovery(recovery))) return planningFixed("invalid", 400);
-    const changes = value.action === "accept"
+  return withPlanningGatewayRoute<readonly [string, number, "accept" | "request_changes", string | null, string, TaskExecutionRecovery | undefined] | null, Params>("POST", "/api/planning/tasks/[taskId]/execution/review", gatewayPort, {
+    validator: { async validate(request, _context, context) {
+      if (new URL(request.url).search) return null; const id = await taskId(context); const value = await body(request);
+      if (!id || !value || !positive(value.expected_revision) || !idempotencyKey(value.idempotency_key) || (value.action !== "accept" && value.action !== "request_changes")) return null;
+      const recovery = "recovery_run_id" in value || "expected_run_revision" in value
+        ? { recovery_run_id: value.recovery_run_id, expected_run_revision: value.expected_run_revision }
+        : undefined;
+      if (recovery !== undefined && (value.action !== "request_changes" || !validTaskExecutionRecovery(recovery))) return null;
+      const changes = value.action === "accept"
       ? exact(value, ["action", "expected_revision", "idempotency_key"])
       : exact(value, ["action", "expected_revision", "idempotency_key", "note", ...(recovery ? ["recovery_run_id", "expected_run_revision"] : [])]) && typeof value.note === "string" && !!value.note && value.note.trim() === value.note && [...value.note].length <= 2_000 && !/\p{C}/u.test(value.note);
-    if (!changes) return planningFixed("invalid", 400);
-    try { return Response.json(await review(id, value.expected_revision, value.action, value.action === "request_changes" ? value.note as string : null, value.idempotency_key, recovery as TaskExecutionRecovery | undefined), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+      return changes ? [id, value.expected_revision, value.action, value.action === "request_changes" ? value.note as string : null, value.idempotency_key, recovery as TaskExecutionRecovery | undefined] as const : null;
+    } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await review(...value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }

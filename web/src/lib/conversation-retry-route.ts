@@ -5,7 +5,9 @@ import {
   type PublicConversationRunAttemptResult,
 } from "./bridge-conversations.ts";
 import { readConversationRunAttemptBody } from "./exact-json-body.ts";
-import { evaluateRequestBoundary, parseGatewayPort } from "./request-boundary.ts";
+import { createGatewayAuthority, PROCESS_GATEWAY_AUTHORITY } from "./gateway-authority.ts";
+import { GATEWAY_ROUTE_MANIFEST } from "./gateway-route-manifest.ts";
+import { withGatewayRoute } from "./gateway-request-context.ts";
 
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -16,6 +18,17 @@ const HEADERS = {
 };
 
 type Retry = (conversationId: string, sourceRunId: string, key: string) => Promise<PublicConversationRunAttemptResult>;
+type ConversationContext = { params: Promise<{ conversationId: string }> };
+type RetryInput = { conversationId: string; idempotencyKey: string; sourceRunId: string } | null;
+
+const RETRY_RULE = requiredRule("/api/conversations/[conversationId]/retry");
+const RESUME_RULE = requiredRule("/api/conversations/[conversationId]/resume");
+
+function requiredRule(path: string) {
+  const rule = GATEWAY_ROUTE_MANIFEST.find((candidate) => candidate.method === "POST" && candidate.path === path);
+  if (!rule) throw new Error(`missing gateway manifest rule for POST ${path}`);
+  return rule;
+}
 
 function fixed(status: string, code: number) {
   return Response.json({ schema_version: 1, status }, { headers: HEADERS, status: code });
@@ -37,44 +50,42 @@ function failure(error: unknown) {
   return result ? fixed(result[0], result[1]) : fixed("error", 502);
 }
 
+function createConversationRunAttemptHandler(
+  rule: typeof RETRY_RULE,
+  retry: Retry,
+  gatewayPort: string | undefined,
+) {
+  return withGatewayRoute<RetryInput, ConversationContext>(rule, {
+    authority: gatewayPort === undefined ? PROCESS_GATEWAY_AUTHORITY : createGatewayAuthority({ PORT: gatewayPort }),
+    handler: async ({ value }) => {
+      if (!value) return fixed("invalid", 400);
+      try {
+        const result = await retry(value.conversationId, value.sourceRunId, value.idempotencyKey);
+        return Response.json(result, { headers: HEADERS, status: result.duplicate ? 200 : 202 });
+      } catch (error) { return failure(error); }
+    },
+    validator: {
+      async validate(request, _approved, context) {
+        if (new URL(request.url).search) return null;
+        const body = await readConversationRunAttemptBody(request);
+        if (!body) return null;
+        const { conversationId } = await context.params;
+        return { conversationId, idempotencyKey: body.idempotencyKey, sourceRunId: body.sourceRunId };
+      },
+    },
+  });
+}
+
 export function createConversationRetryHandler({
-  gatewayPort = process.env.PORT,
+  gatewayPort,
   retry = retryBridgeConversationRun,
 }: Readonly<{ gatewayPort?: string; retry?: Retry }> = {}) {
-  return async function postConversationRetry(
-    request: Request,
-    context: { params: Promise<{ conversationId: string }> },
-  ) {
-    const decision = evaluateRequestBoundary({ expectedPort: parseGatewayPort(gatewayPort), host: request.headers.get("host"), method: request.method, origin: request.headers.get("origin"), secFetchSite: request.headers.get("sec-fetch-site") });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const body = await readConversationRunAttemptBody(request);
-    if (!body) return fixed("invalid", 400);
-    const { conversationId } = await context.params;
-    try {
-      const result = await retry(conversationId, body.sourceRunId, body.idempotencyKey);
-      return Response.json(result, { headers: HEADERS, status: result.duplicate ? 200 : 202 });
-    } catch (error) { return failure(error); }
-  };
+  return createConversationRunAttemptHandler(RETRY_RULE, retry, gatewayPort);
 }
 
 export function createConversationResumeHandler({
-  gatewayPort = process.env.PORT,
+  gatewayPort,
   retry = resumeBridgeConversationRun,
 }: Readonly<{ gatewayPort?: string; retry?: Retry }> = {}) {
-  return async function postConversationResume(
-    request: Request,
-    context: { params: Promise<{ conversationId: string }> },
-  ) {
-    const decision = evaluateRequestBoundary({ expectedPort: parseGatewayPort(gatewayPort), host: request.headers.get("host"), method: request.method, origin: request.headers.get("origin"), secFetchSite: request.headers.get("sec-fetch-site") });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const body = await readConversationRunAttemptBody(request);
-    if (!body) return fixed("invalid", 400);
-    const { conversationId } = await context.params;
-    try {
-      const result = await retry(conversationId, body.sourceRunId, body.idempotencyKey);
-      return Response.json(result, { headers: HEADERS, status: result.duplicate ? 200 : 202 });
-    } catch (error) { return failure(error); }
-  };
+  return createConversationRunAttemptHandler(RESUME_RULE, retry, gatewayPort);
 }

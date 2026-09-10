@@ -1,5 +1,5 @@
 import { confirmBridgePlanningDeletion, previewBridgePlanningDeletion } from "./bridge-planning-deletion.ts";
-import { PLANNING_HEADERS, planningFailure, planningFixed, planningRequestAllowed } from "./planning-overview-route.ts";
+import { PLANNING_HEADERS, planningFailure, planningFixed, withPlanningGatewayRoute } from "./planning-overview-route.ts";
 import type { PlanningDeletionTargetKind, PublicPlanningDeletionMutation, PublicPlanningDeletionPreview } from "./public-planning-deletion.ts";
 
 type Params = { params: Promise<Record<string, string>> };
@@ -22,21 +22,17 @@ async function body(request: Request): Promise<Record<string, unknown> | null> {
 async function targetId(context: Params, kind: PlanningDeletionTargetKind): Promise<string | null> { const params = await context.params; const id = kind === "task" ? params.taskId : params.targetId; return validId(kind, id) ? id : null; }
 
 export function createPlanningDeletionPreviewHandler(kind: PlanningDeletionTargetKind, { preview = previewBridgePlanningDeletion, gatewayPort = process.env.PORT }: Readonly<{ preview?: Preview; gatewayPort?: string }> = {}) {
-  return async function previewDeletion(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await targetId(context, kind); const value = await body(request);
-    if (!id || !value || Object.keys(value).length !== 0) return planningFixed("invalid", 400);
-    try { return Response.json(await preview(kind, id), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+  const path = kind === "task" ? "/api/planning/tasks/[taskId]/delete/preview" : "/api/planning/projects/[targetId]/delete/preview";
+  return withPlanningGatewayRoute<string | null, Params>("POST", path, gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const id = await targetId(context, kind); const value = await body(request); return id && value && Object.keys(value).length === 0 ? id : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await preview(kind, value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createPlanningDeletionConfirmHandler(kind: PlanningDeletionTargetKind, { confirm = confirmBridgePlanningDeletion, gatewayPort = process.env.PORT }: Readonly<{ confirm?: Confirm; gatewayPort?: string }> = {}) {
-  return async function confirmDeletion(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await targetId(context, kind); const value = await body(request);
-    if (!id || !value || Object.keys(value).sort().join(",") !== "confirmation_id,confirmed" || value.confirmed !== true || typeof value.confirmation_id !== "string" || !CONFIRMATION.test(value.confirmation_id)) return planningFixed("invalid", 400);
-    try { return Response.json(await confirm(kind, id, value.confirmation_id), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+  const path = kind === "task" ? "/api/planning/tasks/[taskId]/delete" : "/api/planning/projects/[targetId]/delete";
+  return withPlanningGatewayRoute<readonly [string, string] | null, Params>("POST", path, gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const id = await targetId(context, kind); const value = await body(request); return id && value && Object.keys(value).sort().join(",") === "confirmation_id,confirmed" && value.confirmed === true && typeof value.confirmation_id === "string" && CONFIRMATION.test(value.confirmation_id) ? [id, value.confirmation_id] as const : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await confirm(kind, ...value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }

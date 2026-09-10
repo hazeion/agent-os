@@ -39,14 +39,14 @@ test("task-creation availability remains a bounded Agent-scoped read", async () 
   assert.equal(await readBridgeAgentTaskCreationStatus(agentId, async (input) => { bridgeCalls.push(input.toString()); return Response.json({ schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", agent_id: agentId, state }); }, environment), state);
   assert.deepEqual(bridgeCalls, [`http://127.0.0.1:8891/bridge/v1/agents/${agentId}/task-creation/enable`]);
   const handler = createAgentTaskCreationStatusHandler({ gatewayPort: "8890", read: async () => state });
-  const response = await handler(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), { params: Promise.resolve({ agentId }) });
+  const response = await handler(new Request(`${origin}/api/agents/${agentId}/task-creation/enable`, { headers: { Host: "127.0.0.1:8890" } }), { params: Promise.resolve({ agentId }) });
   assert.equal(response.status, 200);
   assert.equal((await response.json() as { state: string }).state, state);
 });
 
 test("task-creation route maps fixed safe failures", async () => {
   const context = { params: Promise.resolve({ agentId }) };
-  const request = new Request(`${origin}/api/x`, { method: "POST", headers: { Host: "127.0.0.1:8890", Origin: origin, "Content-Type": "application/json" }, body: '{"expected_capabilities":["run.message","run.start"]}' });
+  const request = new Request(`${origin}/api/agents/${agentId}/task-creation/enable`, { method: "POST", headers: { Host: "127.0.0.1:8890", Origin: origin, "Content-Type": "application/json" }, body: '{"expected_capabilities":["run.message","run.start"]}' });
   for (const [code, status] of [["conflict", 409], ["unsupported", 415], ["unavailable", 503]] as const) {
     const handler = createEnableAgentTaskCreationHandler({ gatewayPort: "8890", enable: async () => { throw new BridgeAgentTaskCreationError(code); } });
     assert.equal((await handler(request.clone(), context)).status, status);

@@ -4,7 +4,9 @@ import {
   type PublicConversationArchiveResult,
 } from "./bridge-conversations.ts";
 import { readExpectedRevisionBody } from "./exact-json-body.ts";
-import { evaluateRequestBoundary, parseGatewayPort } from "./request-boundary.ts";
+import { createGatewayAuthority, PROCESS_GATEWAY_AUTHORITY } from "./gateway-authority.ts";
+import { GATEWAY_ROUTE_MANIFEST } from "./gateway-route-manifest.ts";
+import { withGatewayRoute } from "./gateway-request-context.ts";
 
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -19,6 +21,17 @@ type Mutate = (
   expectedRevision: number,
   archived: boolean,
 ) => Promise<PublicConversationArchiveResult>;
+type ConversationContext = { params: Promise<{ conversationId: string }> };
+type ArchiveInput = { conversationId: string; expectedRevision: number } | null;
+
+const ARCHIVE_RULE = requiredRule("/api/conversations/[conversationId]/archive");
+const RESTORE_RULE = requiredRule("/api/conversations/[conversationId]/restore");
+
+function requiredRule(path: string) {
+  const rule = GATEWAY_ROUTE_MANIFEST.find((candidate) => candidate.method === "POST" && candidate.path === path);
+  if (!rule) throw new Error(`missing gateway manifest rule for POST ${path}`);
+  return rule;
+}
 
 function fixed(status: string, code: number) {
   return Response.json({ schema_version: 1, status }, { headers: HEADERS, status: code });
@@ -40,33 +53,31 @@ function failure(error: unknown) {
 export function createConversationArchiveHandler(
   archived: boolean,
   {
-    gatewayPort = process.env.PORT,
+    gatewayPort,
     mutate = archiveBridgeConversation,
   }: Readonly<{ gatewayPort?: string; mutate?: Mutate }> = {},
 ) {
-  return async function postConversationArchive(
-    request: Request,
-    context: { params: Promise<{ conversationId: string }> },
-  ) {
-    const decision = evaluateRequestBoundary({
-      expectedPort: parseGatewayPort(gatewayPort),
-      host: request.headers.get("host"),
-      method: request.method,
-      origin: request.headers.get("origin"),
-      secFetchSite: request.headers.get("sec-fetch-site"),
-    });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const body = await readExpectedRevisionBody(request);
-    if (!body) return fixed("invalid", 400);
-    const { conversationId } = await context.params;
-    try {
-      return Response.json(
-        await mutate(conversationId, body.expectedRevision, archived),
-        { headers: HEADERS, status: 200 },
-      );
-    } catch (error) {
-      return failure(error);
-    }
-  };
+  return withGatewayRoute<ArchiveInput, ConversationContext>(archived ? ARCHIVE_RULE : RESTORE_RULE, {
+    authority: gatewayPort === undefined ? PROCESS_GATEWAY_AUTHORITY : createGatewayAuthority({ PORT: gatewayPort }),
+    handler: async ({ value }) => {
+      if (!value) return fixed("invalid", 400);
+      try {
+        return Response.json(
+          await mutate(value.conversationId, value.expectedRevision, archived),
+          { headers: HEADERS, status: 200 },
+        );
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    validator: {
+      async validate(request, _approved, context) {
+        if (new URL(request.url).search) return null;
+        const body = await readExpectedRevisionBody(request);
+        if (!body) return null;
+        const { conversationId } = await context.params;
+        return { conversationId, expectedRevision: body.expectedRevision };
+      },
+    },
+  });
 }

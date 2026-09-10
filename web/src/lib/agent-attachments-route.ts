@@ -1,6 +1,8 @@
 import { BridgeAgentAttachmentsError, enableBridgeAgentAttachments, readBridgeAgentAttachmentsEnableStatus, type AgentAttachmentsEnableStatus, type EnableAgentAttachmentsResult } from "./bridge-agent-attachments.ts";
 import { readEnableAgentAttachmentsBody } from "./exact-json-body.ts";
-import { evaluateRequestBoundary, parseGatewayPort } from "./request-boundary.ts";
+import { createGatewayAuthority, PROCESS_GATEWAY_AUTHORITY, type GatewayAuthority } from "./gateway-authority.ts";
+import { GATEWAY_ROUTE_MANIFEST, type GatewayRouteRule } from "./gateway-route-manifest.ts";
+import { withGatewayRoute } from "./gateway-request-context.ts";
 
 const HEADERS = { "Cache-Control": "private, no-store", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY" };
 const fixed = (status: string, code: number) => Response.json({ schema_version: 1, status }, { headers: HEADERS, status: code });
@@ -10,23 +12,44 @@ function failure(error: unknown) {
   const result = map[error.code]; return result ? fixed(result[0], result[1]) : fixed("error", 502);
 }
 
+function route(method: GatewayRouteRule["method"], path: GatewayRouteRule["path"]): GatewayRouteRule {
+  const found = GATEWAY_ROUTE_MANIFEST.find((candidate) => candidate.method === method && candidate.path === path);
+  if (!found) throw new Error(`missing gateway manifest rule for ${method} ${path}`);
+  return found;
+}
+const ENABLE_PATH = "/api/agents/[agentId]/attachments/enable" as const;
+const POST_RULE = route("POST", ENABLE_PATH);
+const GET_RULE = route("GET", ENABLE_PATH);
+function authorityFor(gatewayPort: string | undefined): Pick<GatewayAuthority, "authorize"> {
+  return gatewayPort === process.env.PORT ? PROCESS_GATEWAY_AUTHORITY : createGatewayAuthority({ PORT: gatewayPort });
+}
+type AgentContext = { params: Promise<{ agentId: string }> };
+type EnableValue = { agentId: string; body: { expectedCapabilities: string[] } } | null;
+
 export function createEnableAgentAttachmentsHandler({ gatewayPort = process.env.PORT, enable = enableBridgeAgentAttachments }: Readonly<{ gatewayPort?: string; enable?: (agentId: string, expectedCapabilities: string[]) => Promise<EnableAgentAttachmentsResult> }> = {}) {
-  return async (request: Request, context: { params: Promise<{ agentId: string }> }) => {
-    const decision = evaluateRequestBoundary({ expectedPort: parseGatewayPort(gatewayPort), host: request.headers.get("host"), method: request.method, origin: request.headers.get("origin"), secFetchSite: request.headers.get("sec-fetch-site") });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const body = await readEnableAgentAttachmentsBody(request); if (!body) return fixed("invalid", 400);
-    const { agentId } = await context.params;
-    try { return Response.json(await enable(agentId, body.expectedCapabilities), { headers: HEADERS, status: 200 }); } catch (error) { return failure(error); }
-  };
+  return withGatewayRoute<EnableValue, AgentContext>(POST_RULE, {
+    authority: authorityFor(gatewayPort),
+    handler: async ({ value }) => {
+      if (!value) return fixed("invalid", 400);
+      try { return Response.json(await enable(value.agentId, value.body.expectedCapabilities), { headers: HEADERS, status: 200 }); } catch (error) { return failure(error); }
+    },
+    validator: { async validate(request, _context, context) {
+      if (new URL(request.url).search) return null;
+      const body = await readEnableAgentAttachmentsBody(request);
+      return body ? { agentId: (await context.params).agentId, body } : null;
+    } },
+  });
 }
 
 export function createAgentAttachmentsEnableStatusHandler({ gatewayPort = process.env.PORT, read = readBridgeAgentAttachmentsEnableStatus }: Readonly<{ gatewayPort?: string; read?: (agentId: string) => Promise<AgentAttachmentsEnableStatus> }> = {}) {
-  return async (request: Request, context: { params: Promise<{ agentId: string }> }) => {
-    const decision = evaluateRequestBoundary({ expectedPort: parseGatewayPort(gatewayPort), host: request.headers.get("host"), method: request.method, origin: request.headers.get("origin"), secFetchSite: request.headers.get("sec-fetch-site") });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const { agentId } = await context.params;
-    try { return Response.json(await read(agentId), { headers: HEADERS, status: 200 }); } catch (error) { return failure(error); }
-  };
+  return withGatewayRoute<string | null, AgentContext>(GET_RULE, {
+    authority: authorityFor(gatewayPort),
+    handler: async ({ value }) => {
+      if (!value) return fixed("invalid", 400);
+      try { return Response.json(await read(value), { headers: HEADERS, status: 200 }); } catch (error) { return failure(error); }
+    },
+    validator: { async validate(request, _context, context) {
+      return new URL(request.url).search ? null : (await context.params).agentId;
+    } },
+  });
 }

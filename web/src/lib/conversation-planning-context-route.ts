@@ -1,5 +1,5 @@
 import { fetchBridgeConversationPlanningContext, updateBridgeConversationPlanningContext } from "./bridge-planning.ts";
-import { PLANNING_HEADERS, planningFailure, planningFixed, planningRequestAllowed } from "./planning-overview-route.ts";
+import { PLANNING_HEADERS, planningFailure, planningFixed, withPlanningGatewayRoute } from "./planning-overview-route.ts";
 import type { PublicConversationPlanningContext, PublicConversationPlanningMutation } from "./public-planning.ts";
 
 const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
@@ -24,19 +24,15 @@ async function readBody(request: Request): Promise<{ expectedRevision: number; p
 }
 
 export function createConversationPlanningContextGetHandler({ gatewayPort = process.env.PORT, readContext = fetchBridgeConversationPlanningContext }: Readonly<{ gatewayPort?: string; readContext?: ReadContext }> = {}) {
-  return async function getConversationPlanningContext(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400); const { conversationId } = await context.params;
-    if (!CONVERSATION_ID.test(conversationId)) return planningFixed("invalid", 400);
-    try { return Response.json(await readContext(conversationId), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<string | null, Params>("GET", "/api/conversations/[conversationId]/planning-context", gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const { conversationId } = await context.params; return CONVERSATION_ID.test(conversationId) ? conversationId : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await readContext(value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createConversationPlanningContextPostHandler({ gatewayPort = process.env.PORT, updateContext = updateBridgeConversationPlanningContext }: Readonly<{ gatewayPort?: string; updateContext?: UpdateContext }> = {}) {
-  return async function postConversationPlanningContext(request: Request, context: Params) {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400); const { conversationId } = await context.params;
-    if (!CONVERSATION_ID.test(conversationId)) return planningFixed("invalid", 400); const body = await readBody(request); if (!body) return planningFixed("invalid", 400);
-    try { return Response.json(await updateContext(conversationId, body.expectedRevision, body.projectId, body.taskId), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+  return withPlanningGatewayRoute<{ conversationId: string; body: { expectedRevision: number; projectId: string | null; taskId: string | null } } | null, Params>("POST", "/api/conversations/[conversationId]/planning-context", gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const { conversationId } = await context.params; const body = await readBody(request); return CONVERSATION_ID.test(conversationId) && body ? { conversationId, body } : null; } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await updateContext(value.conversationId, value.body.expectedRevision, value.body.projectId, value.body.taskId), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }

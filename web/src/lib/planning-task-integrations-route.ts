@@ -7,7 +7,7 @@ import {
   replaceBridgePlanningTaskReminders,
   unlinkBridgePlanningTaskCalendarEvent,
 } from "./bridge-planning.ts";
-import { PLANNING_HEADERS, planningFailure, planningFixed, planningRequestAllowed } from "./planning-overview-route.ts";
+import { PLANNING_HEADERS, planningFailure, planningFixed, withPlanningGatewayRoute } from "./planning-overview-route.ts";
 import type { PublicPlanningCalendarWindow, PublicPlanningNotePicker, PublicPlanningReminder, PublicPlanningTaskIntegrationMutation } from "./public-planning.ts";
 
 type Params = { params: Promise<{ taskId: string }> };
@@ -37,21 +37,23 @@ async function taskId(context: Params) { const { taskId: value } = await context
 type Mutation = (taskId: string, expectedRevision: number, ...args: never[]) => Promise<PublicPlanningTaskIntegrationMutation>;
 
 export function createPlanningNotePickerHandler({ read = fetchBridgePlanningNotePicker, gatewayPort = process.env.PORT }: Readonly<{ read?: (query?: string) => Promise<PublicPlanningNotePicker>; gatewayPort?: string }> = {}) {
-  return async (request: Request) => {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
+  return withPlanningGatewayRoute<string | null>("GET", "/api/agent-console/planning-note-picker", gatewayPort, {
+    validator: { validate(request) {
     const entries = [...new URL(request.url).searchParams.entries()];
-    if (entries.length > 1 || entries.length === 1 && (entries[0]![0] !== "q" || entries[0]![1].trim() !== entries[0]![1] || [...entries[0]![1]].length > 120 || /\p{C}/u.test(entries[0]![1]))) return planningFixed("invalid", 400);
-    try { return Response.json(await read(entries[0]?.[1] ?? ""), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+    return entries.length <= 1 && (entries.length === 0 || entries[0]![0] === "q" && entries[0]![1].trim() === entries[0]![1] && [...entries[0]![1]].length <= 120 && !/\p{C}/u.test(entries[0]![1])) ? entries[0]?.[1] ?? "" : null;
+    } },
+    handler: async ({ value }) => { if (value === null) return planningFixed("invalid", 400); try { return Response.json(await read(value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 export function createPlanningCalendarHandler({ read = fetchBridgePlanningCalendarWindow, gatewayPort = process.env.PORT }: Readonly<{ read?: (weekStart: string, timezoneName: string) => Promise<PublicPlanningCalendarWindow>; gatewayPort?: string }> = {}) {
-  return async (request: Request) => {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
+  return withPlanningGatewayRoute<readonly [string, string] | null>("GET", "/api/agent-console/planning-calendar", gatewayPort, {
+    validator: { validate(request) {
     const entries = [...new URL(request.url).searchParams.entries()]; const values = Object.fromEntries(entries);
-    if (entries.length !== 2 || Object.keys(values).length !== 2 || !exact(values, ["week_start", "timezone"]) || !sunday(values.week_start) || !timezone(values.timezone)) return planningFixed("invalid", 400);
-    try { return Response.json(await read(values.week_start, values.timezone), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); }
-  };
+    return entries.length === 2 && Object.keys(values).length === 2 && exact(values, ["week_start", "timezone"]) && sunday(values.week_start) && timezone(values.timezone) ? [values.week_start, values.timezone] as const : null;
+    } },
+    handler: async ({ value }) => { if (!value) return planningFixed("invalid", 400); try { return Response.json(await read(...value), { headers: PLANNING_HEADERS }); } catch (error) { return planningFailure(error); } },
+  });
 }
 
 function validMutation(action: IntegrationAction, value: Record<string, unknown>) {
@@ -64,11 +66,11 @@ function validMutation(action: IntegrationAction, value: Record<string, unknown>
 
 export function createPlanningTaskIntegrationHandler(action: IntegrationAction, { mutate, gatewayPort = process.env.PORT }: Readonly<{ mutate?: Mutation; gatewayPort?: string }> = {}) {
   const operation = mutate ?? (action === "reminders" ? replaceBridgePlanningTaskReminders : action === "notes/attach" ? attachBridgePlanningTaskNote : action === "notes/detach" ? detachBridgePlanningTaskNote : action === "calendar/link" ? linkBridgePlanningTaskCalendarEvent : unlinkBridgePlanningTaskCalendarEvent) as Mutation;
-  return async (request: Request, context: Params) => {
-    if (!planningRequestAllowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: PLANNING_HEADERS, status: 403 });
-    if (new URL(request.url).search) return planningFixed("invalid", 400);
-    const id = await taskId(context); const value = await body(request);
-    if (!id || !value || !validMutation(action, value)) return planningFixed("invalid", 400);
+  const path = action === "reminders" ? "/api/planning/tasks/[taskId]/integrations/reminders" : action === "notes/attach" ? "/api/planning/tasks/[taskId]/integrations/notes/attach" : action === "notes/detach" ? "/api/planning/tasks/[taskId]/integrations/notes/detach" : action === "calendar/link" ? "/api/planning/tasks/[taskId]/integrations/calendar/link" : "/api/planning/tasks/[taskId]/integrations/calendar/unlink";
+  return withPlanningGatewayRoute<{ id: string; value: Record<string, unknown> } | null, Params>("POST", path, gatewayPort, {
+    validator: { async validate(request, _context, context) { if (new URL(request.url).search) return null; const id = await taskId(context); const value = await body(request); return id && value && validMutation(action, value) ? { id, value } : null; } },
+    handler: async ({ value: input }) => {
+      if (!input) return planningFixed("invalid", 400); const { id, value } = input;
     try {
       const result = action === "reminders"
         ? await (operation as typeof replaceBridgePlanningTaskReminders)(id, value.expected_revision as number, value.reminders as Array<Omit<PublicPlanningReminder, "channel" | "notified_at">>)
@@ -79,5 +81,6 @@ export function createPlanningTaskIntegrationHandler(action: IntegrationAction, 
             : await (operation as typeof unlinkBridgePlanningTaskCalendarEvent)(id, value.expected_revision as number, "primary", value.event_id as string);
       return Response.json(result, { headers: PLANNING_HEADERS });
     } catch (error) { return planningFailure(error); }
-  };
+    },
+  });
 }

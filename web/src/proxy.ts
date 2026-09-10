@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { evaluateRequestBoundary, parseGatewayPort } from "@/lib/request-boundary";
+import { PROCESS_GATEWAY_AUTHORITY } from "@/lib/gateway-authority";
 
 const FORBIDDEN_HEADERS = {
   "Cache-Control": "private, no-store",
@@ -26,11 +26,11 @@ function contentSecurityPolicy(nonce: string): string {
 }
 
 export function proxy(request: NextRequest) {
-  const decision = evaluateRequestBoundary({
-    expectedPort: parseGatewayPort(process.env.PORT),
+  const decision = PROCESS_GATEWAY_AUTHORITY.authorize({
     host: request.headers.get("host"),
     method: request.method,
     origin: request.headers.get("origin"),
+    pathname: request.nextUrl.pathname,
     secFetchSite: request.headers.get("sec-fetch-site"),
   });
   if (!decision.allowed) {

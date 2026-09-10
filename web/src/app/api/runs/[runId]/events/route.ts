@@ -1,5 +1,6 @@
 import { lastEventCursor, refreshAndFetchBridgeRunEvents, validRunId } from "@/lib/bridge-run-events";
-import { evaluateRequestBoundary, parseGatewayPort } from "@/lib/request-boundary";
+import { GATEWAY_ROUTE_MANIFEST } from "@/lib/gateway-route-manifest";
+import { withGatewayRoute } from "@/lib/gateway-request-context";
 import { createRunTimelineStream } from "@/lib/run-timeline-stream";
 
 export const dynamic = "force-dynamic";
@@ -17,20 +18,25 @@ const streamHeaders = {
 };
 const errorHeaders = { "Cache-Control": "private, no-store", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY" };
 
-export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
-  const boundary = evaluateRequestBoundary({
-    expectedPort: parseGatewayPort(process.env.PORT),
-    host: request.headers.get("host"),
-    method: request.method,
-    origin: request.headers.get("origin"),
-    secFetchSite: request.headers.get("sec-fetch-site"),
-  });
-  if (!boundary.allowed) return new Response("Forbidden\n", { headers: errorHeaders, status: 403 });
-  const { runId } = await context.params;
-  const lastEventId = request.headers.get("last-event-id");
-  const after = lastEventCursor(lastEventId);
-  if (!validRunId(runId) || after === null || new URL(request.url).search) {
-    return Response.json({ schema_version: 1, status: "error" }, { headers: errorHeaders, status: 400 });
-  }
-  return new Response(createRunTimelineStream({ runId, after, read: refreshAndFetchBridgeRunEvents, signal: request.signal }), { headers: streamHeaders });
-}
+const GET_RULE = GATEWAY_ROUTE_MANIFEST.find((rule) => rule.method === "GET" && rule.path === "/api/runs/[runId]/events");
+if (!GET_RULE) throw new Error("missing gateway manifest rule for GET /api/runs/[runId]/events");
+
+type RouteContext = { params: Promise<{ runId: string }> };
+type TimelineInput = { after: number; runId: string; signal: AbortSignal } | null;
+
+const get = withGatewayRoute<TimelineInput, RouteContext>(GET_RULE, {
+  handler: ({ value }) => {
+    if (!value) return Response.json({ schema_version: 1, status: "error" }, { headers: errorHeaders, status: 400 });
+    return new Response(createRunTimelineStream({ runId: value.runId, after: value.after, read: refreshAndFetchBridgeRunEvents, signal: value.signal }), { headers: streamHeaders });
+  },
+  validator: {
+    async validate(request, _approved, context) {
+      const { runId } = await context.params;
+      const after = lastEventCursor(request.headers.get("last-event-id"));
+      if (!validRunId(runId) || after === null || new URL(request.url).search) return null;
+      return { after, runId, signal: request.signal };
+    },
+  },
+});
+
+export async function GET(request: Request, context: RouteContext) { return get(request, context); }

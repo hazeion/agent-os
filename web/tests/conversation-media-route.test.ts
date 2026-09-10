@@ -48,9 +48,9 @@ test("upload route rejects cross-origin and malformed raw requests before mutati
   assert.equal((await handler(valid, conversationContext)).status, 201);
   assert.equal((calls[0] as unknown[])[0], "conv_media");
   assert.equal(new TextDecoder().decode((calls[0] as unknown[])[3] as Uint8Array), "hello");
-  const crossOrigin = new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, Origin: "http://attacker.example", "Content-Type": "text/plain", "Content-Length": "5", "X-Mentat-Filename": "notes.txt", "X-Mentat-Upload-Id": uploadId }, body: "hello" });
+  const crossOrigin = new Request(`${origin}/api/conversations/conv_media/attachments`, { method: "POST", headers: { ...mutationHeaders, Origin: "http://attacker.example", "Content-Type": "text/plain", "Content-Length": "5", "X-Mentat-Filename": "notes.txt", "X-Mentat-Upload-Id": uploadId }, body: "hello" });
   assert.equal((await handler(crossOrigin, conversationContext)).status, 403);
-  const chunked = new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "text/plain", "Transfer-Encoding": "chunked", "X-Mentat-Filename": "notes.txt", "X-Mentat-Upload-Id": uploadId }, body: "hello" });
+  const chunked = new Request(`${origin}/api/conversations/conv_media/attachments`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "text/plain", "Transfer-Encoding": "chunked", "X-Mentat-Filename": "notes.txt", "X-Mentat-Upload-Id": uploadId }, body: "hello" });
   assert.equal((await handler(chunked, conversationContext)).status, 400);
   assert.equal(calls.length, 1);
 });
@@ -74,7 +74,7 @@ test("staged-context reconciliation waits for an accepted upload mutation", asyn
   assert.equal((await readResponse).status, 200);
   assert.equal(reads, 1);
   const receipt = createAttachmentUploadReceiptHandler({ gatewayPort: "8890" });
-  const receiptResponse = await receipt(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), { params: Promise.resolve({ conversationId: "conv_media", uploadId }) });
+  const receiptResponse = await receipt(new Request(`${origin}/api/conversations/conv_media/uploads/${uploadId}`, { headers: { Host: "127.0.0.1:8890" } }), { params: Promise.resolve({ conversationId: "conv_media", uploadId }) });
   assert.equal(receiptResponse.status, 200);
   assert.deepEqual((await receiptResponse.json() as { attachment_ids: string[] }).attachment_ids, [attachmentId]);
 });
@@ -82,32 +82,32 @@ test("staged-context reconciliation waits for an accepted upload mutation", asyn
 test("JSON mutations accept only exact same-origin bodies", async () => {
   const releaseCalls: unknown[] = [];
   const release = createAttachmentReleaseHandler({ gatewayPort: "8890", release: async (...args) => { releaseCalls.push(args); return staged; } });
-  assert.equal((await release(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: "{}" }), attachmentContext)).status, 200);
-  assert.equal((await release(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"force":true}' }), attachmentContext)).status, 400);
+  assert.equal((await release(new Request(`${origin}/api/conversations/conv_media/attachments/${attachmentId}/release`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: "{}" }), attachmentContext)).status, 200);
+  assert.equal((await release(new Request(`${origin}/api/conversations/conv_media/attachments/${attachmentId}/release`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"force":true}' }), attachmentContext)).status, 400);
 
   const workspaceCalls: unknown[] = [];
   const workspace = createWorkspaceAttachmentHandler({ gatewayPort: "8890", attach: async (...args) => { workspaceCalls.push(args); return staged; } });
-  assert.equal((await workspace(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"root_id":"workspace","relative_path":"docs/a.txt"}' }), conversationContext)).status, 201);
-  assert.equal((await workspace(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"root_id":"workspace","relative_path":"../a.txt"}' }), conversationContext)).status, 400);
+  assert.equal((await workspace(new Request(`${origin}/api/conversations/conv_media/workspace-files`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"root_id":"workspace","relative_path":"docs/a.txt"}' }), conversationContext)).status, 201);
+  assert.equal((await workspace(new Request(`${origin}/api/conversations/conv_media/workspace-files`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"root_id":"workspace","relative_path":"../a.txt"}' }), conversationContext)).status, 400);
   assert.deepEqual(workspaceCalls, [["conv_media", "workspace", "docs/a.txt"]]);
 
   const packCalls: unknown[] = [];
   const pack = createContextPackApplyHandler({ gatewayPort: "8890", apply: async (...args) => { packCalls.push(args); return staged; } });
   const packContext = { params: Promise.resolve({ conversationId: "conv_media", packId: "pack_0123456789abcdef" }) };
-  assert.equal((await pack(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: `{"expected_revision":"${revision}"}` }), packContext)).status, 201);
+  assert.equal((await pack(new Request(`${origin}/api/conversations/conv_media/context-packs/pack_0123456789abcdef`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: `{"expected_revision":"${revision}"}` }), packContext)).status, 201);
   assert.deepEqual(packCalls, [["conv_media", "pack_0123456789abcdef", revision]]);
 
   const clearCalls: string[] = [];
   const clear = createContextPackClearHandler({ gatewayPort: "8890", clear: async (conversationId) => { clearCalls.push(conversationId); return staged; } });
-  assert.equal((await clear(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: "{}" }), conversationContext)).status, 200);
-  assert.equal((await clear(new Request(`${origin}/api/x`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"force":true}' }), conversationContext)).status, 400);
+  assert.equal((await clear(new Request(`${origin}/api/conversations/conv_media/context-packs/release`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: "{}" }), conversationContext)).status, 200);
+  assert.equal((await clear(new Request(`${origin}/api/conversations/conv_media/context-packs/release`, { method: "POST", headers: { ...mutationHeaders, "Content-Type": "application/json" }, body: '{"force":true}' }), conversationContext)).status, 400);
   assert.deepEqual(clearCalls, ["conv_media"]);
 });
 
 test("read routes reject unexpected queries and preserve fixed security headers", async () => {
   const stagedHandler = createStagedContextHandler({ gatewayPort: "8890", read: async () => staged });
-  assert.equal((await stagedHandler(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext)).status, 200);
-  assert.equal((await stagedHandler(new Request(`${origin}/api/x?path=/tmp`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext)).status, 400);
+  assert.equal((await stagedHandler(new Request(`${origin}/api/conversations/conv_media/staged-context`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext)).status, 200);
+  assert.equal((await stagedHandler(new Request(`${origin}/api/conversations/conv_media/staged-context?path=/tmp`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext)).status, 400);
 
   const searchCalls: string[] = [];
   const search = createWorkspaceFilesHandler({ gatewayPort: "8890", search: async (query) => { searchCalls.push(query); return { ...staged, query, files: [] }; } });
@@ -116,14 +116,14 @@ test("read routes reject unexpected queries and preserve fixed security headers"
   assert.deepEqual(searchCalls, ["docs"]);
 
   const media = createConversationMediaHandler({ gatewayPort: "8890", read: async () => ({ ...staged, runs: [] }) });
-  const response = await media(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext);
+  const response = await media(new Request(`${origin}/api/conversations/conv_media/media`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext);
   assert.equal(response.headers.get("cache-control"), "private, no-store");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
 });
 
 test("content route returns only exact same-origin bytes with defensive headers", async () => {
   const handler = createConversationAttachmentContentHandler({ gatewayPort: "8890", read: async () => ({ body: new TextEncoder().encode("hello"), contentType: "text/plain; charset=utf-8" }) });
-  const response = await handler(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), attachmentContext);
+  const response = await handler(new Request(`${origin}/api/conversations/conv_media/attachments/${attachmentId}/content`, { headers: { Host: "127.0.0.1:8890" } }), attachmentContext);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-length"), "5");
   assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
@@ -131,12 +131,12 @@ test("content route returns only exact same-origin bytes with defensive headers"
   assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
   assert.equal(await response.text(), "hello");
   const hostile = createConversationAttachmentContentHandler({ gatewayPort: "8890", read: async () => ({ body: new TextEncoder().encode("<script>"), contentType: "text/html" }) });
-  assert.equal((await hostile(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), attachmentContext)).status, 502);
+  assert.equal((await hostile(new Request(`${origin}/api/conversations/conv_media/attachments/${attachmentId}/content`, { headers: { Host: "127.0.0.1:8890" } }), attachmentContext)).status, 502);
 });
 
 test("bridge errors map to fixed public states", async () => {
   const handler = createStagedContextHandler({ gatewayPort: "8890", read: async () => { throw new BridgeConversationMediaError("conversation_media_conflict"); } });
-  const response = await handler(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext);
+  const response = await handler(new Request(`${origin}/api/conversations/conv_media/staged-context`, { headers: { Host: "127.0.0.1:8890" } }), conversationContext);
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), { schema_version: 1, status: "conflict" });
 });

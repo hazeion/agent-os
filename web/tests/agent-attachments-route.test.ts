@@ -33,7 +33,7 @@ test("attachment opt-in availability is one safe Agent-scoped read", async () =>
   assert.deepEqual(bridgeCalls, [`http://127.0.0.1:8891/bridge/v1/agents/${agentId}/attachments/enable`]);
 
   const handler = createAgentAttachmentsEnableStatusHandler({ gatewayPort: "8890", read: async () => statusPayload });
-  const response = await handler(new Request(`${origin}/api/x`, { headers: { Host: "127.0.0.1:8890" } }), { params: Promise.resolve({ agentId }) });
+  const response = await handler(new Request(`${origin}/api/agents/${agentId}/attachments/enable`, { headers: { Host: "127.0.0.1:8890" } }), { params: Promise.resolve({ agentId }) });
   assert.equal(response.status, 200);
   assert.equal(await readAgentAttachmentsEnableStatus(agentId, async () => Response.json(statusPayload)), "available");
 });
@@ -53,7 +53,7 @@ test("attachment opt-in route enforces same origin and exact sorted stale-state 
 
 test("attachment opt-in maps stale and unsupported states without automatic mutation", async () => {
   const context = { params: Promise.resolve({ agentId }) };
-  const request = new Request(`${origin}/api/x`, { method: "POST", headers: { Host: "127.0.0.1:8890", Origin: origin, "Content-Type": "application/json" }, body: '{"expected_capabilities":["run.message","run.start"]}' });
+  const request = new Request(`${origin}/api/agents/${agentId}/attachments/enable`, { method: "POST", headers: { Host: "127.0.0.1:8890", Origin: origin, "Content-Type": "application/json" }, body: '{"expected_capabilities":["run.message","run.start"]}' });
   for (const [code, status] of [["agent_attachments_conflict", 409], ["agent_attachments_unsupported", 415]] as const) {
     const handler = createEnableAgentAttachmentsHandler({ gatewayPort: "8890", enable: async () => { throw new BridgeAgentAttachmentsError(code); } });
     assert.equal((await handler(request.clone(), context)).status, status);

@@ -5,7 +5,9 @@ import {
   previewBridgeAgentConfiguration,
 } from "./bridge-conversations.ts";
 import { readAgentConfigurationBody } from "./exact-json-body.ts";
-import { evaluateRequestBoundary, parseGatewayPort } from "./request-boundary.ts";
+import { createGatewayAuthority, PROCESS_GATEWAY_AUTHORITY, type GatewayAuthority } from "./gateway-authority.ts";
+import { GATEWAY_ROUTE_MANIFEST, type GatewayRouteRule } from "./gateway-route-manifest.ts";
+import { withGatewayRoute } from "./gateway-request-context.ts";
 
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -34,15 +36,24 @@ function failure(error: unknown) {
   return result ? fixed(result[0], result[1]) : fixed("error", 502);
 }
 
-function allowed(request: Request, gatewayPort: string | undefined) {
-  return evaluateRequestBoundary({
-    expectedPort: parseGatewayPort(gatewayPort),
-    host: request.headers.get("host"),
-    method: request.method,
-    origin: request.headers.get("origin"),
-    secFetchSite: request.headers.get("sec-fetch-site"),
-  }).allowed;
+function route(method: GatewayRouteRule["method"], path: GatewayRouteRule["path"]): GatewayRouteRule {
+  const found = GATEWAY_ROUTE_MANIFEST.find((candidate) => candidate.method === method && candidate.path === path);
+  if (!found) throw new Error(`missing gateway manifest rule for ${method} ${path}`);
+  return found;
 }
+
+const GET_RULE = route("GET", "/api/agents/[agentId]/configuration");
+const PREVIEW_RULE = route("POST", "/api/agents/[agentId]/configuration/preview");
+const CONFIRM_RULE = route("POST", "/api/agents/[agentId]/configuration");
+
+function authorityFor(gatewayPort: string | undefined): Pick<GatewayAuthority, "authorize"> {
+  return gatewayPort === process.env.PORT ? PROCESS_GATEWAY_AUTHORITY : createGatewayAuthority({ PORT: gatewayPort });
+}
+type AgentContext = { params: Promise<{ agentId: string }> };
+type ConfigurationBody = { confirmationId: string | null; model: string; provider: string };
+type AgentValue = { agentId: string } | null;
+type ConfigurationValue = { agentId: string; body: ConfigurationBody } | null;
+type ConfirmationValue = { agentId: string; body: ConfigurationBody & { confirmationId: string } } | null;
 
 export function createAgentConfigurationHandlers({
   gatewayPort = process.env.PORT,
@@ -50,31 +61,45 @@ export function createAgentConfigurationHandlers({
   preview = previewBridgeAgentConfiguration,
   confirm = confirmBridgeAgentConfiguration,
 } = {}) {
+  const authority = authorityFor(gatewayPort);
   return {
-    async get(request: Request, context: { params: Promise<{ agentId: string }> }) {
-      if (!allowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-      if (new URL(request.url).search) return fixed("invalid", 400);
-      const { agentId } = await context.params;
-      try { return Response.json(await read(agentId), { headers: HEADERS }); }
-      catch (error) { return failure(error); }
-    },
-    async preview(request: Request, context: { params: Promise<{ agentId: string }> }) {
-      if (!allowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-      if (new URL(request.url).search) return fixed("invalid", 400);
-      const body = await readAgentConfigurationBody(request, true);
-      if (!body) return fixed("invalid", 400);
-      const { agentId } = await context.params;
-      try { return Response.json(await preview(agentId, body.provider, body.model), { headers: HEADERS }); }
-      catch (error) { return failure(error); }
-    },
-    async confirm(request: Request, context: { params: Promise<{ agentId: string }> }) {
-      if (!allowed(request, gatewayPort)) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-      if (new URL(request.url).search) return fixed("invalid", 400);
-      const body = await readAgentConfigurationBody(request, false);
-      if (!body?.confirmationId) return fixed("invalid", 400);
-      const { agentId } = await context.params;
-      try { return Response.json(await confirm(agentId, body.provider, body.model, body.confirmationId), { headers: HEADERS }); }
-      catch (error) { return failure(error); }
-    },
+    get: withGatewayRoute<AgentValue, AgentContext>(GET_RULE, {
+      authority,
+      handler: async ({ value }) => {
+        if (!value) return fixed("invalid", 400);
+        try { return Response.json(await read(value.agentId), { headers: HEADERS }); }
+        catch (error) { return failure(error); }
+      },
+      validator: { async validate(request, _context, context) {
+        if (new URL(request.url).search) return null;
+        return { agentId: (await context.params).agentId };
+      } },
+    }),
+    preview: withGatewayRoute<ConfigurationValue, AgentContext>(PREVIEW_RULE, {
+      authority,
+      handler: async ({ value }) => {
+        if (!value) return fixed("invalid", 400);
+        try { return Response.json(await preview(value.agentId, value.body.provider, value.body.model), { headers: HEADERS }); }
+        catch (error) { return failure(error); }
+      },
+      validator: { async validate(request, _context, context) {
+        if (new URL(request.url).search) return null;
+        const body = await readAgentConfigurationBody(request, true);
+        return body ? { agentId: (await context.params).agentId, body } : null;
+      } },
+    }),
+    confirm: withGatewayRoute<ConfirmationValue, AgentContext>(CONFIRM_RULE, {
+      authority,
+      handler: async ({ value }) => {
+        if (!value) return fixed("invalid", 400);
+        try { return Response.json(await confirm(value.agentId, value.body.provider, value.body.model, value.body.confirmationId), { headers: HEADERS }); }
+        catch (error) { return failure(error); }
+      },
+      validator: { async validate(request, _context, context) {
+        if (new URL(request.url).search) return null;
+        const body = await readAgentConfigurationBody(request, false);
+        return body?.confirmationId ? { agentId: (await context.params).agentId, body: { ...body, confirmationId: body.confirmationId } } : null;
+      } },
+    }),
   };
 }

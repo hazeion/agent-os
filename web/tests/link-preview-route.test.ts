@@ -12,12 +12,15 @@ const payload = { schema_version: 1 as const, service: "mentat-local-bridge" as 
 test("message preview routes enforce exact query bodies and same origin", async () => {
   const calls: unknown[] = [];
   const handlers = createLinkPreviewMessageHandlers({ gatewayPort: "8890", read: async (...args) => { calls.push(args); return payload; }, mutate: async (...args) => { calls.push(args); return payload; } });
-  assert.equal((await handlers.GET(new Request(`${origin}/api/x?revision=2`, { headers: { Host: "127.0.0.1:8890" } }), context)).status, 200);
-  assert.equal((await handlers.POST(new Request(`${origin}/api/x`, { method: "POST", headers, body: '{"action":"retry","message_revision":2}' }), context)).status, 202);
+  const path = "/api/conversations/conv_preview/messages/msg_preview/link-previews";
+  assert.equal((await handlers.GET(new Request(`${origin}${path}?revision=2`, { headers: { Host: "127.0.0.1:8890" } }), context)).status, 200);
+  assert.equal((await handlers.POST(new Request(`${origin}${path}`, { method: "POST", headers, body: '{"action":"retry","message_revision":2}' }), context)).status, 202);
   assert.deepEqual(calls, [["conv_preview", "msg_preview", 2], ["conv_preview", "msg_preview", 2, "retry"]]);
-  assert.equal((await handlers.GET(new Request(`${origin}/api/x?revision=2&url=https://example.com`, { headers: { Host: "127.0.0.1:8890" } }), context)).status, 400);
-  assert.equal((await handlers.POST(new Request(`${origin}/api/x`, { method: "POST", headers, body: '{"action":"retry","message_revision":2,"url":"https://example.com"}' }), context)).status, 400);
-  assert.equal((await handlers.POST(new Request(`${origin}/api/x`, { method: "POST", headers: { ...headers, Origin: "http://attacker.example" }, body: '{"action":"retry","message_revision":2}' }), context)).status, 403);
+  assert.equal((await handlers.GET(new Request(`${origin}${path}?revision=2&url=https://example.com`, { headers: { Host: "127.0.0.1:8890" } }), context)).status, 400);
+  assert.equal((await handlers.POST(new Request(`${origin}${path}`, { method: "POST", headers, body: '{"action":"retry","message_revision":2,"url":"https://example.com"}' }), context)).status, 400);
+  assert.equal((await handlers.POST(new Request(`${origin}${path}`, { method: "POST", headers: { ...headers, Origin: "http://attacker.example" }, body: '{"action":"retry","message_revision":2}' }), context)).status, 403);
+  assert.equal((await handlers.GET(new Request(`${origin}/api/conversations/conv_preview/messages/msg_preview/link-previews/extra?revision=2`, { headers: { Host: "127.0.0.1:8890" } }), context)).status, 403);
+  assert.equal(calls.length, 2);
 });
 
 test("preference, clear, and image routes retain fixed boundaries", async () => {
@@ -38,6 +41,6 @@ test("preference, clear, and image routes retain fixed boundaries", async () => 
 
 test("route errors map to fixed public states", async () => {
   const handlers = createLinkPreviewMessageHandlers({ gatewayPort: "8890", read: async () => { throw new BridgeLinkPreviewError("link_preview_conflict"); } });
-  const response = await handlers.GET(new Request(`${origin}/api/x?revision=2`, { headers: { Host: "127.0.0.1:8890" } }), context);
+  const response = await handlers.GET(new Request(`${origin}/api/conversations/conv_preview/messages/msg_preview/link-previews?revision=2`, { headers: { Host: "127.0.0.1:8890" } }), context);
   assert.equal(response.status, 409); assert.deepEqual(await response.json(), { schema_version: 1, status: "conflict" });
 });

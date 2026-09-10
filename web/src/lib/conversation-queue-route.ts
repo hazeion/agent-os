@@ -7,7 +7,9 @@ import {
   type PublicConversationTurnSubmission,
 } from "./bridge-conversations.ts";
 import { readConversationQueueActionBody } from "./exact-json-body.ts";
-import { evaluateRequestBoundary, parseGatewayPort } from "./request-boundary.ts";
+import { createGatewayAuthority, PROCESS_GATEWAY_AUTHORITY } from "./gateway-authority.ts";
+import { GATEWAY_ROUTE_MANIFEST } from "./gateway-route-manifest.ts";
+import { withGatewayRoute } from "./gateway-request-context.ts";
 
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -26,6 +28,20 @@ type Mutate = (
   expectedMessageRevision: number,
   text?: string,
 ) => Promise<Result>;
+type ConversationContext = { params: Promise<{ conversationId: string; turnId: string }> };
+type QueueInput = { body: Awaited<ReturnType<typeof readConversationQueueActionBody>>; conversationId: string; turnId: string };
+
+const QUEUE_RULES: Readonly<Record<Action, (typeof GATEWAY_ROUTE_MANIFEST)[number]>> = Object.freeze({
+  cancel: requiredRule("/api/conversations/[conversationId]/turns/[turnId]/cancel"),
+  continue: requiredRule("/api/conversations/[conversationId]/turns/[turnId]/continue"),
+  edit: requiredRule("/api/conversations/[conversationId]/turns/[turnId]/edit"),
+});
+
+function requiredRule(path: string) {
+  const rule = GATEWAY_ROUTE_MANIFEST.find((candidate) => candidate.method === "POST" && candidate.path === path);
+  if (!rule) throw new Error(`missing gateway manifest rule for POST ${path}`);
+  return rule;
+}
 
 function fixed(status: string, code: number) {
   return Response.json({ schema_version: 1, status }, { headers: HEADERS, status: code });
@@ -81,38 +97,36 @@ function defaultMutation(action: Action): Mutate {
 export function createConversationQueueActionHandler(
   action: Action,
   {
-    gatewayPort = process.env.PORT,
+    gatewayPort,
     mutate = defaultMutation(action),
   }: Readonly<{ gatewayPort?: string; mutate?: Mutate }> = {},
 ) {
-  return async function postConversationQueueAction(
-    request: Request,
-    context: { params: Promise<{ conversationId: string; turnId: string }> },
-  ) {
-    const decision = evaluateRequestBoundary({
-      expectedPort: parseGatewayPort(gatewayPort),
-      host: request.headers.get("host"),
-      method: request.method,
-      origin: request.headers.get("origin"),
-      secFetchSite: request.headers.get("sec-fetch-site"),
-    });
-    if (!decision.allowed) return new Response("Forbidden\n", { headers: HEADERS, status: 403 });
-    if (new URL(request.url).search) return fixed("invalid", 400);
-    const body = await readConversationQueueActionBody(request, action);
-    if (!body) return fixed("invalid", 400);
-    const { conversationId, turnId } = await context.params;
-    try {
-      const result = await mutate(
-        conversationId,
-        turnId,
-        body.expectedRevision,
-        body.expectedMessageRevision,
-        body.text ?? undefined,
-      );
-      const status = "run" in result && result.run !== null ? 202 : 200;
-      return Response.json(result, { headers: HEADERS, status });
-    } catch (error) {
-      return failure(error);
-    }
-  };
+  return withGatewayRoute<QueueInput, ConversationContext>(QUEUE_RULES[action], {
+    authority: gatewayPort === undefined ? PROCESS_GATEWAY_AUTHORITY : createGatewayAuthority({ PORT: gatewayPort }),
+    handler: async ({ value }) => {
+      if (!value.body) return fixed("invalid", 400);
+      try {
+        const result = await mutate(
+          value.conversationId,
+          value.turnId,
+          value.body.expectedRevision,
+          value.body.expectedMessageRevision,
+          value.body.text ?? undefined,
+        );
+        const status = "run" in result && result.run !== null ? 202 : 200;
+        return Response.json(result, { headers: HEADERS, status });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    validator: {
+      async validate(request, _approved, context) {
+        if (new URL(request.url).search) return { body: null, conversationId: "", turnId: "" };
+        const body = await readConversationQueueActionBody(request, action);
+        if (!body) return { body: null, conversationId: "", turnId: "" };
+        const { conversationId, turnId } = await context.params;
+        return { body, conversationId, turnId };
+      },
+    },
+  });
 }
