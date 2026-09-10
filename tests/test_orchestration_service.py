@@ -4190,16 +4190,19 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=submit_first)
             worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            queued = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="Run the queued successor after the fast worker",
-                idempotency_key="conversation-fast-worker-key-2",
-            )
-            self.assertEqual(queued.turn.state, "pending")
-            self.assertEqual(len(runtime.calls), 1)
-            runtime.submit_release.set()
-            worker.join(timeout=5)
+            entered = runtime.submit_entered.wait(timeout=15)
+            try:
+                self.assertTrue(entered)
+                queued = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Run the queued successor after the fast worker",
+                    idempotency_key="conversation-fast-worker-key-2",
+                )
+                self.assertEqual(queued.turn.state, "pending")
+                self.assertEqual(len(runtime.calls), 1)
+            finally:
+                runtime.submit_release.set()
+                worker.join(timeout=15)
             self.assertFalse(worker.is_alive())
             self.assertEqual(first_errors, [])
 
