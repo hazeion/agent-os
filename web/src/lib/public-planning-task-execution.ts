@@ -37,7 +37,7 @@ function validExecutionTask(value: unknown): value is PublicPlanningExecutionTas
 
 function validExecutionAttempt(value: unknown): value is PublicPlanningExecutionAttempt {
   const base = "agent_id,completed_at,completion_reason,created_at,dispatch_state,partial,review_action,review_note,review_task_revision,run_id,runtime_type,state,status,task_revision,terminal_finalized,updated_at";
-  return record(value) && (keys(value, base) || keys(value, `${base},result`))
+  return record(value) && (keys(value, base) || keys(value, "agent_id,completed_at,completion_reason,created_at,dispatch_state,partial,result,review_action,review_note,review_task_revision,run_id,runtime_type,state,status,task_revision,terminal_finalized,updated_at"))
     && typeof value.run_id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value.run_id)
     && Number.isSafeInteger(value.task_revision) && (value.task_revision as number) >= 1
     && safeIdentifier(value.agent_id, 128)
