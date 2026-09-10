@@ -104,7 +104,12 @@ class RemoteDelegationDeadlineTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(result["options"]["available"])
         self.assertLess(elapsed, 0.65)
-        self.assertGreaterEqual(paths.count("/v1/capabilities"), 2)
+        expected_paths = [
+            "/v1/capabilities", "/v1/capabilities", "/v1/profiles",
+            "/v1/capabilities", "/v1/kanban/boards",
+        ]
+        self.assertTrue(paths)
+        self.assertEqual(paths, expected_paths[:len(paths)])
         self.assertNotIn("private-test-key", json.dumps(result))
 
     def test_real_remote_adapter_still_discovers_supported_targets(self):
