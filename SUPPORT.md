@@ -36,6 +36,10 @@ Invited testers should use the exact build in their invitation and follow the
   contract Mentat needs.
 - Google Calendar, Obsidian notes, Hermes sessions, and Hermes cron inventory
   are read-only.
+- Windows keeps Agent Console file execution disabled because it cannot provide
+  the required no-follow cleanup guarantee. You can still plan work and use
+  Codex text execution; use a supported local Hermes environment when a Task
+  needs files or Context Packs.
 - Mentat does not queue or edit cron jobs.
 - Updates are manual. Back up your data before upgrading.
 - macOS packages are separate for Apple Silicon and Intel. Apple Silicon is the

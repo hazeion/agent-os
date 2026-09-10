@@ -54,6 +54,90 @@ MAXIMUM_TASK_PROMPT_BYTES = 40_000
 CODEX_ADMISSION_LIMIT = 2
 CODEX_TASK_CREATE_TOOL = "mentat_tasks_create_inbox"
 MAXIMUM_DYNAMIC_TOOL_ARGUMENT_BYTES = 16 * 1024
+MAXIMUM_TURN_OBSERVATIONS = 1024
+
+# Typed App Server error discriminants select public copy, with one exact
+# legacy envelope for a known client/model compatibility rejection. No raw
+# message, nested provider payload, or additionalDetails is retained.
+_FAILURE_SUMMARIES = {
+    "authentication": "Codex run failed: authentication. Sign in again with codex login in a terminal, then retry.",
+    "usage_limit": "Codex run failed: usage limit. Check your Codex account limits and retry after capacity is available.",
+    "provider": "Codex run failed: provider unavailable. Wait briefly, then retry. If this continues, check the same prompt in the local Codex CLI.",
+    "connection": "Codex run failed: connection. Check connectivity for the local Codex CLI, then retry.",
+    "request": "Codex run failed: request rejected. Check the same prompt and configured model in the local Codex CLI before retrying.",
+    "context": "Codex run failed: context limit. Start a new Conversation with a shorter prompt.",
+    "sandbox": "Codex run failed: sandbox. Check the local Codex CLI sandbox setup before retrying. Mentat requires workspace-write with approvals disabled.",
+    "policy": "Codex run failed: policy restriction. Review the request in the local Codex CLI before trying a revised prompt.",
+    "compatibility": "Codex run failed: client/model compatibility. Update the local Codex CLI and restart Mentat, then check the configured model in the CLI. If it already works there, this may require provider support for the Mentat client.",
+    "unknown": "Codex run failed: cause unavailable. Check the same prompt in the local Codex CLI and review its configuration before retrying. Sign-in alone does not verify execution.",
+}
+_ERROR_CATEGORIES = {
+    "unauthorized": "authentication",
+    "usageLimitExceeded": "usage_limit",
+    "sessionBudgetExceeded": "usage_limit",
+    "serverOverloaded": "provider",
+    "internalServerError": "provider",
+    "badRequest": "request",
+    "contextWindowExceeded": "context",
+    "sandboxError": "sandbox",
+    "cyberPolicy": "policy",
+}
+_CONNECTION_ERRORS = frozenset({
+    "httpConnectionFailed", "responseStreamConnectionFailed",
+    "responseStreamDisconnected", "responseTooManyFailedAttempts",
+})
+
+
+def _failure_category(error: object) -> str:
+    if not isinstance(error, Mapping):
+        return "unknown"
+    info = error.get("codexErrorInfo")
+    if isinstance(info, str):
+        if info == "other" and _known_compatibility_error(error.get("message")):
+            return "compatibility"
+        return _ERROR_CATEGORIES.get(info, "unknown")
+    if not isinstance(info, Mapping) or len(info) != 1:
+        return "unknown"
+    variant = next(iter(info))
+    details = info[variant]
+    if variant not in _CONNECTION_ERRORS or not isinstance(details, Mapping):
+        return "unknown"
+    status = details.get("httpStatusCode")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        return "unknown"
+    if status == 401:
+        return "authentication"
+    if status == 429:
+        return "usage_limit"
+    if status in {400, 403, 404, 422}:
+        return "request"
+    if status is not None and status >= 500:
+        return "provider"
+    return "connection"
+
+
+def _known_compatibility_error(message: object) -> bool:
+    # Older CLI versions report this structured HTTP rejection as `other`.
+    # Match the complete known envelope and sentence, never arbitrary phrases.
+    if not isinstance(message, str) or len(message) > 8192:
+        return False
+    source = message.removeprefix("stream error: ")
+    if not source.startswith("{"):
+        return False
+    try:
+        envelope = json.loads(source)
+    except (ValueError, RecursionError):
+        return False
+    if not isinstance(envelope, dict) or envelope.get("type") != "error" or type(envelope.get("status")) is not int or envelope["status"] != 400:
+        return False
+    details = envelope.get("error")
+    if not isinstance(details, dict) or details.get("type") != "invalid_request_error":
+        return False
+    text = details.get("message")
+    return isinstance(text, str) and re.fullmatch(
+        r"The '[A-Za-z0-9_.-]{1,160}' model requires a newer version of Codex\. "
+        r"Please upgrade to the latest app or CLI and try again\.", text,
+    ) is not None
 
 _ACCOUNT_TYPES = frozenset({"apiKey", "chatgpt", "amazonBedrock"})
 _CHATGPT_PLAN_TYPES = frozenset(
@@ -385,6 +469,57 @@ class CodexAppServerClient:
         self._closed = False
         self._dynamic_tool_handler = dynamic_tool_handler
         self._dynamic_tool_slots = threading.BoundedSemaphore(2)
+        self._turn_observations: dict[str, dict[str, object]] = {}
+
+    def _observe_turn(self, message: Mapping[str, Any], generation: int) -> None:
+        """Keep bounded, normalized lifecycle evidence from our owned child."""
+
+        method = message.get("method")
+        if method not in {"turn/started", "turn/completed"}:
+            return
+        params = message.get("params")
+        if not isinstance(params, Mapping) or not isinstance(params.get("turn"), Mapping):
+            return
+        turn = params["turn"]
+        try:
+            reference = _runtime_reference(params.get("threadId"), turn.get("id"))
+        except ValueError:
+            return
+        status = turn.get("status")
+        if not isinstance(status, str) or (method == "turn/started" and status != "inProgress") or (
+            method == "turn/completed" and status not in {"completed", "failed", "interrupted"}
+        ):
+            return
+        observation: dict[str, object] = {"status": status, "generation": generation}
+        for key in ("startedAt", "completedAt"):
+            try:
+                _iso_timestamp(turn.get(key), code="runtime.events_invalid")
+            except AgentRuntimeError:
+                continue
+            observation[key] = turn[key]
+        if status == "failed":
+            observation["failure_summary"] = _FAILURE_SUMMARIES[_failure_category(turn.get("error"))]
+        with self._condition:
+            if generation != self._generation or self._closed:
+                return
+            previous = self._turn_observations.get(reference)
+            # Terminal evidence cannot be downgraded by late starts, duplicates,
+            # or a contradictory success notification.
+            severity = {"inProgress": 0, "completed": 1, "interrupted": 2, "failed": 3}
+            if previous is not None and severity[str(previous["status"])] >= severity[str(status)]:
+                return
+            if reference not in self._turn_observations and len(self._turn_observations) >= MAXIMUM_TURN_OBSERVATIONS:
+                del self._turn_observations[next(iter(self._turn_observations))]
+            self._turn_observations[reference] = observation
+
+    def turn_observation(self, runtime_reference: str) -> dict[str, object] | None:
+        with self._condition:
+            observed = self._turn_observations.get(runtime_reference)
+            if observed is None or (
+                observed["status"] == "inProgress" and observed["generation"] != self._generation
+            ):
+                return None
+            return {key: value for key, value in observed.items() if key != "generation"}
 
     @staticmethod
     def _terminate(process: subprocess.Popen | None) -> None:
@@ -867,7 +1002,10 @@ class CodexAppServerClient:
                     self._terminate(process)
                     return
             elif isinstance(message.get("method"), str):
-                # Notifications are intentionally drained but never forwarded.
+                # Raw notifications are never forwarded or retained. Some CLI
+                # versions reconstruct failed turns as completed in thread/read;
+                # retain only exact normalized lifecycle evidence to correct it.
+                self._observe_turn(message, generation)
                 continue
             else:
                 self._mark_broken(generation, "codex.protocol_invalid")
@@ -933,15 +1071,13 @@ def _split_runtime_reference(value: object) -> tuple[str, str]:
 
 
 def _iso_timestamp(value: object, *, code: str) -> str:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(float(value))
-        or float(value) < 0
-    ):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise AgentRuntimeError(code)
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        timestamp = float(value)
+        if not math.isfinite(timestamp) or timestamp < 0:
+            raise AgentRuntimeError(code)
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
     except (OSError, OverflowError, ValueError) as exc:
         raise AgentRuntimeError(code) from exc
 
@@ -1523,7 +1659,23 @@ class CodexRuntime:
         ]
         if len(matches) != 1 or matches[0].get("status") not in _TURN_STATUSES:
             raise AgentRuntimeError("runtime.status_invalid")
-        return matches[0], bound
+        turn = dict(matches[0])
+        # Never trust a provider-supplied field as our normalized diagnostic.
+        turn.pop("failure_summary", None)
+        observe = getattr(self._require_client(), "turn_observation", None)
+        observation = observe(run_id) if callable(observe) else None
+        if observation is not None:
+            observed_status = observation["status"]
+            if observed_status == "inProgress" and turn["status"] == "completed":
+                # A reconstructed read may race the authoritative notification.
+                turn["status"] = "inProgress"
+            elif observed_status in {"failed", "interrupted"} or turn["status"] == observed_status:
+                turn.update(observation)
+        elif callable(observe) and turn["status"] == "completed":
+            # After restart or bounded observation eviction, reconstructed
+            # items cannot prove success: failed turns can have output too.
+            raise AgentRuntimeError("runtime.status_unavailable")
+        return turn, bound
 
     def get_status(
         self, run_id: str, *, context: RuntimeContext | None = None
@@ -1699,7 +1851,7 @@ class CodexRuntime:
                     summary={
                         RunStatus.COMPLETED: "Codex run completed",
                         RunStatus.STOPPED: "Codex run stopped",
-                        RunStatus.FAILED: "Codex run failed",
+                        RunStatus.FAILED: turn.get("failure_summary") or _FAILURE_SUMMARIES[_failure_category(turn.get("error"))],
                     }[status],
                 )
             )

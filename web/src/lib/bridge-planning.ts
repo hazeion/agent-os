@@ -37,10 +37,13 @@ import {
   type PublicPlanningTaskExecutionMutation,
   type PublicPlanningDependencyPickerPage,
 } from "./public-planning.ts";
+import { refreshBridgeRun } from "./bridge-run-events.ts";
 import {
   parsePlanningRunOncePreview,
   parsePlanningTaskExecution,
   parsePlanningTaskExecutionMutation,
+  validTaskExecutionRecovery,
+  type TaskExecutionRecovery,
 } from "./public-planning-task-execution.ts";
 import {
   parsePlanningTaskDelegation,
@@ -88,6 +91,7 @@ const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
 const MAXIMUM_RESPONSE_BYTES = 768 * 1024;
 const READ_TIMEOUT_MILLISECONDS = 3_500;
 export const PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS = 8_000;
+export const PLANNING_DELEGATION_OPTIONS_BRIDGE_TIMEOUT_MILLISECONDS = 10_000;
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
@@ -280,6 +284,15 @@ export async function fetchBridgePlanningTaskExecution(taskId: string, fetcher: 
   fixedFailure(response, payload);
 }
 
+export async function refreshBridgePlanningTaskExecution(taskId: string, expectedRevision: number): Promise<PublicPlanningTaskExecution> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BridgePlanningError("planning_request_invalid");
+  const current = await fetchBridgePlanningTaskExecution(taskId);
+  if (current.task.revision !== expectedRevision) throw new BridgePlanningError("planning_conflict");
+  const active = current.execution.attempts.filter((attempt) => ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(attempt.status));
+  for (const attempt of active) await refreshBridgeRun(attempt.run_id);
+  return fetchBridgePlanningTaskExecution(taskId);
+}
+
 /** Read the fixed, safe delegation summary for one selected Planning Task. */
 export async function fetchBridgePlanningTaskDelegation(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegation> {
   if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
@@ -360,7 +373,7 @@ function delegationRevision(value: unknown): value is number { return Number.isS
 
 export async function fetchBridgePlanningTaskDelegationOptions(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationOptions> {
   if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
-  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_OPTIONS_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
+  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_OPTIONS_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment, {}, PLANNING_DELEGATION_OPTIONS_BRIDGE_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parse(() => parsePlanningTaskDelegationOptions(payload, taskId));
   fixedFailure(response, payload);
 }
@@ -427,10 +440,11 @@ export async function confirmBridgePlanningTaskRunOnce(taskId: string, expectedR
   fixedFailure(response, payload);
 }
 
-export async function reviewBridgePlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskExecutionMutation> {
+export async function reviewBridgePlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env, recovery?: TaskExecutionRecovery): Promise<PublicPlanningTaskExecutionMutation> {
   if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !validIdempotencyKey(idempotencyKey) || action === "accept" && note !== null || action === "request_changes" && (typeof note !== "string" || !note || note.trim() !== note || [...note].length > 2_000 || /\p{C}/u.test(note))) throw new BridgePlanningError("planning_request_invalid");
+  if (recovery !== undefined && (action !== "request_changes" || !validTaskExecutionRecovery(recovery))) throw new BridgePlanningError("planning_request_invalid");
   const body = action === "request_changes"
-    ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note, task_id: taskId }
+    ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note, task_id: taskId, ...recovery }
     : { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, task_id: taskId };
   const { response, payload } = await request(PRIVATE_TASK_REVIEW_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parse(() => parsePlanningTaskExecutionMutation(payload, taskId));

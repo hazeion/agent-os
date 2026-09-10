@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,12 +25,14 @@ from agent_runtime import (
 from codex_runtime import (
     CODEX_DEFAULT_BINDING,
     START_TASK_OPERATION_TIMEOUT_SECONDS,
+    MAXIMUM_TURN_OBSERVATIONS,
     CodexAppServerClient,
     CodexAppServerClientError,
     CodexRuntime,
     codex_app_server_command,
     codex_child_environment,
     find_codex_command,
+    _failure_category,
 )
 
 
@@ -678,6 +681,116 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(first[1].content, "token=[REDACTED] [redacted-path]")
         self.assertTrue(all(event.content is None for event in first[2:]))
 
+    def test_failure_events_use_closed_actionable_categories_without_raw_payloads(self):
+        cases = [
+            ("unauthorized", "authentication"),
+            ("usageLimitExceeded", "usage limit"),
+            ("sessionBudgetExceeded", "usage limit"),
+            ("sandboxError", "sandbox"),
+            ("badRequest", "request rejected"),
+            ("contextWindowExceeded", "context limit"),
+            ("cyberPolicy", "policy restriction"),
+            ({"httpConnectionFailed": {"httpStatusCode": 401}}, "authentication"),
+            ({"responseStreamConnectionFailed": {"httpStatusCode": 429}}, "usage limit"),
+            ({"responseStreamDisconnected": {"httpStatusCode": 503}}, "provider unavailable"),
+            ({"responseTooManyFailedAttempts": {"httpStatusCode": None}}, "connection"),
+            ({"httpConnectionFailed": {"httpStatusCode": True}}, "cause unavailable"),
+            ({"unauthorized": {}}, "cause unavailable"),
+            (["unauthorized"], "cause unavailable"),
+            ("unexpected-private-code", "cause unavailable"),
+            (None, "cause unavailable"),
+        ]
+        with TemporaryDirectory() as temporary:
+            for info, category in cases:
+                with self.subTest(category=category, info=info):
+                    snapshot = thread_read(status="failed")
+                    snapshot["thread"]["turns"][0]["error"] = {
+                        "codexErrorInfo": info,
+                        "message": "provider-secret /Users/private token=secret",
+                        "additionalDetails": {"private": "must-not-leak"},
+                    }
+                    runtime = self.runtime(Path(temporary), FakeClient(snapshot, snapshot))
+                    events = runtime.stream_events(RUNTIME_REF, context=context(runtime_run_ref=RUNTIME_REF))
+                    failure = events[-1]
+                    self.assertEqual(failure.type, AgentEventType.RUN_FAILED)
+                    self.assertIn(category, failure.summary)
+                    self.assertLessEqual(len(failure.summary), 500)
+                    self.assertIsNone(failure.content)
+                    self.assertEqual(events, runtime.stream_events(RUNTIME_REF, context=context(runtime_run_ref=RUNTIME_REF)))
+                    for secret in ("provider-secret", "/Users/private", "token=secret", "must-not-leak", "unexpected-private-code"):
+                        self.assertNotIn(secret, repr(events))
+
+    def test_known_legacy_compatibility_rejection_requires_complete_bounded_envelope(self):
+        payload = {
+            "type": "error", "status": 400,
+            "error": {"type": "invalid_request_error", "message": "The 'example-model' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."},
+        }
+        message = "stream error: " + json.dumps(payload)
+        self.assertEqual(_failure_category({"codexErrorInfo": "other", "message": message}), "compatibility")
+        self.assertEqual(_failure_category({"codexErrorInfo": "other", "message": json.dumps(payload)}), "compatibility")
+        for invalid in (
+            message + " private", message.replace('400', '401'), message.replace("invalid_request_error", "unknown"),
+            message.replace("example-model", "/Users/private"), message.replace("try again.", "try again. token=secret"),
+            "requires a newer version", "stream error: " + "[" * 8100,
+            message + " " * 8192,
+        ):
+            self.assertEqual(_failure_category({"codexErrorInfo": "other", "message": invalid}), "unknown")
+
+    def test_terminal_notification_corrects_reconstructed_success_and_stays_failed(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations = CodexAppServerClient(command=(sys.executable,), cwd=root)
+            snapshot = thread_read(status="completed", items=[{"id": "user_1", "type": "userMessage"}])
+            client = FakeClient(*([snapshot] * 6))
+            client.turn_observation = observations.turn_observation
+            runtime = self.runtime(root, client)
+            bound = context(runtime_run_ref=RUNTIME_REF)
+            start = turn_start()["turn"]
+            observations._observe_turn({"method": "turn/started", "params": {"threadId": THREAD_ID, "turn": start}}, 0)
+            self.assertEqual(runtime.get_status(RUNTIME_REF, context=bound).status, RunStatus.RUNNING)
+            failure = {**start, "status": "failed", "completedAt": 1787428810, "error": {"codexErrorInfo": "unauthorized", "message": "token=secret"}}
+            observations._observe_turn({"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": failure}}, 0)
+            self.assertEqual(runtime.get_status(RUNTIME_REF, context=bound).status, RunStatus.FAILED)
+            events = runtime.stream_events(RUNTIME_REF, context=bound)
+            self.assertEqual(events[-1].type, AgentEventType.RUN_FAILED)
+            self.assertIn("authentication", events[-1].summary)
+            for late in (start, {**failure, "status": "completed"}, failure):
+                observations._observe_turn({"method": "turn/started" if late["status"] == "inProgress" else "turn/completed", "params": {"threadId": THREAD_ID, "turn": late}}, 0)
+            self.assertEqual(runtime.get_status(RUNTIME_REF, context=bound).status, RunStatus.FAILED)
+            self.assertEqual(runtime.stream_events(RUNTIME_REF, context=bound), events)
+            self.assertNotIn("token=secret", repr(observations._turn_observations))
+
+    def test_observation_does_not_override_wrong_thread_or_turn(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations = CodexAppServerClient(command=(sys.executable,), cwd=root)
+            for thread_id, turn_id in (("different-thread", TURN_ID), (THREAD_ID, NEXT_TURN_ID)):
+                observations._observe_turn({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "failed"}}}, 0)
+            snapshot = thread_read(status="completed", items=[{"id": "answer", "type": "agentMessage", "text": "4"}])
+            client = FakeClient(snapshot)
+            client.turn_observation = observations.turn_observation
+            runtime = self.runtime(root, client)
+            with self.assertRaisesRegex(AgentRuntimeError, "runtime.status_unavailable"):
+                runtime.get_status(RUNTIME_REF, context=context(runtime_run_ref=RUNTIME_REF))
+
+    def test_reconstruction_without_lifecycle_evidence_cannot_claim_success(self):
+        with TemporaryDirectory() as temporary:
+            for item_type in ("userMessage", "reasoning", "commandExecution", "agentMessage"):
+                with self.subTest(item_type=item_type):
+                    client = FakeClient(thread_read(status="completed", items=[{"id": "item_1", "type": item_type, "text": "partial output"}]))
+                    client.turn_observation = lambda reference: None
+                    runtime = self.runtime(Path(temporary), client)
+                    with self.assertRaisesRegex(AgentRuntimeError, "runtime.status_unavailable"):
+                        runtime.get_status(RUNTIME_REF, context=context(runtime_run_ref=RUNTIME_REF))
+
+    def test_completed_notification_waits_for_items_readback_before_success(self):
+        with TemporaryDirectory() as temporary:
+            client = FakeClient(thread_read(), thread_read(status="completed", items=[{"id": "answer", "type": "agentMessage", "text": "4"}]))
+            client.turn_observation = lambda reference: {"status": "completed", "startedAt": 1787428800, "completedAt": 1787428810}
+            runtime = self.runtime(Path(temporary), client)
+            self.assertEqual(runtime.get_status(RUNTIME_REF, context=context(runtime_run_ref=RUNTIME_REF)).status, RunStatus.RUNNING)
+            self.assertEqual(runtime.get_status(RUNTIME_REF, context=context(runtime_run_ref=RUNTIME_REF)).status, RunStatus.COMPLETED)
+
     def test_events_stop_at_first_unstable_item_to_remain_append_only(self):
         active_items = [
             {"id": "item_message", "type": "agentMessage", "text": "Ready"},
@@ -813,6 +926,9 @@ class CodexAppServerClientTests(unittest.TestCase):
             elif method == "test/echo":
                 send({"method": "thread/status/changed", "params": {"private": "ignored"}})
                 send({"id": request_id, "result": message.get("params")})
+            elif method == "test/observe":
+                send(message.get("params"))
+                send({"id": request_id, "result": {}})
             elif method == "test/environment":
                 send({"id": request_id, "result": {"keys": sorted(os.environ)}})
             elif method == "test/child":
@@ -873,6 +989,59 @@ class CodexAppServerClientTests(unittest.TestCase):
         self.assertIn("HOME", keys)
         self.assertNotIn("MENTAT_LOCAL_BRIDGE_TOKEN", keys)
         self.assertNotIn("CODEX_API_KEY", keys)
+
+    def test_stdio_retains_only_normalized_exact_terminal_evidence(self):
+        with TemporaryDirectory() as temporary:
+            client = self.client(Path(temporary))
+            try:
+                turn = {"id": TURN_ID, "status": "failed", "startedAt": 1787428800, "completedAt": 1787428810, "error": {"codexErrorInfo": "sandboxError", "message": "private /Users/alice"}, "items": [{"private": "provider-secret"}]}
+                client.request("test/observe", {"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": turn}})
+                observed = client.turn_observation(RUNTIME_REF)
+                self.assertEqual(observed["status"], "failed")
+                self.assertIn("sandbox", observed["failure_summary"])
+                self.assertEqual(set(observed), {"status", "startedAt", "completedAt", "failure_summary"})
+                for private in ("/Users/alice", "provider-secret"):
+                    self.assertNotIn(private, repr(observed))
+            finally:
+                client.close()
+
+    def test_stdio_oversized_timestamp_does_not_kill_response_reader(self):
+        with TemporaryDirectory() as temporary:
+            client = self.client(Path(temporary))
+            try:
+                turn = {"id": TURN_ID, "status": "failed", "startedAt": 1787428800, "completedAt": 10**400, "error": {"codexErrorInfo": "sandboxError"}}
+                self.assertEqual(client.request("test/observe", {"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": turn}}), {})
+                observed = client.turn_observation(RUNTIME_REF)
+                self.assertEqual(observed["status"], "failed")
+                self.assertNotIn("completedAt", observed)
+                self.assertEqual(client.request("test/echo", {"still": "responsive"}), {"still": "responsive"})
+            finally:
+                client.close()
+
+    def test_observation_bounds_generations_and_returned_copy(self):
+        with TemporaryDirectory() as temporary:
+            client = CodexAppServerClient(command=(sys.executable,), cwd=Path(temporary))
+            for index in range(MAXIMUM_TURN_OBSERVATIONS + 1):
+                client._observe_turn({"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": {"id": f"turn_{index}", "status": "failed"}}}, 0)
+            self.assertEqual(len(client._turn_observations), MAXIMUM_TURN_OBSERVATIONS)
+            self.assertIsNone(client.turn_observation(f"{THREAD_ID}:turn_0"))
+            reference = f"{THREAD_ID}:turn_1"
+            result = client.turn_observation(reference)
+            result["status"] = "completed"
+            self.assertEqual(client.turn_observation(reference)["status"], "failed")
+            client._observe_turn({"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": {"id": TURN_ID, "status": "failed"}}}, 99)
+            self.assertIsNone(client.turn_observation(RUNTIME_REF))
+
+    def test_observation_discards_stale_active_generation_but_preserves_terminal_failure(self):
+        with TemporaryDirectory() as temporary:
+            client = CodexAppServerClient(command=(sys.executable,), cwd=Path(temporary))
+            client._observe_turn({"method": "turn/started", "params": {"threadId": THREAD_ID, "turn": {"id": TURN_ID, "status": "inProgress"}}}, 0)
+            client._observe_turn({"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": {"id": NEXT_TURN_ID, "status": "failed"}}}, 0)
+            client._generation = 1
+            self.assertIsNone(client.turn_observation(RUNTIME_REF))
+            self.assertEqual(client.turn_observation(f"{THREAD_ID}:{NEXT_TURN_ID}")["status"], "failed")
+            client._observe_turn({"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": {"id": TURN_ID, "status": {"malformed": "private"}}}}, 1)
+            self.assertIsNone(client.turn_observation(RUNTIME_REF))
 
     def test_server_initiated_permission_request_is_denied_not_forwarded(self):
         with TemporaryDirectory() as temporary:

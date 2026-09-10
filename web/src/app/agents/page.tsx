@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { AppShell } from "../app-shell";
 import { Panel } from "../route-frame";
+import { AgentSetupPanel } from "./agent-setup-panel";
 
 export const metadata: Metadata = { title: "Agents · Mentat" };
 
@@ -9,6 +10,7 @@ export default function AgentsPage() {
   return (
     <AppShell route="/agents">
       <Panel eyebrow="Canonical registry" title="Agent workspace">
+        <AgentSetupPanel />
         <div className="agents-workspace-section">
           <h2>Provider connections</h2>
           <section

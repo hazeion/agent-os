@@ -100,7 +100,9 @@ export const ConversationPlanningControls = memo(function ConversationPlanningCo
     } catch { setTasksState("unavailable"); }
   }
 
-  const working = busy || mutationBusy || contextState !== "ready";
+  const contextIsCurrent = context?.conversation_id === conversationId
+    && context.conversation_revision === conversationRevision;
+  const working = busy || mutationBusy || contextState !== "ready" || !contextIsCurrent;
 
   async function apply(next: PlanningSelection) {
     if (working || (next.projectId ? disabledReason : clearDisabledReason)) return;

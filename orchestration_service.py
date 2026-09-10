@@ -269,7 +269,11 @@ class OrchestrationService:
         return record, binding
 
     @staticmethod
-    def _task_contract(document: dict, revision: int) -> MentatTask:
+    def _task_contract(
+        document: dict,
+        revision: int,
+        requested_changes: str | None = None,
+    ) -> MentatTask:
         assigned_agent_id = document.get("assigned_agent_id")
         if not isinstance(assigned_agent_id, str) or not assigned_agent_id:
             raise OrchestrationServiceError("dispatch.agent_required")
@@ -278,6 +282,19 @@ class OrchestrationService:
         if not isinstance(required, (list, tuple)) or not isinstance(criteria, (list, tuple)):
             raise OrchestrationServiceError("dispatch.task_invalid")
         objective = str(document.get("description") or document.get("title") or "").strip()
+        if requested_changes is not None:
+            if (
+                not isinstance(requested_changes, str)
+                or not requested_changes
+                or requested_changes != requested_changes.strip()
+                or len(requested_changes) > 2_000
+            ):
+                raise OrchestrationServiceError("dispatch.task_invalid")
+            objective = (
+                f"{objective}\n\n"
+                "Operator-requested changes for this exact next attempt:\n"
+                f"{requested_changes}"
+            )
         try:
             return MentatTask(
                 id=str(document.get("id") or ""),
@@ -428,7 +445,19 @@ class OrchestrationService:
                     snapshot = TaskRepository(connection).get(task_id)
                     if snapshot.revision != expected_revision:
                         raise OrchestrationServiceError("dispatch.task_changed")
-                    task = self._task_contract(snapshot.document, snapshot.revision)
+                    requested_changes = (
+                        repository.task_execution_change_request(
+                            task_id,
+                            result_task_revision=snapshot.revision,
+                        )
+                        if planning_execution
+                        else None
+                    )
+                    task = self._task_contract(
+                        snapshot.document,
+                        snapshot.revision,
+                        requested_changes,
+                    )
                     if planning_execution:
                         self._require_planning_execution_eligibility(snapshot.document)
                     agent, binding = self._agent_and_binding(
@@ -469,9 +498,18 @@ class OrchestrationService:
                         or current_snapshot.document != snapshot.document
                     ):
                         raise OrchestrationServiceError("dispatch.task_changed")
+                    current_requested_changes = (
+                        repository.task_execution_change_request(
+                            task_id,
+                            result_task_revision=current_snapshot.revision,
+                        )
+                        if planning_execution
+                        else None
+                    )
                     current_task = self._task_contract(
                         current_snapshot.document,
                         current_snapshot.revision,
+                        current_requested_changes,
                     )
                     if planning_execution:
                         self._require_planning_execution_eligibility(
@@ -491,6 +529,7 @@ class OrchestrationService:
                     )
                     if (
                         current_task != task
+                        or current_requested_changes != requested_changes
                         or current_agent != agent
                         or current_binding != binding
                         or current_runtime is not runtime
@@ -1819,6 +1858,28 @@ class OrchestrationService:
                 disposition=reservation.state,
             )
 
+        continuation_reference = None
+        if binding.runtime_type == "codex":
+            try:
+                with private_state_lock(self.data_dir):
+                    connection = self._connect()
+                    try:
+                        predecessor = RunRepository(
+                            connection
+                        ).conversation_continuation_predecessor(
+                            run_id=reservation.run_id,
+                        )
+                    finally:
+                        connection.close()
+                if predecessor is not None:
+                    if predecessor.runtime_run_ref is None:
+                        raise RunRepositoryError("run_repository.corrupt")
+                    continuation_reference = predecessor.runtime_run_ref
+            except RunRepositoryError as exc:
+                return self._reject_reserved_conversation_continuation(
+                    reservation,
+                    failure_code=exc.code,
+                )
         try:
             return self._execute_reserved_conversation_turn(
                 reservation=reservation,
@@ -1826,6 +1887,7 @@ class OrchestrationService:
                 record=record,
                 binding=binding,
                 runtime=runtime,
+                continuation_runtime_run_ref=continuation_reference,
             )
         finally:
             if prepared and self.conversation_attachment_cleanup is not None:

@@ -56,7 +56,11 @@ class ConversationPlanningBridgeTests(unittest.TestCase):
             "query": "Mentat",
             "projects": [{"id": "project_mentat", "title": "Mentat", "type": "project"}],
             "project_count": 1,
-            "tasks": [{"id": "task_1", "title": "Plan Slice 10", "type": "task"}],
+            "tasks": [{
+                "id": "task_1", "title": "Plan Slice 10", "type": "task",
+                "project_id": "project_mentat", "project_name": "Mentat",
+                "due_date": "2026-08-30", "workflow_stage": "planned",
+            }],
             "task_count": 1,
             "truncated": False,
         }

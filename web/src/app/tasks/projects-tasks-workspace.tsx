@@ -1,7 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { browserTimezone, inputTimestamp, localInputTimestamp, planningTimestamp } from "@/lib/planning-time";
 
 import type { TaskDependencyMapProps } from "./task-dependency-map";
 
@@ -49,6 +50,7 @@ import {
   confirmPlanningTaskRunOnce,
   previewPlanningTaskRunOnce,
   readPlanningTaskExecution,
+  refreshPlanningTaskExecution,
   reviewPlanningTaskExecution,
 } from "@/lib/public-planning-task-execution";
 import { readPlanningTaskDelegation, type PublicPlanningTaskDelegation } from "@/lib/public-planning-task-delegation";
@@ -60,6 +62,8 @@ import {
   readPlanningTaskDelegationOptions,
   recoverPlanningTaskDelegation,
   refreshPlanningTaskDelegation,
+  DELEGATION_DISCOVERY_GUIDANCE,
+  type DelegationDiscoveryReason,
   type DelegationAction,
   type PublicPlanningTaskDelegationOptions,
   type PublicPlanningTaskDelegationPreview,
@@ -116,17 +120,11 @@ function requestedTask(): { projectId: string | null; taskId: string | null } | 
   return { projectId, taskId };
 }
 
-function planningTimestamp(value: string, timezone?: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: timezone ?? "UTC",
-      timeZoneName: "short",
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
+function recurrenceSummary(recurrence: PublicPlanningTaskDetail["recurrence"]): string {
+  if (!recurrence) return "None";
+  const units = { daily: "days", weekly: "weeks", monthly: "months", yearly: "years" };
+  const cadence = recurrence.interval === 1 ? recurrence.frequency : `Every ${recurrence.interval} ${units[recurrence.frequency]}`;
+  return [cadence, recurrence.weekdays?.join(", "), recurrence.ends_on ? `until ${recurrence.ends_on}` : null, recurrence.count ? `${recurrence.count} occurrences` : null].filter(Boolean).join(" · ");
 }
 
 function noteLinkLabel(path: string, title: string | undefined, index: number): string {
@@ -135,10 +133,7 @@ function noteLinkLabel(path: string, title: string | undefined, index: number): 
   return filename || `Note ${index + 1}`;
 }
 
-type ReminderDraft = { id: string; at: string; enabled: boolean; timezone?: string };
-function browserTimezone(): string { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } }
-function localInputTimestamp(value: string): string { const parsed = new Date(value); return Number.isNaN(parsed.valueOf()) ? "" : parsed.toISOString(); }
-function inputTimestamp(value: string): string { const parsed = new Date(value); if (Number.isNaN(parsed.valueOf())) return ""; const offset = parsed.getTimezoneOffset() * 60_000; return new Date(parsed.valueOf() - offset).toISOString().slice(0, 16); }
+type ReminderDraft = { id: string; at: string; enabled: boolean; timezone?: string; originalInstant?: string; originalInput?: string };
 function sundayFor(value: Date): string { const local = new Date(value.getFullYear(), value.getMonth(), value.getDate()); local.setDate(local.getDate() - local.getDay()); return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`; }
 function shiftSunday(weekStart: string, weeks: number): string { const date = new Date(`${weekStart}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + weeks * 7); return date.toISOString().slice(0, 10); }
 
@@ -151,6 +146,15 @@ async function readAgents(): Promise<PublicAgent[]> {
   return agents.map((item) => ({ capabilities: [...item.capabilities as string[]], id: String(item.id), name: String(item.name), runtime_config_id: String(item.runtime_config_id), runtime_type: String(item.runtime_type) }));
 }
 
+function updatePlanningLocation(projectId: string | null, taskId: string | null, replace = false) {
+  const location = new URL(window.location.href);
+  location.pathname = "/tasks";
+  location.search = new URLSearchParams(projectId ? taskId ? { project: projectId, task: taskId } : { project: projectId } : {}).toString();
+  location.hash = "";
+  if (replace) window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+  else window.history.pushState(null, "", `${location.pathname}${location.search}`);
+}
+
 export function ProjectsTasksWorkspace() {
   const [overview, setOverview] = useState<PublicPlanningOverview | null>(null);
   const [state, setState] = useState<LoadState>("loading");
@@ -159,7 +163,10 @@ export function ProjectsTasksWorkspace() {
   const [tasksState, setTasksState] = useState<LoadState>("loading");
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
   const [taskPageRefreshVersion, setTaskPageRefreshVersion] = useState(0);
+  const [taskProjectionRefreshVersion, setTaskProjectionRefreshVersion] = useState(0);
+  const [planningSearchRefreshVersion, setPlanningSearchRefreshVersion] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshingTaskPages, setRefreshingTaskPages] = useState(false);
   const [agents, setAgents] = useState<PublicAgent[]>([]);
   const [agentsState, setAgentsState] = useState<"loading" | "ready" | "empty" | "unavailable">("loading");
   const [projectForm, setProjectForm] = useState(false);
@@ -170,6 +177,9 @@ export function ProjectsTasksWorkspace() {
   const [taskAgent, setTaskAgent] = useState("");
   const [taskDue, setTaskDue] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [compactPlanningLayout, setCompactPlanningLayout] = useState(false);
+  const [projectNavigationOpen, setProjectNavigationOpen] = useState(false);
+  const [layoutRevealVersion, setLayoutRevealVersion] = useState(0);
   const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
   const [taskDependencies, setTaskDependencies] = useState<PublicPlanningTaskDependencies | null>(null);
   const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
@@ -177,6 +187,8 @@ export function ProjectsTasksWorkspace() {
   const [executionState, setExecutionState] = useState<LoadState>("loading");
   const [taskDelegation, setTaskDelegation] = useState<PublicPlanningTaskDelegation | null>(null);
   const [delegationState, setDelegationState] = useState<LoadState>("loading");
+  const [delegationOptionsState, setDelegationOptionsState] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
+  const [delegationOptionsReason, setDelegationOptionsReason] = useState<DelegationDiscoveryReason | null>(null);
   const [delegationOptions, setDelegationOptions] = useState<PublicPlanningTaskDelegationOptions | null>(null);
   const [delegationForm, setDelegationForm] = useState(false);
   const [delegationProfile, setDelegationProfile] = useState("");
@@ -190,6 +202,7 @@ export function ProjectsTasksWorkspace() {
   const [delegationRecovery, setDelegationRecovery] = useState<DelegationRecovery | null>(null);
   const [runOnceConfirmation, setRunOnceConfirmation] = useState<{ confirmationId: string; idempotencyKey: string; revision: number; taskId: string } | null>(null);
   const [requestChanges, setRequestChanges] = useState(false);
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState<{ taskId: string; revision: number; runId: string; runRevision: number; idempotencyKey: string } | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [dependencyMap, setDependencyMap] = useState<PublicPlanningDependencyMap | null>(null);
   const [dependencyMapState, setDependencyMapState] = useState<LoadState>("empty");
@@ -235,9 +248,23 @@ export function ProjectsTasksWorkspace() {
   const [notice, setNotice] = useState("");
   const projectInput = useRef<HTMLInputElement>(null);
   const taskInput = useRef<HTMLInputElement>(null);
+  const pendingChecklistFocus = useRef<string | null>(null);
+  const inspectorHeading = useRef<HTMLHeadingElement>(null);
+  const inspectorPanel = useRef<HTMLElement>(null);
+  const workbenchElement = useRef<HTMLElement>(null);
+  const compactLayoutRef = useRef(false);
+  const pendingLayoutReveal = useRef<HTMLElement | null>(null);
+  const projectHeading = useRef<HTMLHeadingElement>(null);
+  const taskListHeading = useRef<HTMLHeadingElement>(null);
+  const boardElement = useRef<HTMLDivElement>(null);
+  const pendingInspectorFocus = useRef(false);
+  const projectNavigationContent = useRef<HTMLDivElement>(null);
+  const pendingProjectFocus = useRef(false);
+  const pendingTaskListFocus = useRef(false);
   const newProjectButton = useRef<HTMLButtonElement>(null);
   const addTaskButton = useRef<HTMLButtonElement>(null);
   const projectSelectionGeneration = useRef(0);
+  const overviewGeneration = useRef(0);
   const projectVisibilityRef = useRef<ProjectVisibility>("active");
   const requestedTaskFocus = useRef<string | null>(null);
   const selectedProjectRef = useRef<string | null>(null);
@@ -246,8 +273,13 @@ export function ProjectsTasksWorkspace() {
   // cannot repaint a different Task (or an older read of the same Task).
   const selectedTaskRef = useRef<string | null>(null);
   const taskSelectionGeneration = useRef(0);
+  const taskPageGeneration = useRef(0);
+  const taskPagesLoaded = useRef(1);
+  const taskPagesRefreshing = useRef(false);
+  const requestedTaskResolved = useRef(false);
   const executionGeneration = useRef(0);
   const delegationGeneration = useRef(0);
+  const delegationOptionsRequest = useRef<object | null>(null);
   // An ambiguous delegation delivery is an external mutation boundary. Keep the
   // exact receipt outside render state too, so a rapid second click cannot mint
   // a new key before React has repainted the recovery-only presentation.
@@ -263,6 +295,8 @@ export function ProjectsTasksWorkspace() {
   function selectTaskId(taskId: string | null) {
     if (selectedTaskRef.current !== taskId) {
       selectedTaskRef.current = taskId;
+      pendingInspectorFocus.current = taskId !== null;
+      if (taskId && window.innerWidth <= 1100) setProjectNavigationOpen(false);
       taskSelectionGeneration.current += 1;
       executionGeneration.current += 1;
       delegationGeneration.current += 1;
@@ -274,6 +308,8 @@ export function ProjectsTasksWorkspace() {
       setExecutionState(taskId ? "loading" : "empty");
       setTaskDelegation(null);
       setDelegationState(taskId ? "loading" : "empty");
+      delegationOptionsRequest.current = null;
+      setDelegationOptionsState("idle"); setDelegationOptionsReason(null);
       setDelegationOptions(null);
       setDelegationForm(false);
       setDelegationPreview(null);
@@ -289,27 +325,24 @@ export function ProjectsTasksWorkspace() {
       setCalendarEditor(false); setCalendarWindow(null); setCalendarState("empty");
       setNoteEditor(false); setNotePicker(null); setNotePickerState("empty"); setNoteQuery("");
       setRequestChanges(false);
+      setRecoveryConfirmation(null);
       setReviewNote("");
     }
     setSelectedTaskId(taskId);
   }
 
-  async function refreshOverview(preferredProjectId: string | null = null, visibility: ProjectVisibility = projectVisibility) {
+  async function refreshOverview(preferredProjectId: string | null = null, visibility: ProjectVisibility = projectVisibility, expectedSelection = projectSelectionGeneration.current) {
+    const generation = ++overviewGeneration.current;
     const value = await readPlanningOverview();
+    if (generation !== overviewGeneration.current) return value;
     setOverview(value);
     setState(value.projects.length ? "ready" : "empty");
-    const requestedProject = requested && typeof requested === "object"
-      ? requested.projectId !== null
-        ? value.projects.some((item) => item.id === requested.projectId) ? requested.projectId : null
-        : null
-      : null;
     const visibleProjects = projectsForVisibility(value.projects, visibility);
     setSelectedProjectId((current) => {
-      const next = preferredProjectId && visibleProjects.some((item) => item.id === preferredProjectId)
+      const next = expectedSelection !== projectSelectionGeneration.current ? current
+        : preferredProjectId && visibleProjects.some((item) => item.id === preferredProjectId)
         ? preferredProjectId
-        : requestedProject && visibleProjects.some((item) => item.id === requestedProject)
-          ? requestedProject
-          : current && visibleProjects.some((item) => item.id === current)
+        : current && visibleProjects.some((item) => item.id === current)
             ? current
             : visibleProjects[0]?.id ?? null;
       selectedProjectRef.current = next;
@@ -323,7 +356,14 @@ export function ProjectsTasksWorkspace() {
   }
 
   function selectProject(projectId: string) {
+    if (window.innerWidth <= 1100 && projectNavigationOpen) { pendingTaskListFocus.current = true; setProjectNavigationOpen(false); }
+    if (selectedProjectRef.current === projectId) { projectSelectionGeneration.current += 1; requestedTaskResolved.current = true; return; }
+    setLoadingMore(false);
+    taskPagesRefreshing.current = true; setRefreshingTaskPages(true);
     projectSelectionGeneration.current += 1;
+    taskPageGeneration.current += 1;
+    taskPagesLoaded.current = 1;
+    requestedTaskResolved.current = true;
     requestedTaskFocus.current = null;
     selectedProjectRef.current = projectId;
     setSelectedProjectId(projectId);
@@ -360,6 +400,51 @@ export function ProjectsTasksWorkspace() {
       closeTaskForm();
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    const updateLayout = () => {
+      if (cancelled) return;
+      const compact = window.innerWidth <= 1100;
+      const active = document.activeElement;
+      // An earlier desktop visit to Projects must not leave its full list
+      // above a focused mobile Task editor. Preserve it only for current focus.
+      if (compact && !compactLayoutRef.current) setProjectNavigationOpen(!!projectNavigationContent.current?.contains(active));
+      compactLayoutRef.current = compact;
+      if (active instanceof HTMLElement && workbenchElement.current?.contains(active) && active.matches("input, textarea, select, [contenteditable='true']")) {
+        pendingLayoutReveal.current = active;
+        setLayoutRevealVersion((current) => current + 1);
+      }
+      setCompactPlanningLayout(compact);
+    };
+    window.addEventListener("resize", updateLayout);
+    void Promise.resolve().then(updateLayout);
+    return () => { cancelled = true; window.removeEventListener("resize", updateLayout); };
+  }, []);
+
+  useLayoutEffect(() => {
+    const target = pendingLayoutReveal.current;
+    pendingLayoutReveal.current = null;
+    if (!target?.isConnected || document.activeElement !== target) return;
+    const header = inspectorPanel.current?.contains(target) ? inspectorPanel.current.querySelector<HTMLElement>(".planning-inspector-header") : null;
+    const margin = target.style.scrollMarginTop;
+    target.style.scrollMarginTop = `${Math.ceil(header?.getBoundingClientRect().height ?? 0) + 12}px`;
+    try { target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" }); }
+    finally { target.style.scrollMarginTop = margin; }
+  }, [compactPlanningLayout, layoutRevealVersion, projectNavigationOpen]);
+
+  useEffect(() => {
+    if (projectNavigationOpen && pendingProjectFocus.current) {
+      pendingProjectFocus.current = false;
+      projectHeading.current?.focus({ preventScroll: true });
+      projectHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+    if (!projectNavigationOpen && pendingTaskListFocus.current) {
+      pendingTaskListFocus.current = false;
+      taskListHeading.current?.focus({ preventScroll: true });
+      taskListHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+  }, [projectNavigationOpen, selectedProjectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -405,49 +490,69 @@ export function ProjectsTasksWorkspace() {
   }, [requested]);
 
   useEffect(() => {
-    if (!selectedProjectId) { void Promise.resolve().then(() => { setTasks([]); setTaskCursor(null); setTasksState("empty"); }); return; }
+    const generation = ++taskPageGeneration.current;
+    taskPagesRefreshing.current = selectedProjectId !== null;
+    if (!selectedProjectId) { void Promise.resolve().then(() => { if (generation === taskPageGeneration.current) { setTasks([]); setTaskCursor(null); setTasksState("empty"); setRefreshingTaskPages(false); } }); return; }
     const projectId = selectedProjectId;
+    const selectedAtStart = selectedTaskRef.current;
+    const selectionGeneration = taskSelectionGeneration.current;
+    const desiredPages = taskPagesLoaded.current;
     let cancelled = false;
-    void Promise.resolve().then(() => { if (!cancelled) setTasksState("loading"); });
+    const isCurrent = () => !cancelled && generation === taskPageGeneration.current && selectedProjectRef.current === projectId;
+    void Promise.resolve().then(() => { if (isCurrent()) { setTasksState("loading"); setRefreshingTaskPages(true); } });
     void readPlanningTasks(projectId, null).then(async (page) => {
-      if (cancelled) return;
+      if (!isCurrent()) return;
       let rows = [...page.tasks];
       let cursor = page.next_cursor;
-      setTasks(rows);
-      selectTaskId(rows.some((task) => task.id === selectedTaskRef.current) ? selectedTaskRef.current : null);
-      setTaskCursor(cursor);
-      setTasksState(rows.length ? "ready" : "empty");
-      const requestedTaskId = requested && typeof requested === "object" && requested.taskId !== null && (requested.projectId === null || requested.projectId === projectId)
-        ? requested.taskId
-        : null;
+      let pages = 1;
+      const requestedTaskId = !requestedTaskResolved.current && requested && typeof requested === "object" && requested.taskId !== null && (requested.projectId === null || requested.projectId === projectId) ? requested.taskId : null;
       const pendingTaskId = pendingSearchTaskOpen.current?.projectId === projectId ? pendingSearchTaskOpen.current.taskId : null;
-      const targetTaskId = pendingTaskId ?? requestedTaskId;
-      if (targetTaskId) {
-        let target = rows.find((task) => task.id === targetTaskId) ?? null;
-        try {
-          for (let pageIndex = 1; !target && cursor && pageIndex < 42; pageIndex += 1) {
-            const next = await readPlanningTasks(projectId, cursor);
-            if (cancelled) return;
-            rows = [...rows, ...next.tasks.filter((task) => !rows.some((item) => item.id === task.id))];
-            cursor = next.next_cursor;
-            target = rows.find((task) => task.id === targetTaskId) ?? null;
-            setTasks(rows);
-            setTaskCursor(cursor);
-          }
-        } catch {
-          if (!cancelled) setNotice("More Tasks could not be loaded; the verified Tasks shown remain available.");
-          return;
+      const navigationTarget = pendingTaskId ?? requestedTaskId;
+      const targetTaskId = navigationTarget ?? selectedAtStart;
+      // Paint the first page immediately. Keep a selected later-page row only
+      // while its bounded replacement pages are being read.
+      const paint = () => {
+        setTasks((current) => {
+          const retained = current.find((task) => task.id === selectedTaskRef.current);
+          const refreshed = rows.map((row) => { const local = current.find((item) => item.id === row.id); return local && local.revision > row.revision ? local : row; });
+          return retained && !rows.some((task) => task.id === retained.id) ? [...refreshed, retained] : refreshed;
+        });
+        setTaskCursor(cursor);
+        setTasksState(rows.length ? "ready" : "empty");
+      };
+      paint();
+      try {
+        while (cursor && pages < 42 && (pages < desiredPages || targetTaskId && !rows.some((task) => task.id === targetTaskId))) {
+          const next = await readPlanningTasks(projectId, cursor);
+          if (!isCurrent()) return;
+          rows = [...rows, ...next.tasks.filter((task) => !rows.some((item) => item.id === task.id))];
+          cursor = next.next_cursor; pages += 1;
+          paint();
         }
-        if (target) {
-          if (pendingSearchTaskOpen.current?.projectId === projectId && pendingSearchTaskOpen.current.taskId === targetTaskId) pendingSearchTaskOpen.current = null;
-          requestedTaskFocus.current = targetTaskId;
-          selectTaskId(targetTaskId); setTaskDetail(null); setEditingTask(false);
-          setTasks([...rows]);
-        }
-        else setNotice("The requested Task could not be found in this Project.");
+      } catch {
+        if (isCurrent()) { taskPagesRefreshing.current = false; setRefreshingTaskPages(false); setNotice("More Tasks could not be loaded; the verified Tasks shown remain available."); }
+        return;
       }
-      else if (requested === false) setNotice("The requested Task link is invalid.");
-    }).catch(() => { if (!cancelled) setTasksState("unavailable"); });
+      if (!isCurrent()) return;
+      taskPagesRefreshing.current = false; setRefreshingTaskPages(false);
+      taskPagesLoaded.current = pages;
+      setTasks((current) => {
+        const refreshed = rows.map((row) => { const local = current.find((item) => item.id === row.id); return local && local.revision > row.revision ? local : row; });
+        const newerSelection = taskSelectionGeneration.current !== selectionGeneration ? current.find((item) => item.id === selectedTaskRef.current) : null;
+        return newerSelection && !rows.some((item) => item.id === newerSelection.id) ? [...refreshed, newerSelection] : refreshed;
+      }); setTaskCursor(cursor); setTasksState(rows.length ? "ready" : "empty");
+      if (navigationTarget && taskSelectionGeneration.current === selectionGeneration) {
+        requestedTaskResolved.current = true;
+        if (pendingTaskId) pendingSearchTaskOpen.current = null;
+        if (rows.some((task) => task.id === navigationTarget)) {
+          requestedTaskFocus.current = navigationTarget;
+          if (selectedTaskRef.current !== navigationTarget) { selectTaskId(navigationTarget); setTaskDetail(null); setEditingTask(false); }
+        } else setNotice("The requested Task could not be found in this Project.");
+      } else if (selectedAtStart && selectedTaskRef.current === selectedAtStart && !rows.some((task) => task.id === selectedAtStart)) {
+        selectTaskId(null); setTaskDetail(null); setTaskDependencies(null);
+        if (new URL(window.location.href).searchParams.get("task") === selectedAtStart) updatePlanningLocation(projectId, null, true);
+      } else if (requested === false) setNotice("The requested Task link is invalid.");
+    }).catch(() => { if (isCurrent()) { taskPagesRefreshing.current = false; setRefreshingTaskPages(false); setTasksState("unavailable"); } });
     return () => { cancelled = true; };
   }, [requested, selectedProjectId, taskPageRefreshVersion]);
 
@@ -470,7 +575,7 @@ export function ProjectsTasksWorkspace() {
       setTaskDelegation(result); setDelegationState("ready");
     }).catch(() => { if (!cancelled && generation === delegationGeneration.current && selectedTaskRef.current === taskId) setDelegationState("unavailable"); });
     return () => { cancelled = true; };
-  }, [selectedTaskId]);
+  }, [selectedTaskId, taskProjectionRefreshVersion]);
 
   useEffect(() => {
     if (!taskDetail) return;
@@ -525,7 +630,7 @@ export function ProjectsTasksWorkspace() {
       setTaskExecution(result); setExecutionState("ready");
     }).catch(() => { if (!cancelled && generation === executionGeneration.current && selectedTaskRef.current === taskId) setExecutionState("unavailable"); });
     return () => { cancelled = true; };
-  }, [selectedTaskId]);
+  }, [selectedTaskId, taskProjectionRefreshVersion]);
 
   useEffect(() => {
     if (!selectedProjectId || view !== "map") return;
@@ -564,13 +669,24 @@ export function ProjectsTasksWorkspace() {
   }, [dependencyQuery, dependenciesState, editingTask, selectedTaskId]);
 
   useEffect(() => {
+    if (!selectedTaskId || !pendingInspectorFocus.current) return;
+    pendingInspectorFocus.current = false;
+    if (inspectorPanel.current) inspectorPanel.current.scrollTop = 0;
+    if (window.innerWidth <= 1100) {
+      inspectorHeading.current?.focus({ preventScroll: true });
+      inspectorHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+  }, [selectedTaskId]);
+
+  useEffect(() => {
     const taskId = requestedTaskFocus.current;
     if (!taskId) return;
     const target = document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(taskId)}"] > button`);
     if (!target) return;
     requestedTaskFocus.current = null;
-    target.focus({ preventScroll: true });
-    target.scrollIntoView({ block: "center", behavior: "auto" });
+    const focusTarget = window.innerWidth <= 1100 ? inspectorHeading.current ?? target : target;
+    focusTarget.focus({ preventScroll: true });
+    focusTarget.scrollIntoView({ block: window.innerWidth <= 1100 ? "start" : "center", behavior: "auto" });
     setNotice(`Opened Task ${target.parentElement?.dataset.taskTitle ?? ""}.`);
   }, [tasks]);
 
@@ -597,15 +713,8 @@ export function ProjectsTasksWorkspace() {
       });
     }, 180);
     return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
-  }, [planningSearchQuery]);
+  }, [planningSearchQuery, planningSearchRefreshVersion]);
 
-  function updatePlanningLocation(projectId: string, taskId: string | null) {
-    const location = new URL(window.location.href);
-    location.pathname = "/tasks";
-    location.search = new URLSearchParams(taskId ? { project: projectId, task: taskId } : { project: projectId }).toString();
-    location.hash = "";
-    window.history.pushState(null, "", `${location.pathname}${location.search}`);
-  }
 
   async function openPlanningSearchResult(result: PublicPlanningSearchResult) {
     if (busy) return;
@@ -636,17 +745,19 @@ export function ProjectsTasksWorkspace() {
   }
 
   async function loadMoreTasks() {
-    if (!selectedProjectId || !taskCursor || loadingMore) return;
+    if (!selectedProjectId || !taskCursor || loadingMore || taskPagesRefreshing.current || tasksState === "loading" || taskPagesLoaded.current >= 42) return;
     const projectId = selectedProjectId;
+    const generation = taskPageGeneration.current;
     setLoadingMore(true);
     try {
       const page = await readPlanningTasks(projectId, taskCursor);
-      if (selectedProjectRef.current !== projectId) return;
+      if (selectedProjectRef.current !== projectId || generation !== taskPageGeneration.current) return;
+      taskPagesLoaded.current += 1;
       setTasks((current) => [...current, ...page.tasks.filter((task) => !current.some((item) => item.id === task.id))]);
       setTaskCursor(page.next_cursor);
       setTasksState("ready");
-    } catch { setNotice("More Tasks could not be loaded; the verified Tasks shown remain available."); }
-    finally { setLoadingMore(false); }
+    } catch { if (generation === taskPageGeneration.current) setNotice("More Tasks could not be loaded; the verified Tasks shown remain available."); }
+    finally { if (generation === taskPageGeneration.current) setLoadingMore(false); }
   }
 
   function applyDelegationResult(result: PublicPlanningTaskDelegation) {
@@ -657,21 +768,40 @@ export function ProjectsTasksWorkspace() {
   }
 
   async function openDelegationForm() {
-    if (!selectedTask || busy) return;
-    setBusy(true); setNotice("Checking delegation options…");
+    if (!selectedTask || busy || delegationOptionsRequest.current) return;
+    const taskId = selectedTask.id;
+    const revision = selectedTask.revision;
+    const selection = taskSelectionGeneration.current;
+    const projection = delegationGeneration.current;
+    const request = {};
+    delegationOptionsRequest.current = request;
+    const isCurrent = () => delegationOptionsRequest.current === request && selectedTaskRef.current === taskId && taskSelectionGeneration.current === selection && delegationGeneration.current === projection;
+    setDelegationOptionsState("loading"); setDelegationOptionsReason(null); setDelegationOptions(null);
     try {
-      const options = await readPlanningTaskDelegationOptions(selectedTask.id);
-      if (selectedTaskRef.current !== selectedTask.id || options.task.revision !== selectedTask.revision) return;
+      const options = await readPlanningTaskDelegationOptions(taskId);
+      if (!isCurrent()) return;
+      if (options.task.revision !== revision) {
+        try { await refreshExecution(taskId); }
+        catch { if (isCurrent()) setExecutionState("unavailable"); }
+        if (!isCurrent()) return;
+        setDelegationOptionsState("unavailable"); setDelegationOptionsReason("transient_failure");
+        return;
+      }
       setDelegationOptions(options);
       if (options.options.available) {
         setDelegationProfile(options.options.profiles[0]?.id ?? "");
         setDelegationBoard(options.options.boards[0]?.id ?? "");
         setDelegationWorkspace(options.options.workspaces[0]);
-        setDelegationForm(true);
-        setNotice("Choose the Hermes target, then preview the delegation.");
-      } else setNotice("Delegation is unavailable for this Task right now.");
-    } catch { setNotice("Delegation options are temporarily unavailable."); }
-    finally { setBusy(false); }
+        setDelegationForm(true); setDelegationOptionsState("ready");
+      } else {
+        if (options.options.reason === "already_delegated") applyDelegationResult(options);
+        setDelegationOptionsReason(options.options.reason); setDelegationOptionsState("unavailable");
+      }
+    } catch {
+      if (isCurrent()) { setDelegationOptionsReason("transient_failure"); setDelegationOptionsState("unavailable"); }
+    } finally {
+      if (delegationOptionsRequest.current === request) delegationOptionsRequest.current = null;
+    }
   }
 
   async function previewDelegation() {
@@ -755,10 +885,36 @@ export function ProjectsTasksWorkspace() {
       setProjectName(""); setProjectForm(false);
       changeProjectVisibility("active");
       await refreshOverview(created.id, "active");
+      invalidatePlanningCollections();
       setNotice(`Project ${created.name} created.`);
       window.setTimeout(() => document.querySelector<HTMLElement>(`[data-project-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
     } catch { setNotice("Project could not be created. Your name was kept."); projectInput.current?.focus(); }
     finally { setBusy(false); }
+  }
+
+  function invalidateTaskProjections(taskId: string, invalidateDetails = false) {
+    if (selectedTaskRef.current !== taskId) return;
+    delegationOptionsRequest.current = null;
+    setDelegationOptionsState("idle"); setDelegationOptionsReason(null); setDelegationOptions(null); setDelegationForm(false); setDelegationPreview(null);
+    executionGeneration.current += 1;
+    delegationGeneration.current += 1;
+    if (invalidateDetails) taskDetailGeneration.current += 1;
+    setTaskExecution(null); setExecutionState("loading");
+    setTaskDelegation(null); setDelegationState("loading");
+    setRunOnceConfirmation(null); setRecoveryConfirmation(null);
+    setTaskProjectionRefreshVersion((current) => current + 1);
+  }
+
+  function invalidatePlanningCollections() {
+    if (delegationOptionsRequest.current) { delegationOptionsRequest.current = null; setDelegationOptionsState("idle"); setDelegationOptionsReason(null); setDelegationOptions(null); }
+    taskPageGeneration.current += 1;
+    planningSearchGeneration.current += 1;
+    setLoadingMore(false);
+    taskPagesRefreshing.current = selectedProjectRef.current !== null; setRefreshingTaskPages(taskPagesRefreshing.current);
+    setPlanningSearch(null);
+    setPlanningSearchRefreshVersion((current) => current + 1);
+    setTaskPageRefreshVersion((current) => current + 1);
+    invalidateDependencyMap();
   }
 
   function invalidateDependencyMap() {
@@ -781,7 +937,7 @@ export function ProjectsTasksWorkspace() {
         setTasksState("ready");
         window.setTimeout(() => document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
       }
-      invalidateDependencyMap();
+      invalidatePlanningCollections();
       setNotice(`Task ${created.title} created.`);
     } catch { setNotice("Task could not be created. Your details were kept."); taskInput.current?.focus(); }
     finally { setBusy(false); }
@@ -820,20 +976,28 @@ export function ProjectsTasksWorkspace() {
   async function confirmDeletion() {
     if (!deletionPreview || busy || !deletionTargetIsSelected(deletionPreview.target_kind, deletionPreview.target_id)) return;
     const preview = deletionPreview;
+    const selectionGeneration = projectSelectionGeneration.current;
     setBusy(true); setNotice("Stopping affected work and verifying deletion…");
     try {
       const result = await confirmPlanningDeletion(preview.target_kind, preview.target_id, preview.confirmation_id);
-      if (!deletionTargetIsSelected(preview.target_kind, preview.target_id)) return;
-      // Deletion previews deliberately disclose counts, never every cascaded
-      // dependent Task ID. Clear the browser-only scheduler instead of risking
-      // a later alert for a Task removed by that content-free cascade.
       clearBrowserTaskReminderSchedules();
+      const location = new URL(window.location.href);
+      if (preview.target_kind === "task" && location.searchParams.get("task") === preview.target_id) { requestedTaskResolved.current = true; updatePlanningLocation(location.searchParams.get("project"), null, true); }
+      if (preview.target_kind === "project" && location.searchParams.get("project") === preview.target_id) { requestedTaskResolved.current = true; updatePlanningLocation(null, null, true); }
+      if (!deletionTargetIsSelected(preview.target_kind, preview.target_id)) {
+        invalidatePlanningCollections();
+        await refreshOverview(null, projectVisibilityRef.current, selectionGeneration);
+        return;
+      }
       selectTaskId(null); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setDeletionPreview(null); setRenameProject(false);
-      await refreshOverview();
-      invalidateDependencyMap();
+      requestedTaskResolved.current = true; pendingSearchTaskOpen.current = null;
+      setTasks([]); setTaskCursor(null);
+      invalidatePlanningCollections();
+      updatePlanningLocation(preview.target_kind === "task" ? selectedProjectRef.current : null, null, true);
+      await refreshOverview(null, projectVisibilityRef.current, selectionGeneration);
       setNotice(`Deleted ${deletionSummary(result.deletion)}.`);
     } catch {
-      if (deletionTargetIsSelected(preview.target_kind, preview.target_id)) setNotice("Deletion was not verified. Nothing was removed; refresh and review it again.");
+      if (deletionTargetIsSelected(preview.target_kind, preview.target_id)) setNotice("Deletion could not be verified. Some changes may have completed. Refresh and review the current state before trying again.");
     } finally { setBusy(false); }
   }
 
@@ -873,6 +1037,13 @@ export function ProjectsTasksWorkspace() {
     };
   }, [dependencyMap]);
   const selectTask = (task: PublicPlanningTaskListItem) => {
+    if (selectedTaskRef.current === task.id) {
+      if (window.innerWidth <= 1100) {
+        inspectorHeading.current?.focus({ preventScroll: true });
+        inspectorHeading.current?.scrollIntoView({ block: "start", behavior: "auto" });
+      }
+      return;
+    }
     selectTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
   };
   async function selectMapTask(taskId: string) {
@@ -899,7 +1070,8 @@ export function ProjectsTasksWorkspace() {
     try {
       result = await updatePlanningTask(taskId, selectedTask.revision, changes);
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
-      invalidateDependencyMap();
+      invalidateTaskProjections(taskId, true);
+      invalidatePlanningCollections();
     } catch (error) {
       if (error instanceof PublicPlanningError && error.code === "conflict") {
         try {
@@ -908,6 +1080,8 @@ export function ProjectsTasksWorkspace() {
           setTaskDetail(detailed.task); setTaskDependencies(relationships); setDependenciesState("ready");
           const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
           setTasks((current) => current.map((task) => task.id === taskId ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+          invalidateTaskProjections(taskId, true);
+          invalidatePlanningCollections();
           setNotice("Task changed elsewhere; its latest dependencies are shown. Review and save again.");
         } catch { if (isCurrentSelection()) setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); }
       } else if (isCurrentSelection()) setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again.");
@@ -933,9 +1107,8 @@ export function ProjectsTasksWorkspace() {
     const preview = result.task.description.replace(/\s+/gu, " ").trim();
     setTaskDetail(result.task);
     setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
-    setTaskExecution(null); setExecutionState("loading");
-    setTaskDelegation(null); setDelegationState("loading");
-    invalidateDependencyMap();
+    invalidateTaskProjections(result.task.id, true);
+    invalidatePlanningCollections();
   }
   async function refreshIntegrationConflict(taskId: string, selectionGeneration: number) {
     try {
@@ -944,6 +1117,8 @@ export function ProjectsTasksWorkspace() {
       const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
       setTaskDetail(detailed.task);
       setTasks((current) => current.map((task) => task.id === taskId ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+      invalidateTaskProjections(taskId, true);
+      invalidatePlanningCollections();
       setNotice("Task changed elsewhere. Latest details are shown; your integration draft was kept.");
     } catch { if (selectedTaskRef.current === taskId && taskSelectionGeneration.current === selectionGeneration) setNotice("Task changed elsewhere or could not be updated. Your integration draft was kept."); }
   }
@@ -965,12 +1140,16 @@ export function ProjectsTasksWorkspace() {
   }
   function openReminderEditor() {
     if (!taskDetail) return;
-    setReminderDrafts(taskDetail.reminders.map((item) => ({ id: item.id, at: inputTimestamp(item.at), enabled: item.enabled, ...(item.timezone ? { timezone: item.timezone } : {}) })));
+    setReminderDrafts(taskDetail.reminders.map((item) => ({ id: item.id, at: inputTimestamp(item.at), originalInput: inputTimestamp(item.at), originalInstant: item.at, enabled: item.enabled, ...(item.timezone ? { timezone: item.timezone } : {}) })));
     setReminderEditor(true);
   }
   async function saveReminders() {
-    if (!selectedTask || reminderDrafts.some((item) => !item.at || !localInputTimestamp(item.at))) { setNotice("Each browser reminder needs a date and time."); return; }
-    const reminders = reminderDrafts.map((item) => ({ id: item.id, at: localInputTimestamp(item.at), enabled: item.enabled, timezone: item.timezone ?? browserTimezone() }));
+    if (!selectedTask || reminderDrafts.some((item) => !item.at)) { setNotice("Each browser reminder needs a date and time."); return; }
+    const reminders = reminderDrafts.map((item) => {
+      const at = localInputTimestamp(item.at, item.originalInstant, item.originalInput);
+      return { id: item.id, at, enabled: item.enabled, timezone: at === item.originalInstant ? item.timezone ?? browserTimezone() : browserTimezone() };
+    });
+    if (reminders.some((item) => !item.at)) { setNotice("That local time is invalid or skipped by a daylight-saving change. Choose another time."); return; }
     const saved = await applyIntegration(() => replacePlanningTaskReminders(selectedTask.id, selectedTask.revision, reminders), "Browser reminders saved.");
     if (saved) setReminderEditor(false);
   }
@@ -999,11 +1178,23 @@ export function ProjectsTasksWorkspace() {
     if (!selectedTask) return;
     await applyIntegration(() => detachPlanningTaskNote(selectedTask.id, selectedTask.revision, path), "Note detached.");
   }
+  function addChecklistItem() {
+    if (editSubtasks.length >= 200) return;
+    const id = `check_${crypto.randomUUID().replaceAll("-", "")}`;
+    pendingChecklistFocus.current = id;
+    setEditSubtasks((current) => [...current.map((item, rank) => ({ ...item, rank })), { id, title: "", completed: false, rank: current.length }]);
+  }
+  async function toggleChecklistItem(itemId: string, completed: boolean) {
+    if (!selectedTask || !taskDetail || busy || taskDetail.id !== selectedTask.id || taskDetail.revision !== selectedTask.revision) return;
+    if (!taskDetail.subtasks.some((item) => item.id === itemId)) return;
+    await editSelected({ subtasks: taskDetail.subtasks.map((item, rank) => ({ ...item, rank, ...(item.id === itemId ? { completed } : {}) })) }, "Checklist updated.");
+  }
   async function saveTaskDetails() {
     if (!selectedTask || !editTitle.trim()) return;
+    if (editSubtasks.some((item) => !item.title.trim())) { setNotice("Give every checklist item a title before saving."); return; }
     const existingRecurrence = taskDetail?.recurrence ?? null;
     const recurrenceChange = editRecurrence === (existingRecurrence?.frequency ?? "") ? undefined : editRecurrence ? { frequency: editRecurrence, interval: 1 } : null;
-    const saved = await editSelected({ title: editTitle.trim(), description: editDescription, priority: editPriority, due_date: editDue || null, planned_for_today: editToday, tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean), estimated_minutes: editEstimate ? Number(editEstimate) : null, ...(recurrenceChange === undefined ? {} : { recurrence: recurrenceChange }), subtasks: editSubtasks, assigned_agent_id: editAgent || null, ...(dependenciesState === "ready" ? { depends_on: editDependencies.map((dependency) => dependency.id) } : {}) }, "Task details saved.");
+    const saved = await editSelected({ title: editTitle.trim(), description: editDescription, priority: editPriority, due_date: editDue || null, planned_for_today: editToday, tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean), estimated_minutes: editEstimate ? Number(editEstimate) : null, ...(recurrenceChange === undefined ? {} : { recurrence: recurrenceChange }), subtasks: editSubtasks.map((item, rank) => ({ ...item, title: item.title.trim(), rank })), assigned_agent_id: editAgent || null, ...(dependenciesState === "ready" ? { depends_on: editDependencies.map((dependency) => dependency.id) } : {}) }, "Task details saved.");
     if (saved) setEditingTask(false);
   }
   async function loadMoreDependencyCandidates() {
@@ -1026,22 +1217,13 @@ export function ProjectsTasksWorkspace() {
     return `${dependency.title} · Project: ${dependency.project_name} · ${dependency.workflow_stage.replace("_", " ")}${dependency.blocked ? " · blocked" : ""}`;
   }
   async function changeStage(stage: PublicPlanningTask["workflow_stage"]) {
-    const taskId = selectedTask?.id;
-    const saved = await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
-    if (!saved || !taskId || selectedTaskRef.current !== taskId) return;
-    try {
-      await refreshExecution(taskId);
-    } catch {
-      if (selectedTaskRef.current === taskId) {
-        setTaskExecution(null);
-        setExecutionState("unavailable");
-      }
-    }
+    await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
   }
   function applyExecutionMutation(result: PublicPlanningTaskExecutionMutation) {
     setTaskExecution({ execution: result.execution, runtime: result.runtime, schema_version: result.schema_version, service: result.service, status: result.status, task: result.task });
     setExecutionState("ready");
     setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
+    invalidatePlanningCollections();
   }
   async function refreshExecution(taskId: string) {
     if (selectedTaskRef.current !== taskId) return;
@@ -1053,6 +1235,19 @@ export function ProjectsTasksWorkspace() {
     setTasks((current) => current.map((item) => item.id === task.task.id ? { ...item, ...task.task } : item));
     const detailGeneration = ++taskDetailGeneration.current;
     try { const detail = await readPlanningTaskDetail(taskId); if (isCurrent() && detailGeneration === taskDetailGeneration.current) setTaskDetail(detail.task); } catch { /* The confirmed Task state remains available from the execution projection. */ }
+  }
+  async function reconcileExecution() {
+    if (!selectedTask || busy) return;
+    const taskId = selectedTask.id;
+    setBusy(true); setNotice("Refreshing this Task's execution…");
+    try {
+      const execution = await refreshPlanningTaskExecution(taskId, selectedTask.revision);
+      if (selectedTaskRef.current !== taskId) return;
+      setTaskExecution(execution); setExecutionState("ready");
+      setTasks((current) => current.map((item) => item.id === execution.task.id ? { ...item, ...execution.task } : item));
+      setNotice("Task execution refreshed.");
+    } catch { if (selectedTaskRef.current === taskId) setNotice("Task execution could not be verified. No Run was retried."); }
+    finally { setBusy(false); }
   }
   async function previewRunOnce() {
     if (!selectedTask || !selectedTaskExecution || busy || !selectedTaskExecution.execution.available || selectedTaskExecution.task.revision !== selectedTask.revision) return;
@@ -1092,8 +1287,10 @@ export function ProjectsTasksWorkspace() {
     }
     finally { setBusy(false); }
   }
-  async function reviewExecution(action: "accept" | "request_changes") {
-    if (!selectedTask || !selectedTaskExecution || busy || !selectedTaskExecution.execution.review.available || selectedTaskExecution.task.id !== selectedTask.id || selectedTaskExecution.task.revision !== selectedTask.revision) return;
+  async function reviewExecution(action: "accept" | "request_changes", recovering = false) {
+    if (!selectedTask || !selectedTaskExecution || busy || !(recovering ? selectedTaskExecution.execution.recovery.available : selectedTaskExecution.execution.review.available) || selectedTaskExecution.task.id !== selectedTask.id || selectedTaskExecution.task.revision !== selectedTask.revision) return;
+    const recovery = selectedTaskExecution.execution.recovery;
+    if (recovering && (action !== "request_changes" || !recoveryConfirmation || recoveryConfirmation.taskId !== selectedTask.id || recoveryConfirmation.revision !== selectedTask.revision || recoveryConfirmation.runId !== recovery.run_id || recoveryConfirmation.runRevision !== recovery.run_revision)) return;
     const taskId = selectedTask.id;
     const executionEpoch = executionGeneration.current;
     const isCurrent = () => selectedTaskRef.current === taskId && executionGeneration.current === executionEpoch;
@@ -1102,14 +1299,14 @@ export function ProjectsTasksWorkspace() {
     if (action === "request_changes" && !note) return;
     setBusy(true); setNotice(action === "accept" ? "Accepting Task…" : "Requesting changes…");
     try {
-      const result = await reviewPlanningTaskExecution(taskId, selectedTask.revision, action, note, crypto.randomUUID());
+      const result = await reviewPlanningTaskExecution(taskId, selectedTask.revision, action, note, recovering ? recoveryConfirmation!.idempotencyKey : crypto.randomUUID(), recovering ? { recovery_run_id: recoveryConfirmation!.runId, expected_run_revision: recoveryConfirmation!.runRevision } : undefined);
       if (!isCurrent()) return;
-      applyExecutionMutation(result); setRequestChanges(false); setReviewNote("");
+      applyExecutionMutation(result); setRequestChanges(false); setRecoveryConfirmation(null); setReviewNote("");
       try {
         await refreshExecution(taskId);
-        if (isSelected()) setNotice(action === "accept" ? "Task accepted." : "Changes requested; the Task is planned for another Run.");
+        if (isSelected()) setNotice(recovering ? "Task returned to Planned. Prior Run evidence is retained; no new Run was started." : action === "accept" ? "Task accepted." : "Changes requested; the Task is planned for another Run.");
       } catch {
-        if (isSelected()) setNotice(action === "accept" ? "Task accepted. Its latest details are temporarily unavailable." : "Changes requested. Its latest details are temporarily unavailable.");
+        if (isSelected()) setNotice(recovering ? "Task returned to Planned. Its latest details are temporarily unavailable." : action === "accept" ? "Task accepted. Its latest details are temporarily unavailable." : "Changes requested. Its latest details are temporarily unavailable.");
       }
     } catch {
       if (isCurrent()) setNotice("The Task changed or review is no longer available. Refresh and try again.");
@@ -1124,32 +1321,54 @@ export function ProjectsTasksWorkspace() {
       const visibility: ProjectVisibility = action === "archive" ? "archived" : "active";
       changeProjectVisibility(visibility);
       await refreshOverview(result.project.id, visibility);
+      invalidatePlanningCollections();
       setNotice(`Project ${action}d.`);
     }
     catch { setNotice("Project changed elsewhere or could not be updated."); }
     finally { setBusy(false); }
   }
   async function saveProjectName() {
+    const selectionGeneration = projectSelectionGeneration.current;
     if (!selectedProject || !projectRename.trim() || busy) return;
     setBusy(true); setNotice("Renaming Project…");
-    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, "rename", projectRename.trim()); setRenameProject(false); await refreshOverview(result.project.id); setNotice("Project renamed."); }
+    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, "rename", projectRename.trim()); setRenameProject(false); await refreshOverview(result.project.id, projectVisibility, selectionGeneration); invalidatePlanningCollections(); setNotice("Project renamed."); }
     catch { setNotice("Project changed elsewhere or could not be renamed."); }
     finally { setBusy(false); }
+  }
+  function startTaskEdit() {
+    if (!selectedTask || !taskDetail || taskDetail.id !== selectedTask.id || taskDetail.revision !== selectedTask.revision || busy || dependenciesState === "loading") return;
+    setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks.map((item, rank) => ({ ...item, rank }))); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditDependencies(taskDependencies?.prerequisites ?? []); setDependencyQuery(""); setDependencyCandidates([]); setDependencyCursor(null); setEditingTask(true);
+  }
+  function jumpToTasks() {
+    const target = selectedTaskId ? document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(selectedTaskId)}"] > button`) : null;
+    const heading = target ?? taskListHeading.current;
+    heading?.focus({ preventScroll: true }); heading?.scrollIntoView({ block: "center", behavior: "auto" });
+  }
+  function jumpToProjects() {
+    if (!projectNavigationOpen) { pendingProjectFocus.current = true; setProjectNavigationOpen(true); }
+    else { projectHeading.current?.focus({ preventScroll: true }); projectHeading.current?.scrollIntoView({ block: "start", behavior: "auto" }); }
+  }
+  function scrollBoard(direction: number) {
+    const board = boardElement.current;
+    if (board) board.scrollBy({ left: direction * Math.max(220, board.clientWidth * 0.8), behavior: "auto" });
   }
   const taskCard = (task: PublicPlanningTaskListItem) => <li className="planning-task-card" data-planning-task-id={task.id} data-task-selected={task.id === selectedTaskId ? "true" : undefined} data-task-title={task.title} key={task.id} tabIndex={-1}>
     <button aria-pressed={task.id === selectedTaskId} data-planning-task-id={task.id} disabled={busy} onClick={() => selectTask(task)} type="button"><span><strong>{task.title}</strong>{task.description_preview ? <small>{task.description_preview}</small> : <small>No description</small>}<em>{task.workflow_stage.replace("_", " ")} · {task.priority}{task.planned_for_today ? " · today" : ""}</em></span>{task.due_date ? <time dateTime={task.due_date}>Due {task.due_date}</time> : null}</button>
   </li>;
   const stages: PublicPlanningTask["workflow_stage"][] = ["inbox", "planned", "in_progress", "waiting", "review", "done"];
-  return <section aria-label="Projects and Tasks" className="projects-tasks-workspace planning-workbench">
+  return <section aria-label="Projects and Tasks" className="projects-tasks-workspace planning-workbench" ref={workbenchElement}>
     <nav aria-label="Project and saved view navigation" className="projects-pane planning-navigation">
-      <div className="projects-tasks-heading"><div><p className="console-kicker">Projects</p><h2>Projects</h2></div><button disabled={busy} onClick={() => { closeTaskForm(); setProjectForm(true); window.setTimeout(() => projectInput.current?.focus(), 0); }} ref={newProjectButton} type="button">New</button></div>
+      <button aria-controls="planning-project-controls" aria-expanded={projectNavigationOpen} className="planning-navigation-toggle" hidden={!compactPlanningLayout} onClick={() => setProjectNavigationOpen((current) => !current)} type="button">Projects and saved views</button>
+      <div className="planning-navigation-content" hidden={compactPlanningLayout && !projectNavigationOpen} id="planning-project-controls" onFocusCapture={() => { if (!compactPlanningLayout) setProjectNavigationOpen(true); }} ref={projectNavigationContent}>
+      <div className="projects-tasks-heading"><div><p className="console-kicker">Projects</p><h2 ref={projectHeading} tabIndex={-1}>Projects</h2></div><button disabled={busy} onClick={() => { closeTaskForm(); setProjectForm(true); window.setTimeout(() => projectInput.current?.focus(), 0); }} ref={newProjectButton} type="button">New</button></div>
       {projectForm ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void submitProject(); }}><label><span>Name</span><input onChange={(event) => { if ([...event.target.value].length <= 121) setProjectName(event.target.value); }} ref={projectInput} value={projectName} /></label><div><button aria-label="Create Project" disabled={busy || !projectName.trim() || [...projectName.trim()].length > 120} type="submit">Create</button><button aria-label="Cancel Project" disabled={busy} onClick={() => { setProjectForm(false); setProjectName(""); window.setTimeout(() => newProjectButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
       <div aria-label="Project visibility" className="saved-view-navigation"><p className="console-kicker">Project view</p>{(["active", "all", "archived"] as const).map((visibility) => <button aria-pressed={projectVisibility === visibility} disabled={busy} key={visibility} onClick={() => selectProjectVisibility(visibility)} type="button">{visibility === "all" ? "All Projects" : visibility === "active" ? "Active Projects" : "Archived Projects"}</button>)}</div>
       {state === "loading" ? <p>Loading Projects…</p> : state === "unavailable" || state === "error" ? <p>Projects are temporarily unavailable.</p> : visibleProjects.length ? <ul>{visibleProjects.map((project) => <li key={project.id}><button aria-current={project.id === selectedProjectId ? "true" : undefined} aria-label={`Select ${project.name} Project`} data-project-id={project.id} disabled={busy} onClick={() => selectProject(project.id)} type="button"><strong>{project.name}</strong><span>{project.status}</span></button></li>)}</ul> : overview?.projects.length ? projectVisibility === "archived" ? <section aria-label="Archived Project recovery"><p>No archived Projects.</p><p>Archived Projects can be restored here when needed.</p><button disabled={busy} onClick={() => selectProjectVisibility("active")} type="button">Show active Projects</button></section> : projectVisibility === "active" ? <section aria-label="Archived Project recovery"><p>No active Projects.</p><p>Open Archived Projects to restore one.</p><button disabled={busy} onClick={() => selectProjectVisibility("archived")} type="button">View archived Projects</button></section> : <p>No Projects match this view.</p> : <p>No Projects yet.</p>}
       <div className="saved-view-navigation"><p className="console-kicker">Saved view</p>{(["all", "today", "waiting", "review", "someday", "completed"] as const).map((item) => <button aria-pressed={savedView === item} disabled={busy} key={item} onClick={() => setSavedView(item)} type="button">{item === "all" ? "All tasks" : item}</button>)}</div>
+      </div>
     </nav>
     <div className="project-tasks-pane planning-task-pane">
-      <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2>{selectedProject?.name ?? "Tasks"}</h2></div><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div>
+      <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2 ref={taskListHeading} tabIndex={-1}>{selectedProject?.name ?? "Tasks"}</h2></div><div className="planning-heading-actions"><button aria-label="Choose Project" className="planning-mobile-jump" onClick={jumpToProjects} type="button">Projects</button><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div></div>
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
       <section aria-label="Search Projects and Tasks" className="planning-navigation-search">
         <label><span>Search Projects and Tasks</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setPlanningSearchQuery(event.target.value); }} placeholder="Find a Project or Task" type="search" value={planningSearchQuery} /></label>
@@ -1158,23 +1377,47 @@ export function ProjectsTasksWorkspace() {
         {planningSearchState === "empty" ? <p>No Projects or Tasks match this search.</p> : null}
         {planningSearchState === "ready" && planningSearch ? <div className="planning-navigation-search-results">
           {planningSearch.projects.length ? <section aria-label="Project search results"><h3>Projects</h3><ul>{planningSearch.projects.map((result) => <li key={`project:${result.id}`}><span>{result.title}</span><button aria-label={`Open Project ${result.title}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
-          {planningSearch.tasks.length ? <section aria-label="Task search results"><h3>Tasks</h3><ul>{planningSearch.tasks.map((result) => <li key={`task:${result.id}`}><span>{result.title}</span><button aria-label={`Open Task ${result.title}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
+          {planningSearch.tasks.length ? <section aria-label="Task search results"><h3>Tasks</h3><ul>{planningSearch.tasks.map((result) => <li key={`task:${result.id}`}><span>{result.title}<small>{result.project_name} · {result.workflow_stage.replaceAll("_", " ")} · {result.due_date ? `Due ${result.due_date}` : "No due date"}</small></span><button aria-label={`Open Task ${result.title} in ${result.project_name}, ${result.workflow_stage.replaceAll("_", " ")}, ${result.due_date ? `due ${result.due_date}` : "no due date"}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
           {planningSearch.truncated ? <p>More matching results are available. Refine your search.</p> : null}
         </div> : null}
       </section>
       <div className="planning-workbench-tools"><label><span>Filter</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setFilter(event.target.value); }} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button><button aria-pressed={view === "map"} onClick={() => setView("map")} type="button">Map</button></div></div>
-      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : view === "map" ? dependencyMapState === "loading" ? <p aria-live="polite" role="status">Loading the dependency map…</p> : dependencyMapState === "unavailable" || dependencyMapState === "error" ? <p role="status">The dependency map is temporarily unavailable. List and Board remain available.</p> : dependencyMapGraph ? <TaskDependencyMap graph={dependencyMapGraph} onSelectedTaskIdChange={(taskId) => void selectMapTask(taskId)} selectedTaskId={selectedTaskId} /> : <p role="status">No dependency map is available for this Project.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
-      {taskCursor ? <button className="project-tasks-more" disabled={loadingMore} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
+      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : view === "map" ? dependencyMapState === "loading" ? <p aria-live="polite" role="status">Loading the dependency map…</p> : dependencyMapState === "unavailable" || dependencyMapState === "error" ? <p role="status">The dependency map is temporarily unavailable. List and Board remain available.</p> : dependencyMapGraph ? <TaskDependencyMap graph={dependencyMapGraph} onSelectedTaskIdChange={(taskId) => void selectMapTask(taskId)} selectedTaskId={selectedTaskId} /> : <p role="status">No dependency map is available for this Project.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div className="planning-board-workspace"><div className="planning-board-navigation"><p id="planning-board-guidance">Six stages. Scroll horizontally or use the arrows to see more.</p><div><button aria-label="Previous board stages" onClick={() => scrollBoard(-1)} type="button">Previous</button><button aria-label="Next board stages" onClick={() => scrollBoard(1)} type="button">Next</button></div></div><div aria-describedby="planning-board-guidance" aria-label="Task board" className="planning-board" onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); scrollBoard(event.key === "ArrowLeft" ? -1 : 1); } else if (event.key === "Home" || event.key === "End") { event.preventDefault(); event.currentTarget.scrollTo({ left: event.key === "Home" ? 0 : event.currentTarget.scrollWidth, behavior: "auto" }); } }} ref={boardElement} role="region" tabIndex={0}>{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div></div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
+      {savedView === "someday" && (tasksState === "ready" || tasksState === "empty") && !tasks.some((task) => task.deferred) ? <div className="planning-empty-guidance"><p>No deferred Tasks are shown. Open a Task in All tasks and choose Move to Someday.</p><button onClick={() => setSavedView("all")} type="button">Browse all tasks</button></div> : null}
+      {taskCursor ? <button className="project-tasks-more" disabled={loadingMore || refreshingTaskPages} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
-    <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">
-      <div className="projects-tasks-heading"><div><p className="console-kicker">Inspector</p><h2>{selectedTask ? "Task details" : "Select a Task"}</h2></div></div>
+    <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector" ref={inspectorPanel}>
+      <div className="projects-tasks-heading planning-inspector-header"><div><p className="console-kicker">Task details</p><h2 ref={inspectorHeading} tabIndex={-1}>{selectedTask?.title ?? "Select a Task"}</h2></div>{selectedTask ? <div className="planning-heading-actions"><button className="planning-mobile-jump" onClick={jumpToTasks} type="button">Back to Tasks</button><button aria-label="Choose Project from Task details" className="planning-mobile-jump" onClick={jumpToProjects} type="button">Projects</button>{editingTask ? <><button disabled={busy || !editTitle.trim() || editSubtasks.some((item) => !item.title.trim())} form="planning-task-editor" type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></> : <button disabled={busy || !taskDetail || taskDetail.id !== selectedTask.id || taskDetail.revision !== selectedTask.revision || dependenciesState === "loading"} onClick={startTaskEdit} type="button">{taskDetail && taskDetail.id === selectedTask.id && taskDetail.revision === selectedTask.revision && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}</div> : null}</div>
       {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <>
+        {editingTask && taskDetail ? <form id="planning-task-editor" className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>
+          <label><span>Title</span><input autoFocus maxLength={160} onChange={(event) => setEditTitle(event.target.value)} value={editTitle} /></label>
+          <label className="planning-full-field"><span>Description</span><textarea maxLength={4000} onChange={(event) => setEditDescription(event.target.value)} value={editDescription} /></label>
+          <label><span>Priority</span><select onChange={(event) => setEditPriority(event.target.value as PublicPlanningTask["priority"])} value={editPriority}><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+          <label><span>Due</span><input onChange={(event) => setEditDue(event.target.value)} type="date" value={editDue} /></label>
+          <label><span>Estimate (minutes)</span><input max="10080" min="1" onChange={(event) => setEditEstimate(event.target.value)} type="number" value={editEstimate} /></label>
+          <label><span>Recurrence</span><select onChange={(event) => setEditRecurrence(event.target.value as typeof editRecurrence)} value={editRecurrence}><option value="">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>
+          <label className="planning-full-field"><span>Tags (comma separated)</span><input onChange={(event) => setEditTags(event.target.value)} value={editTags} /></label>
+          <label className="planning-full-field"><span>Assigned Agent</span><select disabled={agentsState !== "ready"} onChange={(event) => setEditAgent(event.target.value)} value={editAgent}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+          <fieldset className="planning-dependencies"><legend>Dependencies</legend>
+            <section><h3>Prerequisites ({taskDependencies?.prerequisite_count ?? 0})</h3>{dependenciesState === "unavailable" ? <p>Dependencies are temporarily unavailable.</p> : editDependencies.length ? <ul>{editDependencies.map((dependency) => <li key={dependency.id}><span>{dependencyText(dependency)}</span><button aria-label={`Remove prerequisite ${dependency.title}`} disabled={busy || dependenciesState !== "ready"} onClick={() => setEditDependencies((current) => current.filter((item) => item.id !== dependency.id))} type="button">Remove</button></li>)}</ul> : <p>No prerequisites.</p>}{taskDependencies?.prerequisites_truncated ? <p>Some prerequisites are not shown.</p> : null}</section>
+            <label><span>Find a prerequisite</span><input disabled={busy || dependenciesState !== "ready"} maxLength={160} onChange={(event) => setDependencyQuery(event.target.value.trim())} placeholder="Search Tasks" type="search" value={dependencyQuery} /></label>
+            {editDependencies.length >= 100 ? <p>Maximum of 100 prerequisites reached. Remove one before adding another.</p> : null}
+            {dependencyPickerState === "loading" ? <p>Finding Tasks…</p> : dependencyPickerState === "unavailable" ? <p>Task choices are temporarily unavailable.</p> : dependencyCandidates.length ? <ul aria-label="Prerequisite choices" className="planning-dependency-picker">{dependencyCandidates.map((candidate) => <li key={candidate.id}><span>{dependencyText(candidate)}</span><button aria-label={`Add prerequisite ${candidate.title}`} disabled={busy || editDependencies.length >= 100 || editDependencies.some((item) => item.id === candidate.id)} onClick={() => setEditDependencies((current) => current.length >= 100 || current.some((item) => item.id === candidate.id) ? current : [...current, candidate])} type="button">Add</button></li>)}</ul> : <p>No matching Tasks.</p>}
+            {dependencyCursor ? <button disabled={busy || dependencyPickerState === "loading"} onClick={() => void loadMoreDependencyCandidates()} type="button">More Task choices</button> : null}
+            <section><h3>Dependents ({taskDependencies?.dependent_count ?? 0})</h3>{taskDependencies?.dependents.length ? <ul>{taskDependencies.dependents.map((dependency) => <li key={dependency.id}>{dependencyText(dependency)}</li>)}</ul> : <p>No Tasks depend on this Task.</p>}{taskDependencies?.dependents_truncated ? <p>Some dependents are not shown.</p> : null}</section>
+          </fieldset>
+          <div aria-label="Checklist editor" className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <div className="planning-checklist-row" key={item.id}><input aria-label={`Complete checklist item ${index + 1}`} checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry) => entry.id === item.id ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" /><input aria-describedby={!item.title.trim() ? "checklist-title-guidance" : undefined} aria-invalid={!item.title.trim()} aria-label={`Checklist item ${index + 1} title`} maxLength={240} onChange={(event) => setEditSubtasks((current) => current.map((entry) => entry.id === item.id ? { ...entry, title: event.target.value } : entry))} placeholder="Describe this step" ref={(input) => { if (input && pendingChecklistFocus.current === item.id) { pendingChecklistFocus.current = null; input.focus(); } }} required type="text" value={item.title} /><button aria-label={`Remove checklist item ${index + 1}`} onClick={() => setEditSubtasks((current) => current.filter((entry) => entry.id !== item.id).map((entry, rank) => ({ ...entry, rank })))} type="button">Remove</button></div>)}{editSubtasks.some((item) => !item.title.trim()) ? <p id="checklist-title-guidance">Give every checklist item a title before saving.</p> : null}<button disabled={editSubtasks.length >= 200} onClick={addChecklistItem} type="button">Add checklist item</button></div>
+          <label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label>
+        </form> : null}
         <p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p>
         <dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl>
+        {taskDetail ? <section aria-label="Task planning summary" className="planning-metadata"><dl className="planning-summary"><div><dt>Estimate</dt><dd>{taskDetail.estimated_minutes === null ? "Not set" : `${taskDetail.estimated_minutes} min`}</dd></div><div><dt>Recurrence</dt><dd>{recurrenceSummary(taskDetail.recurrence)}</dd></div><div><dt>Assigned Agent</dt><dd>{taskDetail.assigned_agent_id ? agents.find((agent) => agent.id === taskDetail.assigned_agent_id)?.name ?? (agentsState === "loading" ? "Loading Agent..." : "Assigned Agent unavailable") : "Unassigned"}</dd></div><div><dt>Tags</dt><dd>{taskDetail.tags.join(", ") || "None"}</dd></div></dl></section> : null}
+        {!editingTask ? <section aria-label="Task dependency summary" className="planning-metadata"><h3>Dependencies</h3>{dependenciesState === "loading" ? <p>Loading dependencies...</p> : dependenciesState !== "ready" || !taskDependencies || taskDependencies.task_id !== selectedTask.id ? <p>Dependencies are temporarily unavailable.</p> : <><p>Prerequisites: {taskDependencies.prerequisite_count}. Dependents: {taskDependencies.dependent_count}.</p>{taskDependencies.prerequisites.length ? <ul aria-label="Saved prerequisites">{taskDependencies.prerequisites.slice(0, 3).map((item) => <li key={item.id}>{dependencyText(item)}</li>)}</ul> : <p>No prerequisites.</p>}{taskDependencies.dependents.length ? <ul aria-label="Saved dependents">{taskDependencies.dependents.slice(0, 3).map((item) => <li key={item.id}>{dependencyText(item)}</li>)}</ul> : null}{taskDependencies.prerequisite_count > 3 || taskDependencies.dependent_count > 3 || taskDependencies.prerequisites_truncated || taskDependencies.dependents_truncated ? <p>Open Edit details for more dependencies.</p> : null}</>}</section> : null}
+        {taskDetail?.subtasks.length && !editingTask ? <section aria-label="Task checklist" className="planning-task-checklist"><h3>Checklist</h3>{taskDetail.subtasks.map((item, index) => <label key={item.id}><input aria-label={`Checklist item ${index + 1}: ${item.title}`} checked={item.completed} disabled={busy || taskDetail.id !== selectedTask.id || taskDetail.revision !== selectedTask.revision} onChange={(event) => void toggleChecklistItem(item.id, event.target.checked)} type="checkbox" /><span>{item.title}</span></label>)}</section> : null}
         {taskDetail && hasPlanningMetadata ? <section aria-label="Planning details" className="planning-metadata">
           <p className="console-kicker">Planning details</p>
           {taskDetail.scheduled_block ? <dl className="planning-summary"><div><dt>{taskDetail.scheduled_block.label ?? "Schedule"}</dt><dd><time dateTime={taskDetail.scheduled_block.start}>{planningTimestamp(taskDetail.scheduled_block.start, taskDetail.scheduled_block.timezone)}</time> – <time dateTime={taskDetail.scheduled_block.end}>{planningTimestamp(taskDetail.scheduled_block.end, taskDetail.scheduled_block.timezone)}</time></dd></div></dl> : null}
-          {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "On" : "Off"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
+          {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "Enabled" : "Disabled"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
           {taskDetail.calendar_links.length ? <section aria-label="Calendar links"><h3>Calendar links</h3><ul>{taskDetail.calendar_links.map((link, index) => <li key={`${link.calendar_id}:${link.event_id}`}>{link.label ?? `Linked calendar event ${index + 1}`}</li>)}</ul></section> : null}
           {taskDetail.note_links.length ? <section aria-label="Notes"><h3>Notes</h3><ul>{taskDetail.note_links.map((link, index) => <li key={link.path}>{noteLinkLabel(link.path, link.title, index)}</li>)}</ul></section> : null}
         </section> : null}
@@ -1185,6 +1428,7 @@ export function ProjectsTasksWorkspace() {
             <p>{notificationPermission === "unsupported" ? "Notifications are unavailable in this browser." : notificationPermission === "granted" ? "Browser notifications are enabled." : notificationPermission === "denied" ? "Browser notifications are blocked by this browser." : "Browser notification permission has not been requested."}</p>
             {notificationPermission !== "unsupported" && notificationPermission !== "granted" ? <button disabled={busy} onClick={() => void requestBrowserNotifications()} type="button">Enable browser notifications</button> : null}
             {reminderEditor ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void saveReminders(); }}>
+              <p>Times are entered in {browserTimezone()}.</p>
               {reminderDrafts.length ? <ul aria-label="Reminder schedule">{reminderDrafts.map((reminder, index) => <li key={reminder.id}><label><span>Reminder {index + 1}</span><input aria-label={`Reminder ${index + 1} time`} disabled={busy} onChange={(event) => setReminderDrafts((current) => current.map((item) => item.id === reminder.id ? { ...item, at: event.target.value } : item))} required type="datetime-local" value={reminder.at} /></label><label className="planning-checkbox"><input checked={reminder.enabled} disabled={busy} onChange={(event) => setReminderDrafts((current) => current.map((item) => item.id === reminder.id ? { ...item, enabled: event.target.checked } : item))} type="checkbox" />Enabled</label><button aria-label={`Remove reminder ${index + 1}`} disabled={busy} onClick={() => setReminderDrafts((current) => current.filter((item) => item.id !== reminder.id))} type="button">Remove</button></li>)}</ul> : <p>No browser reminders are scheduled.</p>}
               <div><button disabled={busy || reminderDrafts.length >= 20} onClick={() => setReminderDrafts((current) => [...current, { id: `reminder_${crypto.randomUUID().replaceAll("-", "")}`, at: "", enabled: true, timezone: browserTimezone() }])} type="button">Add reminder</button><button disabled={busy} type="submit">Save reminders</button><button disabled={busy} onClick={() => setReminderEditor(false)} type="button">Cancel</button></div>
             </form> : null}
@@ -1200,19 +1444,26 @@ export function ProjectsTasksWorkspace() {
             {noteEditor ? <div className="planning-note-picker"><label><span>Find a note</span><input disabled={busy} maxLength={120} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setNoteQuery(event.target.value.trim()); }} placeholder="Search your notes" type="search" value={noteQuery} /></label>{notePickerState === "loading" ? <p>Finding notes…</p> : notePickerState === "unavailable" ? <p>Notes are unavailable.</p> : notePickerState === "empty" ? <p>No matching notes.</p> : notePicker?.notes.length ? <ul aria-label="Note choices">{notePicker.notes.map((note) => { const attached = taskDetail.note_links.some((link) => link.path === note.path); return <li key={note.path}><span>{note.title ?? noteLinkLabel(note.path, undefined, 0)}</span><button disabled={busy || attached} onClick={() => void attachNote(note.path)} type="button">{attached ? "Attached" : "Attach"}</button></li>; })}</ul> : null}{notePicker?.truncated ? <p>More notes are available. Refine your search.</p> : null}</div> : null}
           </section>
         </section> : null}
+        <section aria-label="Someday planning" className="planning-metadata"><div className="planning-section-actions"><h3>Someday</h3><button disabled={busy} onClick={() => void editSelected({ deferred: !selectedTask.deferred }, selectedTask.deferred ? "Task returned from Someday." : "Task moved to Someday.")} type="button">{selectedTask.deferred ? "Return from Someday" : "Move to Someday"}</button></div><p>{selectedTask.deferred ? "This Task is deferred to Someday; its workflow stage is unchanged." : "Defer this Task to Someday while keeping its workflow stage."}</p></section>
         <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage || executionOwnsTerminalStages && (stage === "review" || stage === "done")} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}{executionOwnsTerminalStages ? <p>Run and review controls own the Review and Done stages until this attempt is resolved.</p> : null}</div>
+        {executionState === "unavailable" || delegationState === "unavailable" ? <button disabled={busy} onClick={() => invalidateTaskProjections(selectedTask.id)} type="button">Reload execution and delegation</button> : null}
         <section aria-label="Task execution" className="planning-execution">
           <p className="console-kicker">Execution</p>
+          <button disabled={busy || executionState === "loading"} onClick={() => void reconcileExecution()} type="button">Refresh execution</button>
           {executionState === "loading" ? <p>Loading execution status…</p> : executionState === "unavailable" || !selectedTaskExecution ? <p>Run once and review controls are temporarily unavailable.</p> : <>
-            {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.updated_at}>{attempt.completed_at ? "Completed" : "Updated"} {attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
-            {selectedTaskExecution.execution.review.available ? <div className="planning-review-actions"><p>This Task is ready for your review.</p><div><button disabled={busy} onClick={() => void reviewExecution("accept")} type="button">Accept</button><button aria-expanded={requestChanges} disabled={busy} onClick={() => setRequestChanges((current) => !current)} type="button">Request changes</button></div>{requestChanges ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes"); }}><label><span>Feedback for changes</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim()} type="submit">Send change request</button><button disabled={busy} onClick={() => { setRequestChanges(false); setReviewNote(""); }} type="button">Cancel</button></div></form> : null}</div> : selectedTaskExecution.execution.available ? runOnceConfirmation && runOnceConfirmation.taskId === selectedTask.id ? <div className="planning-run-once-confirmation"><p>Start one Run for this exact Task revision?</p><div><button disabled={busy || selectedTask.revision !== runOnceConfirmation.revision} onClick={() => void confirmRunOnce()} type="button">Start Run once</button><button disabled={busy} onClick={() => setRunOnceConfirmation(null)} type="button">Cancel</button></div></div> : <button disabled={busy} onClick={() => void previewRunOnce()} type="button">Run once</button> : <p>Run once is unavailable for this Task.</p>}
+            {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.completed_at ?? attempt.updated_at}>{attempt.completed_at ? attempt.status === "completed" ? "Completed" : "Ended" : "Updated"} {attempt.completed_at ?? attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}{attempt.result?.available ? <section aria-label={`Result for ${attempt.run_id}`} className="planning-execution-result"><strong>Result</strong><p>{attempt.result.text}</p>{attempt.result.truncated ? <small>Result is truncated for safe display.</small> : null}</section> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
+            {selectedTaskExecution.execution.recovery.available ? <div className="planning-review-actions"><p>This attempt ended without verified success. Return the Task to Planned to resolve the attempt while keeping its Run and history. Run once remains a separate action.</p>{recoveryConfirmation ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes", true); }}><label><span>Recovery note</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim() || recoveryConfirmation.taskId !== selectedTask.id || recoveryConfirmation.revision !== selectedTask.revision || recoveryConfirmation.runId !== selectedTaskExecution.execution.recovery.run_id || recoveryConfirmation.runRevision !== selectedTaskExecution.execution.recovery.run_revision} type="submit">Confirm return to Planned</button><button disabled={busy} onClick={() => { setRecoveryConfirmation(null); setReviewNote(""); }} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { const recovery = selectedTaskExecution.execution.recovery; if (recovery.run_id && recovery.run_revision) { setRecoveryConfirmation({ taskId: selectedTask.id, revision: selectedTask.revision, runId: recovery.run_id, runRevision: recovery.run_revision, idempotencyKey: crypto.randomUUID() }); setReviewNote(""); } }} type="button">Return to Planned</button>}</div> : null}
+            {selectedTaskExecution.execution.review.available ? selectedTaskExecution.execution.attempts.find((attempt) => attempt.run_id === selectedTaskExecution.execution.review.run_id)?.result?.available === false ? <p>Result could not be verified yet. Reload execution before reviewing this Task.</p> : <div className="planning-review-actions"><p>This Task is ready for your review.</p><div><button disabled={busy} onClick={() => void reviewExecution("accept")} type="button">Accept</button><button aria-expanded={requestChanges} disabled={busy} onClick={() => setRequestChanges((current) => !current)} type="button">Request changes</button></div>{requestChanges ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes"); }}><label><span>Feedback for changes</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim()} type="submit">Send change request</button><button disabled={busy} onClick={() => { setRequestChanges(false); setReviewNote(""); }} type="button">Cancel</button></div></form> : null}</div> : selectedTaskExecution.execution.available ? runOnceConfirmation && runOnceConfirmation.taskId === selectedTask.id ? <div className="planning-run-once-confirmation"><p>Start one Run for this exact Task revision?</p><div><button disabled={busy || selectedTask.revision !== runOnceConfirmation.revision} onClick={() => void confirmRunOnce()} type="button">Start Run once</button><button disabled={busy} onClick={() => setRunOnceConfirmation(null)} type="button">Cancel</button></div></div> : <button disabled={busy} onClick={() => void previewRunOnce()} type="button">Run once</button> : <p>Run once is unavailable for this Task.</p>}
           </>}
         </section>
         <section aria-label="Task delegation" className="planning-execution">
           <p className="console-kicker">Delegation</p>
+          <p>Run once uses the assigned Mentat Agent. Delegation creates durable work in Hermes Kanban using a supported Hermes profile and board.</p>
           {delegationRecovery ? <div className="planning-run-once-confirmation"><p>The prior delivery is indeterminate. Reconcile it without sending it again.</p><button disabled={busy} onClick={() => void recoverDelegation()} type="button">Reconcile prior delivery</button></div> : delegationState === "loading" ? <p>Loading delegation status…</p> : delegationState === "unavailable" || !selectedTaskDelegation ? <p>Delegation status is temporarily unavailable.</p> : selectedTaskDelegation.delegation.available === false ? <>
             <p>This Task has not been delegated.</p>
-            {!delegationForm ? <button disabled={busy} onClick={() => void openDelegationForm()} type="button">Delegate</button> : delegationOptions?.options.available ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void previewDelegation(); }}>
+            {delegationOptionsState === "loading" ? <p aria-live="polite">Checking available Hermes profiles and boards...</p> : null}
+            {delegationOptionsReason ? <div aria-live="polite"><p>{DELEGATION_DISCOVERY_GUIDANCE[delegationOptionsReason]}</p><a href="https://hermes-agent.nousresearch.com/" rel="noreferrer" target="_blank">Hermes setup guide</a></div> : null}
+            {!delegationForm ? <button disabled={busy || delegationOptionsState === "loading"} onClick={() => void openDelegationForm()} type="button">{delegationOptionsState === "loading" ? "Checking options..." : delegationOptionsState === "unavailable" ? "Recheck delegation options" : "Delegate"}</button> : delegationOptions?.options.available ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void previewDelegation(); }}>
               <label><span>Agent</span><select disabled={busy} onChange={(event) => setDelegationProfile(event.target.value)} value={delegationProfile}>{delegationOptions.options.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
               <label><span>Board</span><select disabled={busy} onChange={(event) => setDelegationBoard(event.target.value)} value={delegationBoard}>{delegationOptions.options.boards.map((board) => <option key={board.id} value={board.id}>{board.name}</option>)}</select></label>
               <label><span>Workspace</span><select disabled={busy} onChange={(event) => setDelegationWorkspace(event.target.value as "scratch" | "worktree")} value={delegationWorkspace}>{delegationOptions.options.workspaces.map((workspace) => <option key={workspace} value={workspace}>{workspace}</option>)}</select></label>
@@ -1229,26 +1480,6 @@ export function ProjectsTasksWorkspace() {
             {delegationActionPreview ? <div className="planning-run-once-confirmation"><p>{delegationActionPreview.effects.join(" ")}</p><div><button disabled={busy} onClick={() => void confirmDelegationAction()} type="button">Confirm action</button><button disabled={busy} onClick={() => setDelegationActionPreview(null)} type="button">Back</button></div></div> : null}
           </>}
         </section>
-        {editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>
-          <label><span>Title</span><input maxLength={160} onChange={(event) => setEditTitle(event.target.value)} value={editTitle} /></label>
-          <label className="planning-full-field"><span>Description</span><textarea maxLength={4000} onChange={(event) => setEditDescription(event.target.value)} value={editDescription} /></label>
-          <label><span>Priority</span><select onChange={(event) => setEditPriority(event.target.value as PublicPlanningTask["priority"])} value={editPriority}><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
-          <label><span>Due</span><input onChange={(event) => setEditDue(event.target.value)} type="date" value={editDue} /></label>
-          <label><span>Estimate (minutes)</span><input max="10080" min="1" onChange={(event) => setEditEstimate(event.target.value)} type="number" value={editEstimate} /></label>
-          <label><span>Recurrence</span><select onChange={(event) => setEditRecurrence(event.target.value as typeof editRecurrence)} value={editRecurrence}><option value="">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>
-          <label className="planning-full-field"><span>Tags (comma separated)</span><input onChange={(event) => setEditTags(event.target.value)} value={editTags} /></label>
-          <label className="planning-full-field"><span>Assigned Agent</span><select disabled={agentsState !== "ready"} onChange={(event) => setEditAgent(event.target.value)} value={editAgent}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
-          <fieldset className="planning-dependencies"><legend>Dependencies</legend>
-            <section><h3>Prerequisites ({taskDependencies?.prerequisite_count ?? 0})</h3>{dependenciesState === "unavailable" ? <p>Dependencies are temporarily unavailable.</p> : editDependencies.length ? <ul>{editDependencies.map((dependency) => <li key={dependency.id}><span>{dependencyText(dependency)}</span><button aria-label={`Remove prerequisite ${dependency.title}`} disabled={busy || dependenciesState !== "ready"} onClick={() => setEditDependencies((current) => current.filter((item) => item.id !== dependency.id))} type="button">Remove</button></li>)}</ul> : <p>No prerequisites.</p>}{taskDependencies?.prerequisites_truncated ? <p>Some prerequisites are not shown.</p> : null}</section>
-            <label><span>Find a prerequisite</span><input disabled={busy || dependenciesState !== "ready"} maxLength={160} onChange={(event) => setDependencyQuery(event.target.value.trim())} placeholder="Search Tasks" type="search" value={dependencyQuery} /></label>
-            {editDependencies.length >= 100 ? <p>Maximum of 100 prerequisites reached. Remove one before adding another.</p> : null}
-            {dependencyPickerState === "loading" ? <p>Finding Tasks…</p> : dependencyPickerState === "unavailable" ? <p>Task choices are temporarily unavailable.</p> : dependencyCandidates.length ? <ul aria-label="Prerequisite choices" className="planning-dependency-picker">{dependencyCandidates.map((candidate) => <li key={candidate.id}><span>{dependencyText(candidate)}</span><button aria-label={`Add prerequisite ${candidate.title}`} disabled={busy || editDependencies.length >= 100 || editDependencies.some((item) => item.id === candidate.id)} onClick={() => setEditDependencies((current) => current.length >= 100 || current.some((item) => item.id === candidate.id) ? current : [...current, candidate])} type="button">Add</button></li>)}</ul> : <p>No matching Tasks.</p>}
-            {dependencyCursor ? <button disabled={busy || dependencyPickerState === "loading"} onClick={() => void loadMoreDependencyCandidates()} type="button">More Task choices</button> : null}
-            <section><h3>Dependents ({taskDependencies?.dependent_count ?? 0})</h3>{taskDependencies?.dependents.length ? <ul>{taskDependencies.dependents.map((dependency) => <li key={dependency.id}>{dependencyText(dependency)}</li>)}</ul> : <p>No Tasks depend on this Task.</p>}{taskDependencies?.dependents_truncated ? <p>Some dependents are not shown.</p> : null}</section>
-          </fieldset>
-          <div className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <label key={item.id}><input checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry, position) => position === index ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" />{item.title}<button onClick={() => setEditSubtasks((current) => current.filter((_, position) => position !== index))} type="button">Remove</button></label>)}<button onClick={() => setEditSubtasks((current) => [...current, { id: `check_${crypto.randomUUID().replaceAll("-", "")}`, title: "New checklist item", completed: false, rank: current.length }])} type="button">Add checklist item</button></div>
-          <label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label><div><button disabled={busy || !editTitle.trim()} type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></div>
-        </form> : <button disabled={busy || !taskDetail || dependenciesState === "loading"} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditDependencies(taskDependencies?.prerequisites ?? []); setDependencyQuery(""); setDependencyCandidates([]); setDependencyCursor(null); setEditingTask(true); }} type="button">{taskDetail && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}
         <section aria-label="Task deletion" className="planning-project-lifecycle">
           <p className="console-kicker">Task lifecycle</p>
           {deletionPreview?.target_kind === "task" && deletionPreview.target_id === selectedTask.id ? <div className="planning-run-once-confirmation">

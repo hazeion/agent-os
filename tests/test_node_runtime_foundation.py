@@ -27,7 +27,7 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertEqual(lock["packages"][""]["engines"]["node"], ">=24.19.0 <25")
         self.assertEqual(lock["packages"][""]["dependencies"], package["dependencies"])
         self.assertEqual(lock["packages"][""]["devDependencies"], package["devDependencies"])
-        self.assertEqual(package["dependencies"]["next"], "16.3.2")
+        self.assertEqual(package["dependencies"]["next"], "16.3.4")
         self.assertEqual(package["devDependencies"]["@types/node"], "24.13.3")
         self.assertEqual(package["devDependencies"]["@puppeteer/browsers"], "3.2.1")
         self.assertEqual(package["devDependencies"]["chrome-launcher"], "1.2.1")

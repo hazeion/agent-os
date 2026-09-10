@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import server
@@ -23,7 +24,7 @@ class _FakeKanban:
     def detect_capabilities(self):
         return {
             "status": "available",
-            "capabilities": {"tasks.create": True, "boards.read": True},
+            "capabilities": {"tasks.create": True, "boards.read": True, "tasks.read": True},
         }
 
     def list_boards(self):
@@ -103,6 +104,87 @@ class PlanningTaskDelegationServerTests(unittest.TestCase):
         self.assertTrue(result["options"]["available"])
         self.assertEqual(result["options"]["profiles"], [{"id": "researcher", "name": "Researcher"}])
         self.assertNotIn("connection_binding_id", json.dumps(result))
+
+    def test_options_return_closed_setup_reasons_without_raw_failures(self):
+        cases = (
+            ({"status": "available", "capabilities": {}}, None, None, "capability_missing"),
+            ({"status": "available", "capabilities": {"tasks.create": True, "boards.read": True}}, None, None, "capability_missing"),
+            ({"status": "unavailable", "error": {"message": "token=private /Users/private"}}, None, None, "transient_failure"),
+            (None, {"status": "unavailable", "error": "private-error"}, None, "profiles_unavailable"),
+            (None, {"status": "available", "profiles": []}, None, "profile_missing"),
+            (None, {"status": "available", "profiles": [{"id": "unserved", "served": False}]}, None, "profile_missing"),
+            (None, None, {"ok": False, "error": "private-error"}, "boards_unavailable"),
+            (None, None, {"ok": True, "boards": []}, "board_missing"),
+            (None, None, {"ok": True, "boards": [{"id": "archived", "archived": True}]}, "board_missing"),
+        )
+        for capabilities, profiles, boards, reason in cases:
+            with self.subTest(reason=reason):
+                with patch.object(self.adapter, "detect_capabilities", return_value=capabilities or {"status": "available", "capabilities": {"tasks.create": True, "boards.read": True, "tasks.read": True}}), patch.object(server, "hermes_profiles_payload", return_value=profiles or {"status": "available", "profiles": [{"id": "researcher", "name": "Researcher"}]}), patch.object(self.adapter, "list_boards", return_value=boards or {"ok": True, "boards": [{"id": "default"}]}):
+                    result, status = server.mentat_planning_task_delegation_options_payload("task-1")
+                self.assertEqual(status, 200)
+                self.assertEqual(result["options"], {"available": False, "reason": reason})
+                self.assertNotIn("private", json.dumps(result))
+                self.assertEqual(self.adapter.calls, [])
+
+    def test_missing_runtime_and_connection_error_are_distinct(self):
+        with patch.object(server, "kanban_adapter", return_value=server.HermesKanbanAdapter(None)):
+            result, _ = server.mentat_planning_task_delegation_options_payload("task-1")
+        self.assertEqual(result["options"]["reason"], "runtime_missing")
+        with patch.object(server, "kanban_adapter", side_effect=server.RemoteHermesError("remote_unavailable")):
+            result, _ = server.mentat_planning_task_delegation_options_payload("task-1")
+        self.assertEqual(result["options"]["reason"], "connection_unavailable")
+
+    def test_discovery_uses_short_phase_timeouts_and_stops_at_aggregate_deadline(self):
+        clock = [100.0]
+        timeouts = []
+        def capabilities():
+            clock[0] += 7
+            return {"status": "available", "capabilities": {"tasks.create": True, "boards.read": True, "tasks.read": True}}
+        def profiles(*, timeout):
+            timeouts.append(timeout)
+            clock[0] += 1
+            return {"status": "available", "profiles": [{"id": "researcher"}]}
+        with patch.object(server.time, "monotonic", side_effect=lambda: clock[0]), patch.object(self.adapter, "detect_capabilities", side_effect=capabilities), patch.object(server, "hermes_profiles_payload", side_effect=profiles), patch.object(self.adapter, "list_boards") as boards:
+            result, status = server.mentat_planning_task_delegation_options_payload("task-1")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["options"]["reason"], "transient_failure")
+        self.assertEqual(timeouts, [1.0])
+        boards.assert_not_called()
+
+    def test_local_discovery_changes_only_its_private_adapter_timeouts(self):
+        timeouts = []
+        def runner(arguments, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            output = json.dumps([{"slug": "default", "name": "Default"}]) if "--json" in arguments else "Hermes Agent v1.0 create boards list show"
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+        adapter = server.HermesKanbanAdapter("hermes", runner=runner)
+        with patch.object(server, "kanban_adapter", return_value=adapter):
+            result, status = server.mentat_planning_task_delegation_options_payload("task-1")
+        self.assertEqual(status, 200)
+        self.assertTrue(result["options"]["available"])
+        self.assertEqual(len(timeouts), 3)
+        self.assertTrue(all(0 < timeout <= 2 for timeout in timeouts))
+        self.assertEqual(server.HermesKanbanAdapter("hermes").timeout, 15)
+
+    def test_connection_change_during_discovery_does_not_offer_mixed_targets(self):
+        with patch.object(server, "load_remote_hermes_connection", return_value=SimpleNamespace(binding_id="changed-private-binding")):
+            result, _ = server.mentat_planning_task_delegation_options_payload("task-1")
+        self.assertEqual(result["options"]["reason"], "connection_unavailable")
+        self.assertNotIn("changed-private-binding", json.dumps(result))
+
+    def test_unavailability_reason_bridge_is_closed_and_existing_delegation_skips_discovery(self):
+        from mentat.local_bridge import _planning_delegation_options, BridgeConversationProjectionError
+
+        self.assertEqual(_planning_delegation_options({"available": False, "reason": "runtime_missing"}), {"available": False, "reason": "runtime_missing"})
+        for invalid in ({"available": False}, {"available": False, "reason": ["runtime_missing"]}, {"available": False, "reason": "unknown-private"}, {"available": False, "reason": "runtime_missing", "detail": "secret"}):
+            with self.assertRaises(BridgeConversationProjectionError):
+                _planning_delegation_options(invalid)
+        current = {"schema_version": 1, "task": {"id": "task-1", "revision": 1}, "delegation": {"available": True}}
+        with patch.object(server, "_planning_delegation_current_payload", return_value=(current, 200)), patch.object(server, "kanban_adapter") as adapter:
+            result, status = server.mentat_planning_task_delegation_options_payload("task-1")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["options"], {"available": False, "reason": "already_delegated"})
+        adapter.assert_not_called()
 
     def test_delegate_requires_exact_revision_and_replays_one_receipt(self) -> None:
         current, status = server.mentat_planning_task_delegation_preview("task-1", self._intent(1))

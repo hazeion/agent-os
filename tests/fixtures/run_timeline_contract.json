@@ -1,0 +1,81 @@
+[
+  {
+    "schema_version": 1,
+    "service": "mentat-local-bridge",
+    "runtime": "python",
+    "status": "ready",
+    "run_id": "run_timeline_contract",
+    "after": 0,
+    "next_cursor": 2,
+    "cursor_reset_required": false,
+    "events": [
+      {
+        "id": "event_22a7201f9748c8a0df80cce0350eeff2",
+        "run_id": "run_timeline_contract",
+        "sequence": 1,
+        "type": "dispatch.reserved",
+        "occurred_at": "2026-08-18T12:00:00+00:00",
+        "summary": "Dispatch reserved",
+        "message": null,
+        "metrics": {},
+        "presentation": null
+      },
+      {
+        "id": "event_2286a186bdfe0e39a3352058",
+        "run_id": "run_timeline_contract",
+        "sequence": 2,
+        "type": "run.started",
+        "occurred_at": "2026-08-18T12:00:02+00:00",
+        "summary": "Runtime accepted dispatch",
+        "message": null,
+        "metrics": {},
+        "presentation": null
+      }
+    ]
+  },
+  {
+    "schema_version": 1,
+    "service": "mentat-local-bridge",
+    "runtime": "python",
+    "status": "ready",
+    "run_id": "run_timeline_contract",
+    "after": 0,
+    "next_cursor": 3,
+    "cursor_reset_required": false,
+    "events": [
+      {
+        "id": "event_22a7201f9748c8a0df80cce0350eeff2",
+        "run_id": "run_timeline_contract",
+        "sequence": 1,
+        "type": "dispatch.reserved",
+        "occurred_at": "2026-08-18T12:00:00+00:00",
+        "summary": "Dispatch reserved",
+        "message": null,
+        "metrics": {},
+        "presentation": null
+      },
+      {
+        "id": "event_2286a186bdfe0e39a3352058",
+        "run_id": "run_timeline_contract",
+        "sequence": 2,
+        "type": "run.started",
+        "occurred_at": "2026-08-18T12:00:02+00:00",
+        "summary": "Runtime accepted dispatch",
+        "message": null,
+        "metrics": {},
+        "presentation": null
+      },
+      {
+        "id": "event_faa933ed4f6fcb1c3debc029",
+        "run_id": "run_timeline_contract",
+        "sequence": 3,
+        "type": "run.failed",
+        "occurred_at": "2026-08-18T12:00:02+00:00",
+        "summary": "Run failed",
+        "message": null,
+        "metrics": {},
+        "presentation": null
+      }
+    ]
+  }
+]

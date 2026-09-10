@@ -1,5 +1,12 @@
+import { validAgentSetupBody, type AgentSetupAction } from "./agent-setup-contract.ts";
+
 const BODY_READ_TIMEOUT_MILLISECONDS = 2_000;
 const CONVERSATION_TURN_BODY_BYTES = 96 * 1024;
+
+export async function readAgentSetupBody(request: Request, action: AgentSetupAction): Promise<Record<string, unknown> | null> {
+  const value = await readBoundedJson(request, 1_024);
+  return validAgentSetupBody(action, value) ? value : null;
+}
 
 async function readBoundedBytes(
   request: Request,

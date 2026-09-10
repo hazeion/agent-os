@@ -104,6 +104,7 @@ export type PublicPlanningExecutionAttempt = {
   completed_at: string | null;
   review_action: "accept" | "request_changes" | null;
   review_note: string | null;
+  result?: { available: boolean; text: string | null; truncated: boolean };
 };
 export type PublicPlanningExecutionTask = PublicPlanningTask & { assigned_agent_id: string | null };
 export type PublicPlanningTaskExecution = ServiceEnvelope & {
@@ -114,6 +115,7 @@ export type PublicPlanningTaskExecution = ServiceEnvelope & {
     attempts: PublicPlanningExecutionAttempt[];
     attempt_count: number;
     review: { available: boolean; run_id: string | null };
+    recovery: { available: boolean; run_id: string | null; run_revision: number | null };
   };
 };
 export type PublicPlanningRunOncePreview = ServiceEnvelope & { action: "run_once"; task: PublicPlanningExecutionTask; requires_confirmation: true; confirmation_id: string };

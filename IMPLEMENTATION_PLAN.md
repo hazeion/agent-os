@@ -20,6 +20,29 @@ not in a growing collection of repository narratives.
 
 ## Current position
 
+The owner approved the Beta QA stabilization sequence on September 7, 2026.
+Complete it before resuming MDA implementation; preserve the existing MDA
+worktrees. Each batch remains a focused slice with regression evidence and two
+independent reviews for non-trivial changes. Publication is a separate step.
+
+1. Execution and visibility: issues #211, #210 (locally verified; publication pending).
+2. Failed Task recovery and cascade deletion: issues #209, #208 (locally verified).
+3. Integration and planner refresh: issues #214, #213 (locally verified).
+4. Delegation availability and Conversation restore: issues #219, #220 (locally verified).
+5. Checklist, Someday, and reminder usability: issues #215, #221, #218 (locally verified).
+6. Shared theme and task-inspector layout: issues #216, #217 (locally verified).
+7. Capability-scoped Agent onboarding: issue #212 (locally verified).
+
+The [Beta QA audit](https://github.com/hazeion/agent-os/issues/222) owns the
+findings and final end-to-end acceptance. The active evidence log is
+`reviews/2026-09-09-first-use-audit.md` (publication held: new-user acceptance
+found result, continuity, live-state, layout, onboarding, and dependency gaps).
+The fourteen original Beta QA fixes remain locally implemented; the broader
+September 9 journey is not approved. Reconcile published main `e1081c4` before
+the next integrated acceptance pass.
+After QA acceptance, reconcile and
+verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against the stabilized baseline.
+
 The runtime-neutral Python foundation, SQLite authority, Node gateway,
 Emerald shell, read-only Agents/Tasks/Runs routes, Run timeline and controls,
 production packaging, Codex adapter, runtime coexistence, Agent registry

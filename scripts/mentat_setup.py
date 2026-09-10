@@ -618,11 +618,13 @@ def print_next_steps(env_path: Path, env_bat_path: Path, *, wrote_env: bool) -> 
             print(f"  call {env_bat_path}")
         else:
             print(f"  source {env_path}")
+    print("  npm --prefix web ci --ignore-scripts")
+    print("  npm --prefix web run build")
     if os.name == "nt":
         print("  run.bat")
     else:
         print("  ./run.sh")
-    print("\nUse `mentat connection status` to inspect the selected local or remote Hermes connection.")
+    print("\nUse `python -m mentat.cli connection status` to inspect the selected local or remote Hermes connection.")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

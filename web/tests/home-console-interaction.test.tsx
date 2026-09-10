@@ -500,7 +500,7 @@ test("Home Console enables Send and normalizes an accidental trailing space", as
 
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
   await user.type(prompt, "Ready to send ");
 
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
@@ -645,7 +645,7 @@ test("Home Console executes Shift+Enter, IME, optimistic paint, and pre-admissio
   await waitFor(() => assert.equal(prompt.disabled, false));
   assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
 
   await user.type(prompt, "First line");
   await user.keyboard("{Shift>}{Enter}{/Shift}Second line");
@@ -693,7 +693,7 @@ test("Home Console reuses the exact key only for the unchanged ambiguous draft",
   render(<HomeConsole />);
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
   await user.type(prompt, "Retry exactly");
   await user.click(screen.getByRole("button", { name: "Send" }));
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /exact retry key were kept/u));
@@ -790,7 +790,7 @@ test("Home Console scopes in-flight drafts and exact retry keys per Conversation
   render(<HomeConsole />);
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
 
   await user.type(prompt, "Retry A");
   await user.click(screen.getByRole("button", { name: "Send" }));
@@ -1646,6 +1646,121 @@ test("Home Console closes, reopens, archives, and restores without deleting hist
   await waitFor(() => assert.equal(screen.getByRole("button", { name: "Archive New conversation, Conversation 1" }).getAttribute("disabled"), null));
 });
 
+function installPlanningHistory() {
+  const envelope = { runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" };
+  const project = { id: "project_restore", name: "Restore Project", revision: 1, status: "active" };
+  const task = { attention_reasons: [], blocked: false, deferred: false, due_date: null, id: "task_restore", needs_attention: false, planned_for_today: false, planning_state: "planned", priority: "medium", project_id: project.id, project_name: project.name, review_required: false, revision: 1, status: "todo", title: "Restore Task", updated_at: timestamp, workflow_stage: "planned" };
+  const fixture = {
+    state: { ...conversation } as ConversationFixture,
+    bodies: [] as Array<{ expected_revision: number; project_id: string | null; task_id: string | null }>,
+    contextReads: 0,
+    association: null as { project_id: string; task_id: string | null } | null,
+    readOverride: null as ((id: string) => Promise<Response> | null) | null,
+    context(id = conversation.id) { return { ...envelope, association: id === conversation.id ? fixture.association : null, conversation_id: id, conversation_revision: id === conversation.id ? fixture.state.revision : 1, project: fixture.association && id === conversation.id ? project : null, state: fixture.association && id === conversation.id ? "ready" : "empty", task: fixture.association?.task_id && id === conversation.id ? task : null }; },
+  };
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input); const method = init?.method ?? "GET";
+    if (path === "/api/agent-console/planning-overview") return Response.json({ ...envelope, attention: [], attention_count: 0, project_count: 1, projects: [project], today: "2026-08-30", truncated: false });
+    if (path === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...task, description_preview: "" }] });
+    if (path.endsWith("/planning-context")) {
+      if (method === "GET") { fixture.contextReads += 1; return await fixture.readOverride?.(path.split("/")[3]) ?? Response.json(fixture.context(path.split("/")[3])); }
+      const body = JSON.parse(String(init?.body)); fixture.bodies.push(body);
+      if (body.expected_revision !== fixture.state.revision) return Response.json({ schema_version: 1, status: "conflict" }, { status: 409 });
+      fixture.state = { ...fixture.state, revision: fixture.state.revision + 1 };
+      fixture.association = body.project_id ? { project_id: body.project_id, task_id: body.task_id } : null;
+      return Response.json({ ...fixture.context(), action: body.project_id ? "set" : "clear", conversation: fixture.state });
+    }
+    if (path === "/api/conversation-history") return Response.json({ ...envelope, conversations: [fixture.state], count: 1, next_cursor: null });
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [fixture.state, { ...conversation, id: "conv_other" }], count: 2 });
+    if (path === "/api/agent-activity") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}`) return Response.json(detail(null, fixture.state));
+    if (path === "/api/conversations/conv_other") return Response.json(detail(null, { ...conversation, id: "conv_other" }));
+    if (path.endsWith("/archive") || path.endsWith("/restore") || path.endsWith("/rename")) {
+      const action = path.split("/").at(-1);
+      fixture.state = { ...fixture.state, revision: fixture.state.revision + 1, ...(action === "rename" ? { title: JSON.parse(String(init?.body)).title, title_source: "manual" } : { state: action === "archive" ? "archived" : "active", archived_at: action === "archive" ? timestamp : null }) };
+      return Response.json({ ...envelope, action, conversation: fixture.state });
+    }
+    const other = emptyConversationContextResponse(path, method); if (other) return other;
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  return fixture;
+}
+
+test("Home planning Apply succeeds once after rename, archive and restore with staged choices retained", async () => {
+  const fixture = installPlanningHistory();
+  const user = userEvent.setup({ document: dom.window.document }); render(<HomeConsole />);
+  await screen.findByLabelText("Prompt");
+  await user.click(await screen.findByText("Planning context"));
+  await waitFor(() => assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).disabled, false));
+  await user.type(screen.getByLabelText("Prompt"), "Retain my draft");
+  await user.selectOptions(screen.getByLabelText("Project planning context"), "project_restore");
+  await waitFor(() => assert.equal((screen.getByLabelText("Task planning context") as HTMLSelectElement).disabled, false));
+  await user.selectOptions(screen.getByLabelText("Task planning context"), "task_restore");
+  await user.click(screen.getByText("Recent Conversations"));
+  await user.click(await screen.findByRole("button", { name: "Rename New conversation, Conversation 1" }));
+  await user.clear(screen.getByLabelText("Conversation title")); await user.type(screen.getByLabelText("Conversation title"), "Renamed");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await user.click(await screen.findByRole("button", { name: "Archive Renamed, Conversation 1" }));
+  await user.click(await screen.findByRole("button", { name: "Restore Renamed, Conversation 1" }));
+  await waitFor(() => assert.equal((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled, false));
+  await user.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() => assert.equal(fixture.bodies.length, 1));
+  assert.deepEqual(fixture.bodies, [{ expected_revision: 4, project_id: "project_restore", task_id: "task_restore" }]);
+  await screen.findByText("Planning context applied. No Task or Run was changed.");
+  assert.equal((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value, "Retain my draft");
+});
+
+test("Home planning retains a genuine concurrent conflict and waits for another explicit Apply", async () => {
+  const fixture = installPlanningHistory();
+  const user = userEvent.setup({ document: dom.window.document }); render(<HomeConsole />);
+  await user.click(await screen.findByText("Planning context"));
+  await waitFor(() => assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).disabled, false));
+  await user.selectOptions(screen.getByLabelText("Project planning context"), "project_restore");
+  await user.type(screen.getByLabelText("Prompt"), "Keep this independent draft");
+  fixture.state = { ...fixture.state, revision: 2 };
+  await user.click(screen.getByRole("button", { name: "Apply" }));
+  await screen.findByText("This Conversation changed. Canonical context was refreshed and your staged choice was kept.");
+  assert.equal(fixture.bodies.length, 1);
+  assert.equal(fixture.bodies[0].expected_revision, 1);
+  assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).value, "project_restore");
+  assert.equal((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value, "Keep this independent draft");
+  await waitFor(() => assert.equal((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled, false));
+  await user.click(screen.getByRole("button", { name: "Apply" }));
+  await screen.findByText("Planning context applied. No Task or Run was changed.");
+  assert.deepEqual(fixture.bodies.map((body) => body.expected_revision), [1, 2]);
+});
+
+test("Home planning blocks stale Apply and discards a late context read after switching tabs", async () => {
+  const fixture = installPlanningHistory(); const late = deferredResponse(); let latePayload: unknown;
+  const user = userEvent.setup({ document: dom.window.document }); render(<HomeConsole />);
+  await user.click(await screen.findByText("Planning context"));
+  await waitFor(() => assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).disabled, false));
+  await user.selectOptions(screen.getByLabelText("Project planning context"), "project_restore");
+  fixture.readOverride = (id) => { if (id !== conversation.id) return null; fixture.readOverride = null; latePayload = fixture.context(); return late.promise; };
+  await user.click(screen.getByText("Recent Conversations"));
+  await user.click(await screen.findByRole("button", { name: "Rename New conversation, Conversation 1" }));
+  await user.clear(screen.getByLabelText("Conversation title")); await user.type(screen.getByLabelText("Conversation title"), "Renamed");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => assert.ok(latePayload));
+  const apply = document.querySelector<HTMLButtonElement>(".composer-planning-actions button")!;
+  assert.equal(apply.disabled, true);
+  await user.click(apply); assert.equal(fixture.bodies.length, 0);
+  await user.click(document.getElementById("conversation-tab-conv_other")!);
+  await user.click(await screen.findByText("Planning context"));
+  await waitFor(() => assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).disabled, false));
+  await user.type(screen.getByLabelText("Prompt"), "Other Conversation draft");
+  await act(async () => { late.resolve(Response.json(latePayload)); });
+  assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).value, "");
+  assert.equal((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value, "Other Conversation draft");
+  await user.click(document.getElementById(`conversation-tab-${conversation.id}`)!);
+  await user.click(await screen.findByText("Planning context"));
+  await waitFor(() => assert.equal((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled, false));
+  assert.equal((screen.getByLabelText("Project planning context") as HTMLSelectElement).value, "project_restore");
+  await user.click(screen.getByRole("button", { name: "Apply" }));
+  await screen.findByText("Planning context applied. No Task or Run was changed.");
+  assert.deepEqual(fixture.bodies.map((body) => body.expected_revision), [2]);
+});
+
 test("Home Console creates one exact Retry Run and preserves the prior failure", async () => {
   const failedRun = { id: "run_failed_home", partial: false, status: "failed", updated_at: timestamp };
   const retryRun = { id: "run_retry_home", partial: false, status: "starting", updated_at: "2026-08-26T12:01:00Z" };
@@ -1705,6 +1820,41 @@ test("Home Console keeps a duplicate Retry replay reconciling until exact readba
   await user.click(await screen.findByRole("button", { name: "Retry" }));
   await waitFor(() => assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Reconciling/u));
   assert.equal(screen.queryByRole("button", { name: "Stop" }), null);
+  assert.equal(MockEventSource.instances.length, 2);
+  assert.equal(MockEventSource.instances[0].closed, true);
+  assert.equal(MockEventSource.instances[1].url, `/api/runs/${replayedRun.id}/events`);
+});
+
+test("Home Console confirms sign-in without claiming successful model execution", async () => {
+  installFetch();
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await user.click(await screen.findByRole("button", { name: "Check readiness" }));
+  await screen.findByText("Codex sign-in confirmed");
+  assert.match(screen.getByRole("status").textContent ?? "", /does not verify model execution/u);
+  assert.match(document.querySelector(".codex-setup")?.textContent ?? "", /does not verify model access or successful execution/u);
+  assert.equal(screen.queryByText("Codex ready"), null);
+});
+
+test("Home Console loads one exact failed Run snapshot and shows its safe recovery reason", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const failedRun = { id: "run_failed_reason", partial: false, status: "failed", updated_at: timestamp };
+  installFetch({ currentRun: failedRun });
+  render(<HomeConsole />);
+  const recovery = await screen.findByLabelText("Run recovery");
+  assert.match(recovery.textContent ?? "", /Sign-in alone does not verify execution/u);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  const source = MockEventSource.instances[0];
+  assert.equal(source.url, `/api/runs/${failedRun.id}/events`);
+  const summary = "Codex run failed: authentication. Sign in again with codex login in a terminal, then retry.";
+  const event = { id: "event_failed_reason", run_id: failedRun.id, sequence: 2, type: "run.failed", occurred_at: timestamp, summary, message: null, metrics: {}, presentation: null };
+  await act(async () => source.emit("snapshot", JSON.stringify({ events: [{ ...event, run_id: "run_other" }], reset: false })));
+  assert.doesNotMatch(recovery.textContent ?? "", /authentication/u);
+  assert.equal(source.closed, false);
+  await act(async () => source.emit("snapshot", JSON.stringify({ events: [event], reset: false })));
+  assert.match(recovery.textContent ?? "", /Codex run failed: authentication/u);
+  assert.equal(source.closed, true);
   assert.equal(MockEventSource.instances.length, 1);
 });
 

@@ -1,8 +1,9 @@
-export type PublicPlanningSearchResult = Readonly<{
-  id: string;
-  title: string;
-  type: "project" | "task";
+export type PublicPlanningProjectSearchResult = Readonly<{ id: string; title: string; type: "project" }>;
+export type PublicPlanningTaskSearchResult = Readonly<{
+  id: string; title: string; type: "task"; project_id: string; project_name: string;
+  due_date: string | null; workflow_stage: "inbox" | "planned" | "in_progress" | "waiting" | "review" | "done";
 }>;
+export type PublicPlanningSearchResult = PublicPlanningProjectSearchResult | PublicPlanningTaskSearchResult;
 
 export type PublicPlanningSearch = Readonly<{
   schema_version: 1;
@@ -10,9 +11,9 @@ export type PublicPlanningSearch = Readonly<{
   runtime: "python";
   status: "ready";
   query: string;
-  projects: PublicPlanningSearchResult[];
+  projects: PublicPlanningProjectSearchResult[];
   project_count: number;
-  tasks: PublicPlanningSearchResult[];
+  tasks: PublicPlanningTaskSearchResult[];
   task_count: number;
   truncated: boolean;
 }>;
@@ -37,10 +38,14 @@ function record(value: unknown): value is Record<string, unknown> { return !!val
 function keys(value: Record<string, unknown>, expected: string): boolean { return Object.keys(value).sort().join(",") === expected; }
 function query(value: unknown): value is string { return typeof value === "string" && !!value && value.trim() === value && [...value].length <= 160 && !/\p{C}/u.test(value); }
 function result(value: unknown, type: "project" | "task"): value is PublicPlanningSearchResult {
-  return record(value) && keys(value, "id,title,type") && value.type === type && typeof value.id === "string"
+  return record(value) && keys(value, type === "task" ? "due_date,id,project_id,project_name,title,type,workflow_stage" : "id,title,type") && value.type === type && typeof value.id === "string"
     && (type === "project" ? PROJECT.test(value.id) : TASK.test(value.id))
     && typeof value.title === "string" && !!value.title && value.title.trim() === value.title
-    && [...value.title].length <= (type === "project" ? 120 : 160) && !/\p{C}/u.test(value.title);
+    && [...value.title].length <= (type === "project" ? 120 : 160) && !/\p{C}/u.test(value.title)
+    && (type === "project" || typeof value.project_id === "string" && PROJECT.test(value.project_id)
+      && typeof value.project_name === "string" && !!value.project_name && value.project_name.trim() === value.project_name && [...value.project_name].length <= 120 && !/\p{C}/u.test(value.project_name)
+      && typeof value.workflow_stage === "string" && ["inbox", "planned", "in_progress", "waiting", "review", "done"].includes(value.workflow_stage)
+      && (value.due_date === null || typeof value.due_date === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value.due_date) && !Number.isNaN(Date.parse(value.due_date)) && new Date(value.due_date).toISOString().slice(0, 10) === value.due_date));
 }
 
 export function parsePlanningSearch(value: unknown, expectedQuery?: string): PublicPlanningSearch {

@@ -119,8 +119,10 @@ performance budget.
 
 The performance gate uses Lighthouse 13.4.1 and Chrome for Testing
 152.0.7923.0. It runs three desktop audits and three mobile audits. Every
-category must score 100. Each audit gets a fresh browser and profile. Timeouts
-and signals clean up Lighthouse, Chrome, and temporary files.
+non-performance category must score 100 in each run. The default performance
+requirement is a median of 100 per mode; the quality-gates CI workflow explicitly
+uses 95. Each audit gets a fresh browser and profile. Timeouts and signals
+clean up Lighthouse, Chrome, and temporary files.
 
 The supervisor watches Node and Python. If either process exits, it stops the
 other one within a bounded timeout. The browser gateway stops first during a
@@ -822,7 +824,10 @@ names and never start or wait for Codex.
 The Agent Console exposes a separate explicit Codex readiness check with only
 `cli_missing`, `sign_in_required`, `ready`, or `unavailable`. Setup directs the
 operator to the Codex-owned `codex login` browser flow and requires an explicit
-Recheck. Mentat never accepts a password, browser cookie, API key, access or
+Recheck. The UI describes `ready` as sign-in confirmed, not proof of model
+access or successful execution. Codex terminal failures expose only fixed
+categories and corrective guidance; raw provider errors remain private.
+Mentat never accepts a password, browser cookie, API key, access or
 refresh token, account identifier, or Codex auth-cache contents; routine Agent
 and Conversation reads never launch Codex.
 
@@ -855,6 +860,19 @@ bindings, including Codex's fixed binding and capability vocabulary. Format-3
 backups retain the former standalone registry, and pre-registry format-2
 backups restore an empty migration source; both require the explicit
 convergence command before normal startup.
+
+The Next.js Agents workspace offers three fixed local Agent setup operations:
+check, preview, and confirm. Python discovers only the configured local Hermes
+default identity; browser input supplies a display name, never a runtime
+reference or capabilities. Check and preview cannot create database authority.
+Confirmation binds the name, local configuration, and canonical registry
+snapshot under the existing durable/private/Hermes locks, creates a random
+canonical Agent ID atomically, and verifies readback. The existing unique
+runtime binding and 128-Agent ceiling remain enforced. An uncertain response
+requires another Check, which can show the existing Agent without resubmission.
+Remote Hermes is ineligible; Codex uses its existing fixed identity and Vercel
+retains stopped-server CLI setup. Setup never changes Hermes profiles or
+credentials, starts work, or grants files or Inbox task creation automatically.
 
 ## Remote Hermes connection boundary
 
@@ -1066,6 +1084,13 @@ the completed instance as history. Scheduled blocks and reminders retain a
 validated IANA time zone so recurring wall-clock times remain stable across
 daylight-saving transitions.
 
+An unsuccessful Task execution may return to Planned only through an explicit
+operator recovery bound to the current Task revision and the exact latest Run
+and Run revision. The Run must be accepted, terminal, finalized, and nonpartial;
+unknown evidence or competing execution/delegation keeps recovery unavailable.
+Recovery records the operator decision and preserves Run/Event evidence. It
+neither accepts failed output nor starts another Run; Run once remains separate.
+
 Browser reminders are advisory UI behavior over Mentat-owned timestamps. The
 browser asks for notification permission only after an explicit operator action
 and locally deduplicates delivered notifications. No reminder mutates Hermes or
@@ -1090,6 +1115,13 @@ The adapter uses shell-free argument arrays and a fixed set of supported Kanban
 operations. It omits workspace paths, process identifiers, arbitrary metadata,
 and secrets from browser payloads. Mentat advertises a Kanban operation only
 when runtime discovery reports the corresponding capability.
+
+Delegation option discovery is read-only and does not block unrelated planner
+navigation. It returns fixed unavailable reasons and uses an eight-second
+discovery budget inside longer Node/browser deadlines. Remote discovery shares
+an absolute GET-only deadline across nested HTTP reads, with exact socket
+shutdown and bounded credential-free DNS workers. This does not change the
+timeouts or confirmation rules for actual delegation mutations.
 
 Creating a delegation requires:
 

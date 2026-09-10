@@ -33,8 +33,8 @@
       "example",
       "review"
     ],
-    "review_required": true,
-    "needs_attention": true,
+    "review_required": false,
+    "needs_attention": false,
     "created_at": "2026-06-29T12:05:00-07:00",
     "updated_at": "2026-07-09T22:27:42-07:00",
     "completed_at": "2026-07-09T22:27:42-07:00"

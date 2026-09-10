@@ -7,7 +7,14 @@ import { createPlanningSearchHandler } from "../src/lib/planning-search-route.ts
 import { parsePlanningSearch, PublicPlanningSearchError, readPlanningSearch } from "../src/lib/public-planning-search.ts";
 
 const envelope = { runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
-const result = { ...envelope, project_count: 1, projects: [{ id: "project_alpha", title: "Alpha", type: "project" as const }], query: "Alpha", task_count: 1, tasks: [{ id: "task_alpha", title: "Ship Alpha", type: "task" as const }], truncated: false };
+const result = { ...envelope, project_count: 1, projects: [{ id: "project_alpha", title: "Alpha", type: "project" as const }], query: "Alpha", task_count: 1, tasks: [{ id: "task_alpha", title: "Ship Alpha", type: "task" as const, project_id: "project_alpha", project_name: "Alpha", due_date: "2026-09-08", workflow_stage: "planned" as const }], truncated: false };
+
+test("search Task context rejects impossible dates, unsafe stages, and private fields", () => {
+  for (const changes of [{ due_date: "2026-02-30" }, { workflow_stage: "private" }, { workflow_stage: ["planned"] }, { workflow_stage: { value: "planned" } }, { project_id: "/private/path" }, { description: "must not cross" }]) {
+    assert.throws(() => parsePlanningSearch({ ...result, tasks: [{ ...result.tasks[0], ...changes }] }), PublicPlanningSearchError);
+  }
+  assert.equal(parsePlanningSearch(result).tasks[0].due_date, "2026-09-08");
+});
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "A_very_long_urlsafe_bridge_token_with_more_than_43_chars" };
 const headers = { Host: "127.0.0.1:8890", Origin: "http://127.0.0.1:8890", "Sec-Fetch-Site": "same-origin" };
 

@@ -370,6 +370,33 @@ def client_is_loopback(value: object) -> bool:
         return False
 
 
+def bridge_agent_setup(action: str, body: object) -> tuple[dict, int]:
+    from agent_setup import SETUP_STATES, valid_name
+    from server import mentat_agent_setup
+
+    try:
+        value, status = mentat_agent_setup(action, body)
+        if status != 200:
+            return _conversation_file_failure(status)
+        required = {"check": {"schema_version", "state", "agent"}, "preview": {"schema_version", "name", "confirmation_id"}, "confirm": {"schema_version", "agent"}}
+        if action not in required or not isinstance(value, dict) or set(value) != required[action] or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("agent_setup_projection_invalid")
+        if action == "preview":
+            if not valid_name(value["name"]) or not isinstance(body, dict) or value["name"] != body.get("name") or not isinstance(value["confirmation_id"], str) or re.fullmatch(r"[0-9a-f]{64}", value["confirmation_id"]) is None:
+                raise ValueError("agent_setup_projection_invalid")
+        else:
+            agent = value["agent"]
+            if agent is not None and (not isinstance(agent, dict) or set(agent) != {"id", "name"} or not isinstance(agent["id"], str) or _OPAQUE_ID.fullmatch(agent["id"]) is None or not valid_name(agent["name"])):
+                raise ValueError("agent_setup_projection_invalid")
+            if action == "check" and (value["state"] not in SETUP_STATES or (value["state"] == "already_configured") != (agent is not None)):
+                raise ValueError("agent_setup_projection_invalid")
+            if action == "confirm" and (agent is None or not isinstance(body, dict) or agent["name"] != body.get("name")):
+                raise ValueError("agent_setup_projection_invalid")
+        return {**value, "service": "mentat-local-bridge", "runtime": "python", "status": "ready"}, 200
+    except Exception:
+        return _conversation_file_failure(503)
+
+
 def _public_agent_record(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {
         "id",
@@ -1646,9 +1673,10 @@ def bridge_planning_overview_payload() -> tuple[dict[str, object], int]:
 
 
 def _planning_search_result(value: object, result_type: str) -> dict[str, object]:
+    expected = {"id", "title", "type"} | ({"project_id", "project_name", "due_date", "workflow_stage"} if result_type == "task" else set())
     if (
         not isinstance(value, dict)
-        or set(value) != {"id", "title", "type"}
+        or set(value) != expected
         or value.get("type") != result_type
         or not isinstance(value.get("id"), str)
         or (result_type == "project" and _PROJECT_ID.fullmatch(value["id"]) is None)
@@ -1656,11 +1684,19 @@ def _planning_search_result(value: object, result_type: str) -> dict[str, object
         or not _planning_text(value.get("title"), 160 if result_type == "task" else 120)
     ):
         raise BridgeConversationProjectionError("planning_search_invalid")
-    return {"id": value["id"], "title": value["title"], "type": result_type}
+    if result_type == "task" and (
+        not isinstance(value.get("project_id"), str) or _PROJECT_ID.fullmatch(value["project_id"]) is None
+        or not _planning_text(value.get("project_name"), 120)
+        or not isinstance(value.get("workflow_stage"), str)
+        or value["workflow_stage"] not in {"inbox", "planned", "in_progress", "waiting", "review", "done"}
+        or value.get("due_date") is not None and not _valid_iso_date(value["due_date"])
+    ):
+        raise BridgeConversationProjectionError("planning_search_invalid")
+    return {key: value[key] for key in sorted(expected)}
 
 
 def bridge_planning_search_payload(query: str) -> tuple[dict[str, object], int]:
-    """Return only bounded title-and-ID planning navigation matches."""
+    """Return bounded planning navigation matches with safe Task context."""
 
     from conversation_planning import ConversationPlanningError
 
@@ -2038,11 +2074,12 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
     task = _planning_execution_task(source.get("task"))
     execution = source.get("execution")
     if not isinstance(execution, dict) or set(execution) != {
-        "available", "reason", "attempts", "attempt_count", "review"
+        "available", "reason", "attempts", "attempt_count", "review", "recovery"
     }:
         raise BridgeConversationProjectionError("planning_execution_invalid")
     attempts = execution.get("attempts")
     review = execution.get("review")
+    recovery = execution.get("recovery")
     if (
         source.get("schema_version") != 1
         or type(execution.get("available")) is not bool
@@ -2056,6 +2093,9 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
         or review.get("run_id") is not None and (
             not isinstance(review["run_id"], str) or _RUN_ID.fullmatch(review["run_id"]) is None
         )
+        or not isinstance(recovery, dict)
+        or set(recovery) != {"available", "run_id", "run_revision"}
+        or type(recovery.get("available")) is not bool
     ):
         raise BridgeConversationProjectionError("planning_execution_invalid")
     public_attempts: list[dict[str, object]] = []
@@ -2064,7 +2104,7 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
             "run_id", "task_revision", "agent_id", "state", "review_task_revision",
             "completion_reason", "runtime_type", "status", "dispatch_state", "partial",
             "terminal_finalized", "created_at", "updated_at", "completed_at",
-            "review_action", "review_note",
+            "review_action", "review_note", "result",
         }
         if (
             not isinstance(item, dict)
@@ -2093,6 +2133,17 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
             or item.get("review_note") is not None and (
                 not _planning_text(item["review_note"], 2000)
             )
+            or not isinstance(item.get("result"), dict)
+            or set(item["result"]) != {"available", "text", "truncated"}
+            or type(item["result"].get("available")) is not bool
+            or type(item["result"].get("truncated")) is not bool
+            or item["result"].get("text") is not None and (
+                not _planning_text(item["result"]["text"], 8_000)
+            )
+            or item["result"]["available"] and item["result"]["text"] is None
+            or not item["result"]["available"] and (
+                item["result"]["text"] is not None or item["result"]["truncated"]
+            )
         ):
             raise BridgeConversationProjectionError("planning_execution_invalid")
         public_attempts.append(dict(item))
@@ -2102,6 +2153,19 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
         or review["available"] and review["run_id"] not in {item["run_id"] for item in public_attempts if item["state"] == "review_ready"}
         or not review["available"] and review["run_id"] is not None
     ):
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    if recovery["available"]:
+        latest = public_attempts[0] if public_attempts else None
+        if (
+            latest is None or recovery["run_id"] != latest["run_id"]
+            or type(recovery["run_revision"]) is not int or recovery["run_revision"] < 1
+            or latest["state"] != "dispatched"
+            or latest["status"] not in {"failed", "cancelled", "stopped", "interrupted"}
+            or latest["dispatch_state"] != "accepted" or latest["partial"] or not latest["terminal_finalized"]
+            or execution["available"] or review["available"]
+        ):
+            raise BridgeConversationProjectionError("planning_execution_invalid")
+    elif recovery["run_id"] is not None or recovery["run_revision"] is not None:
         raise BridgeConversationProjectionError("planning_execution_invalid")
     return {"schema_version": 1, "task": task, "execution": {**execution, "attempts": public_attempts}}
 
@@ -2340,9 +2404,12 @@ def _planning_delegation_options(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or not isinstance(value.get("available"), bool):
         raise BridgeConversationProjectionError("planning_delegation_invalid")
     if value["available"] is False:
-        if set(value) != {"available"}:
+        if set(value) != {"available", "reason"} or not isinstance(value.get("reason"), str) or value["reason"] not in {
+            "already_delegated", "runtime_missing", "capability_missing", "profile_missing",
+            "profiles_unavailable", "board_missing", "boards_unavailable", "connection_unavailable", "transient_failure",
+        }:
             raise BridgeConversationProjectionError("planning_delegation_invalid")
-        return {"available": False}
+        return {"available": False, "reason": value["reason"]}
     required = {"available", "profiles", "boards", "workspaces"}
     profiles = value.get("profiles")
     boards = value.get("boards")
@@ -6580,6 +6647,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        if parsed.path in {"/bridge/v1/agent-setup/check", "/bridge/v1/agent-setup/preview", "/bridge/v1/agent-setup/confirm"} and not parsed.query:
+            body = self._action_json_body(1_024)
+            if body is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_agent_setup(parsed.path.rsplit("/", 1)[1], body)
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_PROJECTS_PATH and not parsed.query:
             body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
             if body is None or set(body) != {"name"}:
@@ -6728,6 +6803,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 expected = {"task_id", "expected_revision", "action", "idempotency_key"}
                 if body.get("action") == "request_changes":
                     expected.add("note")
+                    if "recovery_run_id" in body or "expected_run_revision" in body:
+                        expected.update({"recovery_run_id", "expected_run_revision"})
                 if set(body) != expected:
                     self._send_json({"error": "bridge_route_not_found"}, 404)
                     return
@@ -6737,6 +6814,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 }
                 if body["action"] == "request_changes":
                     review_body["note"] = body["note"]
+                    if "recovery_run_id" in body:
+                        review_body.update({key: body[key] for key in ("recovery_run_id", "expected_run_revision")})
                 payload, status = bridge_planning_task_review_payload(
                     task_id,
                     review_body,

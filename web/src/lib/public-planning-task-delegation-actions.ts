@@ -22,6 +22,19 @@ const STATES = ["queued", "running", "needs_input", "blocked", "ready_for_review
 const SYNCS = ["pending", "synced", "stale", "error"] as const;
 const REVIEWS = ["pending", "accepted", "revision_requested", "blocked"] as const;
 const OUTCOMES = ["completed", "blocked", "failed", "cancelled", "timed_out", "reclaimed"] as const;
+export const DELEGATION_DISCOVERY_GUIDANCE = {
+  runtime_missing: "Hermes is not installed or could not be found. Set up Hermes, restart Mentat, then Recheck.",
+  capability_missing: "This Hermes runtime does not advertise the required Kanban creation and reading capabilities. Check or update Hermes, then Recheck.",
+  profile_missing: "No supported Hermes profile is available. Set up a profile through Hermes, then Recheck.",
+  profiles_unavailable: "Hermes profile discovery failed. Check the local Hermes setup, then Recheck.",
+  board_missing: "No active Hermes Kanban board is available. Set up a board through Hermes, then Recheck.",
+  boards_unavailable: "Hermes Kanban boards could not be read. Check Hermes, then Recheck.",
+  connection_unavailable: "The selected Hermes connection could not be verified. Check its connection setup, then Recheck.",
+  transient_failure: "Delegation discovery did not finish successfully. Recheck to try again; planning and editing remain available.",
+  already_delegated: "This Task already has a delegation. Refresh its status to use the existing delegation controls.",
+} as const;
+export type DelegationDiscoveryReason = keyof typeof DELEGATION_DISCOVERY_GUIDANCE;
+export const PLANNING_DELEGATION_OPTIONS_PUBLIC_TIMEOUT_MILLISECONDS = 12_000;
 
 export type DelegationAction = typeof ACTIONS[number];
 export type DelegationTask = { id: string; revision: number };
@@ -35,7 +48,7 @@ export type DelegationState =
   };
 export type PublicPlanningTaskDelegationCurrent = ServiceEnvelope & { task: DelegationTask; delegation: DelegationState };
 export type PublicPlanningTaskDelegationOptions = PublicPlanningTaskDelegationCurrent & {
-  options: { available: false } | { available: true; profiles: Array<{ id: string; name: string }>; boards: Array<{ id: string; name: string }>; workspaces: ["scratch", "worktree"] };
+  options: { available: false; reason: DelegationDiscoveryReason } | { available: true; profiles: Array<{ id: string; name: string }>; boards: Array<{ id: string; name: string }>; workspaces: ["scratch", "worktree"] };
 };
 export type PublicPlanningTaskDelegationPreview = PublicPlanningTaskDelegationCurrent & {
   action: DelegationAction; requires_confirmation: true; confirmation_id: string; effects: string[];
@@ -77,7 +90,7 @@ export function parsePlanningTaskDelegationOptions(value: unknown, taskId?: stri
   const { options: rawOptions, ...current } = value;
   if (!validCurrent(current, taskId) || !record(rawOptions) || typeof rawOptions.available !== "boolean") throw new PublicPlanningError("response_invalid");
   const options = rawOptions;
-  if (!options.available && keys(options, "available")) return structuredClone(value) as PublicPlanningTaskDelegationOptions;
+  if (!options.available && keys(options, "available,reason") && typeof options.reason === "string" && Object.hasOwn(DELEGATION_DISCOVERY_GUIDANCE, options.reason)) return structuredClone(value) as PublicPlanningTaskDelegationOptions;
   if (!options.available || !keys(options, "available,boards,profiles,workspaces") || !Array.isArray(options.profiles) || !Array.isArray(options.boards) || !Array.isArray(options.workspaces) || options.workspaces.length !== 2 || options.workspaces[0] !== "scratch" || options.workspaces[1] !== "worktree" || ![options.profiles, options.boards].every((items, index) => items.length >= 1 && items.length <= 128 && items.every((item) => record(item) && keys(item, "id,name") && identifier(item.id, index === 0 ? 80 : 64) && text(item.name, 160)) && new Set(items.map((item) => String((item as Record<string, unknown>).id))).size === items.length)) throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningTaskDelegationOptions;
 }
@@ -109,7 +122,7 @@ export function parsePlanningTaskDelegationRecovery(value: unknown, taskId?: str
   return structuredClone(value) as PublicPlanningTaskDelegationRecovery;
 }
 
-export async function readPlanningTaskDelegationOptions(taskId: string): Promise<PublicPlanningTaskDelegationOptions> { if (!TASK.test(taskId)) throw new PublicPlanningError("invalid"); const { response, payload } = await request(`/api/agent-console/planning-task-delegation/options?${new URLSearchParams({ task_id: taskId })}`); if (response.status === 200) return parsePlanningTaskDelegationOptions(payload, taskId); failure(payload, response); }
+export async function readPlanningTaskDelegationOptions(taskId: string): Promise<PublicPlanningTaskDelegationOptions> { if (!TASK.test(taskId)) throw new PublicPlanningError("invalid"); const { response, payload } = await request(`/api/agent-console/planning-task-delegation/options?${new URLSearchParams({ task_id: taskId })}`, {}, PLANNING_DELEGATION_OPTIONS_PUBLIC_TIMEOUT_MILLISECONDS); if (response.status === 200) return parsePlanningTaskDelegationOptions(payload, taskId); failure(payload, response); }
 export async function previewPlanningTaskDelegation(taskId: string, expectedRevision: number, profileId: string, boardId: string, workspace: "scratch" | "worktree", instructions: string, contextPackId: string): Promise<PublicPlanningTaskDelegationPreview> { if (!TASK.test(taskId) || !positive(expectedRevision) || !identifier(profileId, 80) || !identifier(boardId, 64) || !["scratch", "worktree"].includes(workspace) || !input(instructions, 8_000) || !(contextPackId === "" || PACK.test(contextPackId))) throw new PublicPlanningError("invalid"); const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/delegation/preview`, { body: JSON.stringify({ expected_revision: expectedRevision, profile_id: profileId, board_id: boardId, workspace, instructions, context_pack_id: contextPackId }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS); if (response.status === 200) return parsePlanningTaskDelegationPreview(payload, taskId); failure(payload, response); }
 export async function confirmPlanningTaskDelegation(taskId: string, expectedRevision: number, profileId: string, boardId: string, workspace: "scratch" | "worktree", instructions: string, contextPackId: string, confirmationId: string, idempotencyKey: string): Promise<PublicPlanningTaskDelegationMutation> { if (!TASK.test(taskId) || !positive(expectedRevision) || !identifier(profileId, 80) || !identifier(boardId, 64) || !["scratch", "worktree"].includes(workspace) || !input(instructions, 8_000) || !(contextPackId === "" || PACK.test(contextPackId)) || !DELEGATE_CONFIRMATION.test(confirmationId) || !idempotency(idempotencyKey)) throw new PublicPlanningError("invalid"); const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/delegation/delegate`, { body: JSON.stringify({ expected_revision: expectedRevision, profile_id: profileId, board_id: boardId, workspace, instructions, context_pack_id: contextPackId, confirmation_id: confirmationId, idempotency_key: idempotencyKey }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS); if (response.status === 200 || response.status === 201) return parsePlanningTaskDelegationMutation(payload, taskId); failure(payload, response); }
 export async function previewPlanningTaskDelegationAction(taskId: string, expectedRevision: number, action: Exclude<DelegationAction, "delegate">, note: string | null): Promise<PublicPlanningTaskDelegationPreview> { if (!TASK.test(taskId) || !positive(expectedRevision) || !ACTIONS.includes(action) || NOTE_ACTIONS.includes(action as typeof NOTE_ACTIONS[number]) !== (note !== null) || note !== null && (!input(note, 8_000) || !note.trim())) throw new PublicPlanningError("invalid"); const body = note === null ? { expected_revision: expectedRevision, action } : { expected_revision: expectedRevision, action, note }; const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/delegation/action/preview`, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS); if (response.status === 200) return parsePlanningTaskDelegationPreview(payload, taskId); failure(payload, response); }

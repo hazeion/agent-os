@@ -531,7 +531,7 @@ def planning_navigation_search(
     query: object,
     today: date,
 ) -> dict[str, Any]:
-    """Return bounded, title-only navigation matches from canonical planning data.
+    """Return bounded navigation matches with safe Task planning context.
 
     The intentionally small projection makes this useful only for choosing a
     Project or Task to open.  It cannot disclose a Task description, Project
@@ -553,7 +553,9 @@ def planning_navigation_search(
     # every retained Task has an unambiguous Project association before its
     # title can be included in this otherwise minimal result.
     all_tasks = [
-        {"id": task["id"], "title": task["title"], "type": "task"}
+        {"id": task["id"], "title": task["title"], "type": "task",
+         "project_id": task["project_id"], "project_name": task["project_name"],
+         "due_date": task["due_date"], "workflow_stage": task["workflow_stage"]}
         for task in _safe_tasks(connection, registry, today)
         if needle in str(task["title"]).casefold()
     ]

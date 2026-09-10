@@ -236,7 +236,7 @@ function MapDisclosure({ graph, layout }: { graph: TaskDependencyMapGraph; layou
 }
 
 // React Flow's packaged stylesheet is intentionally not imported globally.
-// These are only the positioning rules this bounded, custom-node map needs.
+// Keep the positioning and accessible control rules this bounded map needs.
 function TaskDependencyMapStyles() {
   return <style>{`
     .mentat-task-dependency-map__flow { direction: ltr; }
@@ -253,9 +253,15 @@ function TaskDependencyMapStyles() {
     .mentat-task-dependency-map__flow .react-flow__panel { margin: 12px; position: absolute; z-index: 5; }
     .mentat-task-dependency-map__flow .react-flow__panel.bottom { bottom: 0; }
     .mentat-task-dependency-map__flow .react-flow__panel.left { left: 0; }
-    .mentat-task-dependency-map__flow .react-flow__controls { background: #12342c; border: 1px solid #326654; display: grid; }
-    .mentat-task-dependency-map__flow .react-flow__controls button { background: transparent; border: 0; color: #f4eddc; height: 28px; width: 28px; }
-    .mentat-task-dependency-map__flow .react-flow__controls button + button { border-top: 1px solid #326654; }
+    .mentat-task-dependency-map__flow .react-flow__controls { background: var(--panel-raised); border: 1px solid var(--border-control); border-radius: var(--radius-control); display: grid; }
+    .mentat-task-dependency-map__flow .react-flow__controls button { align-items: center; background: transparent; border: 0; color: var(--text-primary); cursor: pointer; display: flex; height: 32px; justify-content: center; padding: 7px; width: 32px; }
+    .mentat-task-dependency-map__flow .react-flow__controls button:first-child { border-radius: var(--radius-control) var(--radius-control) 0 0; }
+    .mentat-task-dependency-map__flow .react-flow__controls button:last-child { border-radius: 0 0 var(--radius-control) var(--radius-control); }
+    .mentat-task-dependency-map__flow .react-flow__controls button + button { border-top: 1px solid var(--border-default); }
+    .mentat-task-dependency-map__flow .react-flow__controls button:hover:not(:disabled) { background: var(--row-hover); color: var(--accent); }
+    .mentat-task-dependency-map__flow .react-flow__controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+    .mentat-task-dependency-map__flow .react-flow__controls button:disabled { color: var(--text-tertiary); cursor: default; }
+    .mentat-task-dependency-map__flow .react-flow__controls button svg { fill: currentColor; flex: none; height: 16px; width: 16px; }
   `}</style>;
 }
 

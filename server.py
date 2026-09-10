@@ -2690,7 +2690,7 @@ def mentat_planning_overview_payload() -> dict:
 
 
 def mentat_planning_search_payload(query: object) -> dict:
-    """Read bounded title-only Project and Task navigation matches.
+    """Read bounded title matches with safe Task planning context.
 
     This named capability is intentionally separate from the legacy dashboard
     search.  It reads only the canonical SQLite Project and Task authorities.
@@ -4628,6 +4628,62 @@ def mentat_provider_connections_payload():
         return public_vercel_connections(DATA_DIR)
 
 
+def _local_hermes_agent_setup_target():
+    from agent_setup import LocalHermesSetup
+
+    if load_remote_hermes_connection(DATA_DIR).mode != "local":
+        return LocalHermesSetup("remote_selected")
+    command = hermes_command_path()
+    python = hermes_python_path()
+    if command is None or python is None:
+        return LocalHermesSetup("hermes_missing")
+    if "run.start" not in HERMES_RUNTIME.capabilities:
+        return LocalHermesSetup("unavailable")
+    discovery = discover_hermes_profiles(python, HERMES_HOME, cwd=BASE_DIR, timeout=5)
+    if discovery.get("status") != "available":
+        return LocalHermesSetup("unavailable")
+    profiles = [profile for profile in discovery.get("profiles", []) if profile.get("id") == "default" and profile.get("is_default") is True]
+    if len(profiles) != 1 or not profiles[0].get("provider") or not profiles[0].get("model"):
+        return LocalHermesSetup("hermes_unconfigured")
+    fingerprint = hashlib.sha256(json.dumps(
+        [str(HERMES_HOME), command, python, profiles[0]["provider"], profiles[0]["model"]],
+        sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    return LocalHermesSetup("available", fingerprint)
+
+
+def mentat_agent_setup(action: str, payload: object) -> tuple[dict, int]:
+    """Three fixed name-only capabilities; no browser runtime selection."""
+    from agent_setup import AgentSetupError, AgentSetupService
+
+    required = {"check": set(), "preview": {"name"}, "confirm": {"name", "confirmation_id", "confirmed"}}
+    if action not in required or not isinstance(payload, dict) or set(payload) != required[action] or action == "confirm" and payload.get("confirmed") is not True:
+        return {"error_code": "agent_setup.invalid"}, 400
+    try:
+        with HERMES_CONNECTION_OPERATION_LOCK:
+            with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+                if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                    raise AgentSetupError("unavailable")
+                # Selection is global transport authority. Even an existing
+                # local binding must not make remote mode look locally ready.
+                if load_remote_hermes_connection(DATA_DIR).mode != "local":
+                    if action == "check":
+                        return {"schema_version": 1, "state": "remote_selected", "agent": None}, 200
+                    raise AgentSetupError("unavailable")
+                service = AgentSetupService(DATA_DIR, _mentat_agent_registry(), _local_hermes_agent_setup_target)
+                if action == "check":
+                    return service.check(), 200
+                if action == "preview":
+                    return service.preview(payload["name"]), 200
+                return service.confirm(payload["name"], payload["confirmation_id"]), 200
+    except AgentSetupError as exc:
+        return {"error_code": f"agent_setup.{exc.code}"}, {"invalid": 400, "conflict": 409}.get(exc.code, 503)
+    except (AgentRegistryConflict, AgentRegistryLimitError):
+        return {"error_code": "agent_setup.conflict"}, 409
+    except (AgentRegistryError, AgentRuntimeError, MentatDatabaseError, OSError, ValueError, sqlite3.Error):
+        return {"error_code": "agent_setup.unavailable"}, 503
+
+
 def create_mentat_agent(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent payload must be a JSON object."}, 400
@@ -4919,7 +4975,7 @@ def _planning_execution_binding_state(agent_id: object) -> str:
     ).hexdigest()
 
 
-def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict]:
+def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict, dict | None]:
     """Read the exact task, bounded execution history, and safe projection."""
 
     if not isinstance(task_id, str) or TASK_ID_PATTERN.fullmatch(task_id) is None:
@@ -4936,7 +4992,7 @@ def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], 
             safe["revision"] = snapshot.revision
             safe["assigned_agent_id"] = snapshot.document.get("assigned_agent_id")
             attempts = repository.task_execution_attempts(task_id)
-            return snapshot.document, attempts, safe
+            return snapshot.document, attempts, safe, repository.task_execution_recovery(task_id)
         except TaskRepositoryConflict as exc:
             raise OrchestrationServiceError("dispatch.task_not_found") from exc
         except (TaskRepositoryError, RunRepositoryError, sqlite3.Error) as exc:
@@ -4949,6 +5005,7 @@ def _planning_execution_public(
     task: dict,
     attempts: tuple[dict, ...],
     safe_task: dict,
+    recovery: dict | None = None,
 ) -> dict:
     active_attempt = any(
         item["state"] in {"dispatched", "review_ready"} for item in attempts
@@ -4985,6 +5042,7 @@ def _planning_execution_public(
             "completed_at": item["completed_at"],
             "review_action": item["review_action"],
             "review_note": item["review_note"],
+            "result": item["result"],
         }
         for item in attempts
     ]
@@ -4997,6 +5055,7 @@ def _planning_execution_public(
             "reason": None if available else "unavailable",
             "attempts": public_attempts,
             "attempt_count": len(public_attempts),
+            "recovery": {"available": recovery is not None, "run_id": recovery["run_id"] if recovery else None, "run_revision": recovery["run_revision"] if recovery else None},
             "review": (
                 {"available": False, "run_id": None}
                 if review is None
@@ -5007,8 +5066,8 @@ def _planning_execution_public(
 
 
 def mentat_planning_task_execution_payload(task_id: str) -> dict:
-    task, attempts, safe = _planning_execution_snapshot(task_id)
-    return _planning_execution_public(task, attempts, safe)
+    task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
+    return _planning_execution_public(task, attempts, safe, recovery)
 
 
 def mentat_planning_task_run_once_preview(
@@ -5021,13 +5080,13 @@ def mentat_planning_task_run_once_preview(
     if type(expected_revision) is not int or expected_revision < 1:
         return {"error_code": "planning_execution.invalid"}, 400
     try:
-        task, attempts, safe = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
     except RunRepositoryConflict:
         return {"error_code": "planning_execution.conflict"}, 409
     except OrchestrationServiceError as exc:
         return _planning_execution_error(exc)
-    public = _planning_execution_public(task, attempts, safe)
+    public = _planning_execution_public(task, attempts, safe, recovery)
     if expected_revision != safe["revision"] or not public["execution"]["available"]:
         return {"error_code": "planning_execution.unavailable"}, 409
     return {
@@ -5113,9 +5172,9 @@ def mentat_planning_task_run_once(
                 raise OrchestrationServiceError("dispatch.idempotency_conflict")
             response = mentat_planning_task_execution_payload(task_id)
             return {"schema_version": 1, "action": "run_once", "duplicate": True, **response}, 200
-        task, attempts, safe = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
-        public = _planning_execution_public(task, attempts, safe)
+        public = _planning_execution_public(task, attempts, safe, recovery)
         if (
             payload["expected_revision"] != safe["revision"]
             or not public["execution"]["available"]
@@ -5157,6 +5216,7 @@ def mentat_planning_task_execution_review(
         or set(payload) not in (
             {"expected_revision", "action", "idempotency_key"},
             {"expected_revision", "action", "note", "idempotency_key"},
+            {"expected_revision", "action", "note", "idempotency_key", "recovery_run_id", "expected_run_revision"},
         )
         or type(payload.get("expected_revision")) is not int
         or payload["expected_revision"] < 1
@@ -5164,11 +5224,18 @@ def mentat_planning_task_execution_review(
         or payload.get("note") is not None and not isinstance(payload.get("note"), str)
         or (payload.get("action") == "accept" and "note" in payload)
         or (payload.get("action") == "request_changes" and "note" not in payload)
+        or "recovery_run_id" in payload and (
+            payload.get("action") != "request_changes"
+            or not isinstance(payload.get("recovery_run_id"), str)
+            or re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", payload["recovery_run_id"]) is None
+            or type(payload.get("expected_run_revision")) is not int
+            or payload["expected_run_revision"] < 1
+        )
         or not isinstance(payload.get("idempotency_key"), str)
     ):
         return {"error_code": "planning_execution.invalid"}, 400
     try:
-        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        with HERMES_KANBAN_LOCK, _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
             if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
                 raise OrchestrationServiceError("dispatch.unavailable")
             connection = connect_mentat_database(DATA_DIR)
@@ -5179,6 +5246,8 @@ def mentat_planning_task_execution_review(
                     action=payload["action"],
                     note=payload.get("note"),
                     idempotency_key=payload["idempotency_key"],
+                    recovery_run_id=payload.get("recovery_run_id"),
+                    expected_run_revision=payload.get("expected_run_revision"),
                 )
             finally:
                 connection.close()
@@ -5642,53 +5711,107 @@ def _planning_delegation_delegate_intent(payload: object) -> tuple[dict | None, 
     }, None
 
 
+PLANNING_DELEGATION_DISCOVERY_SECONDS = 8.0
+PLANNING_DELEGATION_DISCOVERY_PHASE_SECONDS = 2.0
+
+
 def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict, int]:
-    """Read the bounded selectable targets for a new delegation."""
+    """Read supported targets with bounded, secret-free unavailability reasons."""
 
     current, status = _planning_delegation_current_payload(task_id)
     if status != 200:
         return current, status
+
+    def unavailable(reason: str) -> tuple[dict, int]:
+        return {"schema_version": 1, **current, "options": {"available": False, "reason": reason}}, 200
+
     if current["delegation"]["available"]:
-        return {"schema_version": 1, **current, "options": {"available": False}}, 200
+        return unavailable("already_delegated")
+    deadline = time.monotonic() + PLANNING_DELEGATION_DISCOVERY_SECONDS
+
+    def phase_budget(operations: int = 1) -> float:
+        remaining = (deadline - time.monotonic()) / operations
+        if remaining < 0.1:
+            raise TimeoutError
+        return min(PLANNING_DELEGATION_DISCOVERY_PHASE_SECONDS, remaining)
+
     try:
         adapter = kanban_adapter()
-        capabilities = adapter.detect_capabilities().get("capabilities", {})
-        profiles_payload = hermes_profiles_payload()
-        boards_payload = adapter.list_boards() if capabilities.get("boards.read") else {"ok": False}
-    except (OSError, RemoteHermesError, sqlite3.Error):
-        return _planning_delegation_error("unavailable", 503)
-    if (
-        not capabilities.get("tasks.create")
-        or profiles_payload.get("status") != "available"
-        or not boards_payload.get("ok")
-    ):
-        return {"schema_version": 1, **current, "options": {"available": False}}, 200
-    profiles = []
-    for profile in profiles_payload.get("profiles", [])[:128]:
-        if not isinstance(profile, dict):
-            continue
-        identifier = _planning_delegation_text(profile.get("id"), 80)
-        if identifier is None:
-            continue
-        profiles.append({"id": identifier, "name": _planning_delegation_text(profile.get("name"), 160) or identifier})
-    boards = []
-    for board in boards_payload.get("boards", [])[:128]:
-        if not isinstance(board, dict):
-            continue
-        identifier = _planning_delegation_text(board.get("id"), 64)
-        if identifier is None:
-            continue
-        boards.append({"id": identifier, "name": _planning_delegation_text(board.get("name"), 160) or identifier})
-    return {
-        "schema_version": 1,
-        **current,
-        "options": {
-            "available": bool(profiles and boards),
-            "profiles": profiles,
-            "boards": boards,
-            "workspaces": ["scratch", "worktree"],
-        },
-    }, 200
+        remote = isinstance(adapter, RemoteHermesKanbanAdapter)
+        if isinstance(adapter, HermesKanbanAdapter) and not adapter.executable:
+            return unavailable("runtime_missing")
+
+        def adapter_budget(operations: int = 1) -> None:
+            timeout = phase_budget(operations)
+            if remote:
+                adapter.client.timeout_seconds = timeout
+                adapter.client.read_deadline_at = deadline
+            elif isinstance(adapter, HermesKanbanAdapter):
+                adapter.timeout = timeout
+
+        # Local detection invokes exactly version and Kanban help. The adapter
+        # is private to this read; no mutation timeout policy is changed.
+        adapter_budget(2)
+        detected = adapter.detect_capabilities()
+        if not isinstance(detected, dict):
+            return unavailable("transient_failure")
+        capabilities = detected.get("capabilities")
+        if detected.get("status") == "unavailable":
+            error = detected.get("error")
+            if isinstance(error, dict) and error.get("code") == "remote_run_capability_unavailable":
+                return unavailable("capability_missing")
+            return unavailable("connection_unavailable" if remote else "transient_failure")
+        if detected.get("status") == "unsupported":
+            return unavailable("capability_missing")
+        if detected.get("status") != "available":
+            return unavailable("transient_failure")
+        if not isinstance(capabilities, dict) or capabilities.get("tasks.create") is not True or capabilities.get("boards.read") is not True or capabilities.get("tasks.read") is not True:
+            return unavailable("capability_missing")
+        profiles_payload = hermes_profiles_payload(timeout=phase_budget(), **({"read_deadline_at": deadline} if remote else {}))
+        if not isinstance(profiles_payload, dict) or profiles_payload.get("status") != "available":
+            return unavailable("connection_unavailable" if remote else "profiles_unavailable")
+        raw_profiles = profiles_payload.get("profiles")
+        if not isinstance(raw_profiles, list):
+            return unavailable("transient_failure")
+        profiles = []
+        for profile in raw_profiles[:128]:
+            if not isinstance(profile, dict) or profile.get("available") is False or profile.get("served") is False:
+                continue
+            identifier = profile.get("id")
+            if not isinstance(identifier, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", identifier) is None:
+                continue
+            if any(item["id"] == identifier for item in profiles):
+                continue
+            profiles.append({"id": identifier, "name": _planning_delegation_text(profile.get("name"), 160) or identifier})
+        if not profiles:
+            return unavailable("profile_missing")
+        adapter_budget()
+        boards_payload = adapter.list_boards()
+        if not isinstance(boards_payload, dict) or boards_payload.get("ok") is not True:
+            return unavailable("connection_unavailable" if remote else "boards_unavailable")
+        raw_boards = boards_payload.get("boards")
+        if not isinstance(raw_boards, list):
+            return unavailable("transient_failure")
+        boards = []
+        for board in raw_boards[:128]:
+            if not isinstance(board, dict) or board.get("archived") is True:
+                continue
+            identifier = board.get("id")
+            if not isinstance(identifier, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", identifier) is None:
+                continue
+            if any(item["id"] == identifier for item in boards):
+                continue
+            boards.append({"id": identifier, "name": _planning_delegation_text(board.get("name"), 160) or identifier})
+        if not boards:
+            return unavailable("board_missing")
+        phase_budget()
+        if load_remote_hermes_connection(DATA_DIR).binding_id != kanban_adapter_binding(adapter):
+            return unavailable("connection_unavailable")
+    except RemoteHermesError as exc:
+        return unavailable("capability_missing" if exc.code == "remote_run_capability_unavailable" else "connection_unavailable")
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return unavailable("transient_failure")
+    return {"schema_version": 1, **current, "options": {"available": True, "profiles": profiles, "boards": boards, "workspaces": ["scratch", "worktree"]}}, 200
 
 
 def mentat_planning_task_delegation_preview(task_id: str, payload: object) -> tuple[dict, int]:
@@ -11516,15 +11639,17 @@ def hermes_python_path() -> str | None:
     return None
 
 
-def hermes_profiles_payload() -> dict:
+def hermes_profiles_payload(*, timeout: float | None = None, read_deadline_at: float | None = None) -> dict:
     """Return normalized profile capabilities without exposing Hermes paths or secrets."""
     selection = load_remote_hermes_connection(DATA_DIR)
     if selection.mode == "remote":
         try:
             profiles = RemoteHermesKanbanAdapter(
-                RemoteHermesClient(selection.endpoint or "", selection.api_key or "")
+                RemoteHermesClient(selection.endpoint or "", selection.api_key or "", **({"timeout_seconds": timeout} if timeout is not None else {}), **({"read_deadline_at": read_deadline_at} if read_deadline_at is not None else {}))
             ).client.read_profiles()
         except RemoteHermesError:
+            if read_deadline_at is not None:
+                raise
             return {"status": "unavailable", "active_profile": None, "profiles": [], "capabilities": {}}
         active_profile = next((item["id"] for item in profiles if item["is_active"]), None)
         return {
@@ -11552,6 +11677,7 @@ def hermes_profiles_payload() -> dict:
         hermes_python_path(),
         HERMES_HOME,
         cwd=BASE_DIR,
+        **({"timeout": timeout} if timeout is not None else {}),
     )
 
 
