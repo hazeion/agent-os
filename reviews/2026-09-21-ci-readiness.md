@@ -26,3 +26,6 @@ Follow-up: the repository's quality-workflow contract test still required the
 retired exact ten-second bootstrap string. Updated it to require the reviewed
 absolute timeout plus readiness, bounded diagnostics and verified shutdown in
 the correct order. This preserves the gate's intent instead of deleting it.
+The Node foundation contract contained a second copy of the old literal;
+updated that assertion too and ran all 24 Node/CI/preview contract tests. Both
+independent reviewers found no actionable concerns in this test-only follow-up.
