@@ -170,6 +170,15 @@ the supervisor must own both processes.
 
 ## Identity model
 
+The server-only `owner_auth_google.py` component constructs fixed Google OIDC
+authorization-code requests and verifies bounded RS256 assertions against a
+trusted JWKS snapshot. It returns only private issuer/subject/email evidence;
+it has no network, enrollment, session, database or route authority. Its presence
+does not enable Google login or remote serving. The future exchange must own
+fixed-host key retrieval and one-use transaction/nonce binding; owner enrollment
+and session migration remain separate reviewed capabilities. Google login must
+not grant Calendar or other integration access, and an email is not owner identity.
+
 - A Mentat **Agent** is the target canonical worker identity.
 - A runtime identity, such as a Hermes profile, is an adapter-owned execution
   reference and must not become a Mentat Agent ID.
