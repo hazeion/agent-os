@@ -55,9 +55,12 @@ holds questions, approvals, failures and results.
    on the integrated product and reconcile remaining tracker state.
 
 Active evidence: [owner workflow review](reviews/2026-09-21-owner-workflow.md).
-First implementation slice: finish the readable exact next-Run objective and
-review-feedback preview in the
-[Task results and requested changes issue](https://github.com/hazeion/agent-os/issues/226).
+The readable next-Run objective/review-feedback preview is reviewed and published
+in [PR 243](https://github.com/hazeion/agent-os/pull/243), pending CI/merge.
+The next slice is [Task/Run completion and navigation](https://github.com/hazeion/agent-os/issues/227),
+with evidence in [its review log](reviews/2026-09-21-task-run-completion.md).
+Google OIDC and runtime-candidate research are resolved; their implementation
+and real-provider qualification remain in the dependent work above.
 
 ### Implemented baseline and retained boundaries
 
@@ -146,4 +149,6 @@ tracked upstream dependency, not a substitute implementation opportunity.
 3. Verify the slice has explicit approval before implementation.
 4. Run focused tests first, then the proportionate full verification suite.
 5. Use two independent read-only adversarial reviews for non-trivial slices.
-6. Record evidence and the outcome before requesting publication approval.
+6. Fix independent subagent findings and repeat review until both reviews have
+   no remaining actionable concerns, then push the slice's PR as authorized by
+   the owner. CI failures still require diagnosis and correction before merge.
