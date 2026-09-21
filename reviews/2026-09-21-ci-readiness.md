@@ -21,3 +21,8 @@ The raw Windows secret scan reports existing baseline entries because detected
 filenames use backslashes and the baseline uses slashes. A diagnostic comparison
 normalizing only those path separators reports no new candidates. The checked-in
 scanner/baseline were not weakened or changed; the Linux CI scan remains required.
+
+Follow-up: the repository's quality-workflow contract test still required the
+retired exact ten-second bootstrap string. Updated it to require the reviewed
+absolute timeout plus readiness, bounded diagnostics and verified shutdown in
+the correct order. This preserves the gate's intent instead of deleting it.
