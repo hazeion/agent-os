@@ -1569,6 +1569,68 @@ test("Home Console previews and confirms Stop without closing the Conversation",
   ]);
 });
 
+test("Stop and queued cancellation retain both accepted prompts across delayed older refreshes", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const stoppableAgent = { ...agent, capabilities: [...agent.capabilities, "run.stop"] };
+  const activeRun = { id: "run_stop_queue", partial: false, status: "running", updated_at: timestamp };
+  const firstMessage = transcriptMessage(1, "user", "Prompt for the Run that will be stopped", activeRun.id);
+  const queuedText = "Prompt that will be cancelled from the queue";
+  const submission = pendingSubmission(queuedText);
+  const cancelled = queueMutation("cancelled", queuedText, 2, 2);
+  const staleRead = deferredResponse();
+  const trailingRead = deferredResponse();
+  let delayReads = false;
+  let reads = 0;
+  const mutations: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input); const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method); if (contextFixture) return contextFixture;
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [stoppableAgent] });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") {
+      if (!delayReads) return Response.json(detail(activeRun, conversation, [], [firstMessage], stoppableAgent));
+      reads += 1;
+      if (reads === 1) return staleRead.promise;
+      if (reads === 2) return trailingRead.promise;
+      return Response.json(detail(null, cancelled.conversation, [], [firstMessage, cancelled.message], stoppableAgent));
+    }
+    if (method === "POST") {
+      mutations.push(path);
+      if (path.endsWith("/turns")) { delayReads = true; return Response.json(submission); }
+      if (path.endsWith("/stop/preview")) return Response.json({ action: "stop", confirmation_id: "a".repeat(64), requires_confirmation: true, run_id: activeRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+      if (path.endsWith("/stop")) return Response.json({ action: "stop", disposition: "requested", run_id: activeRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" }, { status: 202 });
+      if (path.endsWith("/cancel")) return Response.json(cancelled);
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<HomeConsole />);
+  await screen.findByText(firstMessage.content.parts[0].text);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => MockEventSource.instances[0].emit("snapshot", JSON.stringify({ event: { run_id: activeRun.id, summary: "Running" } })));
+  await user.type(screen.getByLabelText("Prompt"), queuedText);
+  await user.click(screen.getByRole("button", { name: /^Queue$/u }));
+  await waitFor(() => assert.equal(reads, 1));
+  await user.click(screen.getByRole("button", { name: /^Stop$/u }));
+  await user.click(await screen.findByRole("button", { name: /^Confirm Stop$/u }));
+  await user.click(screen.getByRole("button", { name: "Cancel queued Turn 2" }));
+  await waitFor(() => assert.equal(document.querySelector(".message-cancelled .transcript-markdown")?.textContent, queuedText));
+  const assertRetained = () => {
+    assert.ok(screen.getByText(firstMessage.content.parts[0].text));
+    assert.equal(document.querySelector(".message-cancelled .transcript-markdown")?.textContent, queuedText);
+    assert.equal(screen.queryByLabelText("Queued Turns"), null);
+  };
+  assertRetained();
+  await act(async () => { staleRead.resolve(Response.json(detail(activeRun, conversation, [], [firstMessage], stoppableAgent))); });
+  await waitFor(() => assert.equal(reads, 2));
+  assertRetained();
+  await act(async () => { trailingRead.resolve(Response.json(detail(null, conversation, [], [], stoppableAgent))); });
+  assertRetained();
+  assert.equal(mutations.filter((path) => path.endsWith("/turns")).length, 1);
+  assert.equal(mutations.filter((path) => path.endsWith("/stop")).length, 1);
+  assert.equal(mutations.filter((path) => path.endsWith("/cancel")).length, 1);
+});
+
 test("Home Console keeps approval in a dedicated card and confirms the exact response", async () => {
   MockEventSource.instances = [];
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
