@@ -23,6 +23,7 @@ Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, 
 Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: (callback: FrameRequestCallback) => dom.window.setTimeout(() => callback(Date.now()), 0) });
 
 const { cleanup, fireEvent, render, screen, waitFor, within } = await import("@testing-library/react");
+const { act } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
 const { ConversationPlanningControls, PlanningAttention, PlanningSuggestions } = await import("../src/app/conversation-planning.tsx");
 const { ProjectsTasksWorkspace } = await import("../src/app/tasks/projects-tasks-workspace.tsx");
@@ -699,7 +700,93 @@ const dependencyMap = {
   project_id: project.id,
 } as const;
 
-afterEach(() => { cleanup(); window.localStorage.clear(); });
+afterEach(() => { cleanup(); window.localStorage.clear(); window.sessionStorage.clear(); });
+
+test("selected Task reconciles to a reviewable result without manual refresh and preserves its navigation", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  fixture.rows[0] = { ...fixture.rows[0], assigned_agent_id: "agent_alpha", status: "in progress", planning_state: "in_progress", workflow_stage: "in_progress" };
+  const attempt = { agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched", status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" };
+  const projection = () => ({ ...envelope, task: { ...fixture.summary(fixture.rows[0]), assigned_agent_id: "agent_alpha" }, execution: { attempt_count: 1, attempts: [attempt], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } } });
+  let calls = 0;
+  let finish!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => { finish = resolve; });
+  fixture.override = (url, init) => {
+    if (url.pathname.endsWith("/planning-task-execution")) return Response.json(projection());
+    if (url.pathname.endsWith("/execution/refresh")) { calls += 1; assert.deepEqual(JSON.parse(String(init?.body)), { expected_revision: 1 }); return pending; }
+    return null;
+  };
+  const scheduled: Array<() => void> = [];
+  const originalTimer = window.setTimeout;
+  window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (delay === 3000 && typeof handler === "function") { scheduled.push(() => handler(...args)); return -1; }
+    return originalTimer.call(window, () => { if (typeof handler === "function") handler(...args); }, delay);
+  }) as typeof window.setTimeout;
+  try {
+    const user = userEvent.setup({ document: dom.window.document });
+    render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+    await screen.findByText("dispatched · running");
+    assert.equal(new URL(window.location.href).searchParams.get("task"), task.id);
+    assert.match(window.sessionStorage.getItem("mentat.planning-selection.v1") ?? "", /task=task_alpha/u);
+    assert.equal(screen.getByRole("link", { name: "Open Run run_alpha" }).getAttribute("href"), "/runs?run=run_alpha");
+    await act(async () => { scheduled.shift()?.(); });
+    assert.equal(calls, 1);
+    assert.equal(scheduled.length, 0, "no overlapping scheduled refresh while the request is pending");
+    fixture.rows[0] = { ...fixture.rows[0], revision: 2, workflow_stage: "review", planning_state: "review" };
+    const completed = { ...projection(), execution: { ...projection().execution, attempts: [{ ...attempt, completed_at: "2026-08-30T12:01:00Z", status: "completed", state: "review_ready", terminal_finalized: true, review_task_revision: 2, result: { available: true, text: "Verified garage layout", truncated: false } }], review: { available: true, run_id: "run_alpha" } } };
+    await act(async () => { finish(Response.json(completed)); });
+    await screen.findByText("Verified garage layout");
+    assert.ok(screen.getByRole("button", { name: "Accept" }));
+    assert.equal(scheduled.length, 0, "verified terminal execution stops polling");
+    cleanup();
+    dom.reconfigure({ url: `${origin}/tasks` });
+    fixture.override = (url) => url.pathname.endsWith("/planning-task-execution") ? Response.json(completed) : null;
+    render(<ProjectsTasksWorkspace />);
+    await within(await screen.findByLabelText("Task inspector")).findByRole("heading", { name: "Ship Alpha" });
+  } finally { cleanup(); window.setTimeout = originalTimer; }
+});
+
+test("an obsolete background Task refresh cannot replace another Task or its draft", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  fixture.rows.push({ ...fixture.rows[0], id: "task_second", title: "Second Task" });
+  const attempt = { agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched", status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" };
+  const active = { ...fixture.execution(fixture.rows[0]), execution: { attempt_count: 1, attempts: [attempt], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } } };
+  let finish!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => { finish = resolve; });
+  fixture.override = (url) => url.pathname.endsWith("/planning-task-execution") && url.searchParams.get("task_id") === task.id ? Response.json(active) : url.pathname.endsWith("/execution/refresh") ? pending : null;
+  let poll: (() => void) | undefined;
+  const originalTimer = window.setTimeout;
+  window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => { if (delay === 3000 && typeof handler === "function") { poll = () => handler(...args); return -1; } return originalTimer.call(window, () => { if (typeof handler === "function") handler(...args); }, delay); }) as typeof window.setTimeout;
+  try {
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/u })); await screen.findByText("dispatched · running");
+    await act(async () => { poll?.(); });
+    await user.click(screen.getByRole("button", { name: /Second Task/u }));
+    await user.click(await screen.findByRole("button", { name: "Edit details" }));
+    await user.clear(screen.getByLabelText("Title")); await user.type(screen.getByLabelText("Title"), "Unsaved second task");
+    await act(async () => { finish(Response.json(active)); });
+    assert.equal((screen.getByLabelText("Title") as HTMLInputElement).value, "Unsaved second task");
+    assert.equal(new URL(window.location.href).searchParams.get("task"), "task_second");
+  } finally { cleanup(); window.setTimeout = originalTimer; }
+});
+
+test("an initial execution read newer than the Task list reconciles the inspector instead of stranding it", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  fixture.override = (url) => {
+    if (!url.pathname.endsWith("/planning-task-execution")) return null;
+    fixture.rows[0] = { ...fixture.rows[0], revision: 2, workflow_stage: "review", planning_state: "review", assigned_agent_id: "agent_alpha" };
+    return Response.json({ ...envelope, task: { ...fixture.summary(fixture.rows[0]), assigned_agent_id: "agent_alpha" }, execution: { attempt_count: 1, available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: true, run_id: "run_alpha" }, attempts: [{ agent_id: "agent_alpha", completed_at: "2026-08-30T12:01:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: 2, run_id: "run_alpha", runtime_type: "codex", state: "review_ready", status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:01:00Z", result: { available: true, text: "Completed between reads", truncated: false } }] } });
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByText("Completed between reads");
+  assert.ok(screen.getByRole("button", { name: "Accept" }));
+  await user.click(screen.getByRole("button", { name: "Edit details" }));
+  assert.equal((await screen.findByLabelText("Title") as HTMLInputElement).value, "Ship Alpha");
+});
 
 test("Task integrations use dedicated exact mutations and request notification permission only after a user action", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
