@@ -426,7 +426,7 @@ class HermesWebhookHealthTests(unittest.TestCase):
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         secret_name = server.HERMES_WEBHOOK_SECRET_ENV_BY_BINDING["local-default"]
-        with patch.dict(os.environ, {secret_name: "private-timeout-probe"}, clear=False), patch.object(server.HERMES_WEBHOOK_DELIVERIES, "_connect", side_effect=delayed_connect) as calls:
+        with patch.dict(os.environ, {secret_name: os.urandom(32).hex()}, clear=False), patch.object(server.HERMES_WEBHOOK_DELIVERIES, "_connect", side_effect=delayed_connect) as calls:
             try:
                 payload, status = server.run_hermes_webhook_probe(httpd.server_port)
                 self.assertTrue(entered.is_set())
