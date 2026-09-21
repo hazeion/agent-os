@@ -20,9 +20,20 @@ from hermes_webhook_health import (
 )
 from hermes_webhooks import WebhookBinding, verify_and_normalize
 from hermes_webhook_store import WebhookDeliveryStore
+from mentat_db import connect
 
 
 NOW = datetime(2026, 8, 14, 20, 0, tzinfo=timezone.utc)
+
+
+class OwnedProbeHTTPServer(server.ThreadingHTTPServer):
+    # server_close must drain receiver workers before fixture globals and its
+    # SQLite directory are restored/removed, including after a probe timeout.
+    daemon_threads = False
+
+
+class OwnedIPv6ProbeHTTPServer(server.IPv6ThreadingHTTPServer):
+    daemon_threads = False
 
 
 def health_record(**overrides):
@@ -55,6 +66,9 @@ class HermesWebhookHealthTests(unittest.TestCase):
         self.original_host = server.HOST
         self.original_limiter = server.HERMES_WEBHOOK_RATE_LIMITER
         self.temporary = TemporaryDirectory()
+        # Success-path deadlines measure probe delivery, not cold schema setup.
+        connection = connect(Path(self.temporary.name) / "data")
+        connection.close()
         server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(
             Path(self.temporary.name) / "data"
         )
@@ -328,7 +342,7 @@ class HermesWebhookHealthTests(unittest.TestCase):
 
     def test_signed_probe_traverses_the_real_loopback_receiver(self):
         self.install_coordinator()
-        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        httpd = OwnedProbeHTTPServer(("127.0.0.1", 0), server.Handler)
         server.PORT = httpd.server_port
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
@@ -351,7 +365,7 @@ class HermesWebhookHealthTests(unittest.TestCase):
         self.install_coordinator()
         server.HOST = "::1"
         try:
-            httpd = server.IPv6ThreadingHTTPServer(("::1", 0), server.Handler)
+            httpd = OwnedIPv6ProbeHTTPServer(("::1", 0), server.Handler)
         except OSError as exc:
             self.skipTest(f"IPv6 loopback unavailable: {type(exc).__name__}")
         server.PORT = httpd.server_port
@@ -386,9 +400,52 @@ class HermesWebhookHealthTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload, {"error": "webhook_probe_payload_invalid"})
 
+    def test_timed_out_probe_submits_once_and_drains_receiver_before_cleanup(self):
+        self.install_coordinator()
+        entered = threading.Event()
+        release = threading.Event()
+        receiver_finished = threading.Event()
+
+        class ObservedServer(OwnedProbeHTTPServer):
+            def process_request_thread(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    receiver_finished.set()
+
+        def delayed_connect(data_dir):
+            connection = connect(data_dir)
+            entered.set()
+            if not release.wait(timeout=10):
+                connection.close()
+                raise AssertionError("receiver was not released")
+            return connection
+
+        httpd = ObservedServer(("127.0.0.1", 0), server.Handler)
+        server.PORT = httpd.server_port
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        secret_name = server.HERMES_WEBHOOK_SECRET_ENV_BY_BINDING["local-default"]
+        with patch.dict(os.environ, {secret_name: "private-timeout-probe"}, clear=False), patch.object(server.HERMES_WEBHOOK_DELIVERIES, "_connect", side_effect=delayed_connect) as calls:
+            try:
+                payload, status = server.run_hermes_webhook_probe(httpd.server_port)
+                self.assertTrue(entered.is_set())
+                self.assertFalse(receiver_finished.is_set())
+                self.assertEqual(status, 503)
+                self.assertEqual(payload, {"error": "webhook_probe_failed"})
+                self.assertEqual(calls.call_count, 1)
+            finally:
+                release.set()
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=3)
+            self.assertTrue(receiver_finished.is_set())
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(calls.call_count, 1, "a timed-out probe must not resubmit")
+
     def test_live_browser_probe_route_preserves_same_origin_boundary(self):
         self.install_coordinator()
-        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        httpd = OwnedProbeHTTPServer(("127.0.0.1", 0), server.Handler)
         server.PORT = httpd.server_port
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
@@ -420,7 +477,7 @@ class HermesWebhookHealthTests(unittest.TestCase):
 
     def test_live_health_get_has_an_exact_private_free_schema(self):
         self.install_coordinator()
-        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        httpd = OwnedProbeHTTPServer(("127.0.0.1", 0), server.Handler)
         server.PORT = httpd.server_port
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
