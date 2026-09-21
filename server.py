@@ -15,6 +15,7 @@ import gzip
 import hashlib
 import hmac
 import json
+import unicodedata
 import mimetypes
 import os
 import re
@@ -4911,6 +4912,7 @@ def _planning_execution_confirmation(
     task: dict,
     attempts: tuple[dict, ...],
     binding_state: str,
+    objective: str,
 ) -> str:
     """Bind a Run once preview to one immutable Task/execution snapshot."""
 
@@ -4921,6 +4923,7 @@ def _planning_execution_confirmation(
         "workflow_stage": task["workflow_stage"],
         "assigned_agent_id": task.get("assigned_agent_id"),
         "binding_state": binding_state,
+        "objective_digest": hashlib.sha256(objective.encode("utf-8")).hexdigest(),
         "attempts": [
             {
                 "run_id": item["run_id"],
@@ -4975,7 +4978,7 @@ def _planning_execution_binding_state(agent_id: object) -> str:
     ).hexdigest()
 
 
-def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict, dict | None]:
+def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict, dict | None, str | None]:
     """Read the exact task, bounded execution history, and safe projection."""
 
     if not isinstance(task_id, str) or TASK_ID_PATTERN.fullmatch(task_id) is None:
@@ -4992,7 +4995,10 @@ def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], 
             safe["revision"] = snapshot.revision
             safe["assigned_agent_id"] = snapshot.document.get("assigned_agent_id")
             attempts = repository.task_execution_attempts(task_id)
-            return snapshot.document, attempts, safe, repository.task_execution_recovery(task_id)
+            requested_changes = repository.task_execution_change_request(
+                task_id, result_task_revision=snapshot.revision,
+            )
+            return snapshot.document, attempts, safe, repository.task_execution_recovery(task_id), requested_changes
         except TaskRepositoryConflict as exc:
             raise OrchestrationServiceError("dispatch.task_not_found") from exc
         except (TaskRepositoryError, RunRepositoryError, sqlite3.Error) as exc:
@@ -5066,8 +5072,22 @@ def _planning_execution_public(
 
 
 def mentat_planning_task_execution_payload(task_id: str) -> dict:
-    task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
+    task, attempts, safe, recovery, _requested_changes = _planning_execution_snapshot(task_id)
     return _planning_execution_public(task, attempts, safe, recovery)
+
+
+def _planning_execution_objective_projection(objective: str) -> dict:
+    """Present bounded execution text without changing the confirmed objective."""
+    sanitized = sanitize_public_text(objective, 20_000)
+    sanitized = "".join(
+        character if character in "\n\t" or not unicodedata.category(character).startswith("C") else "\ufffd"
+        for character in sanitized
+    ).strip()
+    return {
+        "text": sanitized[:20_000].strip(),
+        "redacted": sanitized != objective,
+        "truncated": len(sanitized) > 20_000,
+    }
 
 
 def mentat_planning_task_run_once_preview(
@@ -5080,8 +5100,9 @@ def mentat_planning_task_run_once_preview(
     if type(expected_revision) is not int or expected_revision < 1:
         return {"error_code": "planning_execution.invalid"}, 400
     try:
-        task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery, requested_changes = _planning_execution_snapshot(task_id)
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
+        objective = OrchestrationService._task_contract(task, safe["revision"], requested_changes).objective
     except RunRepositoryConflict:
         return {"error_code": "planning_execution.conflict"}, 409
     except OrchestrationServiceError as exc:
@@ -5093,8 +5114,9 @@ def mentat_planning_task_run_once_preview(
         "schema_version": 1,
         "action": "run_once",
         "task": safe,
+        "objective": _planning_execution_objective_projection(objective),
         "requires_confirmation": True,
-        "confirmation_id": _planning_execution_confirmation(safe, attempts, binding_state),
+        "confirmation_id": _planning_execution_confirmation(safe, attempts, binding_state, objective),
     }, 200
 
 
@@ -5172,15 +5194,16 @@ def mentat_planning_task_run_once(
                 raise OrchestrationServiceError("dispatch.idempotency_conflict")
             response = mentat_planning_task_execution_payload(task_id)
             return {"schema_version": 1, "action": "run_once", "duplicate": True, **response}, 200
-        task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery, requested_changes = _planning_execution_snapshot(task_id)
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
+        objective = OrchestrationService._task_contract(task, safe["revision"], requested_changes).objective
         public = _planning_execution_public(task, attempts, safe, recovery)
         if (
             payload["expected_revision"] != safe["revision"]
             or not public["execution"]["available"]
             or not hmac.compare_digest(
                 payload["confirmation_id"],
-                _planning_execution_confirmation(safe, attempts, binding_state),
+                _planning_execution_confirmation(safe, attempts, binding_state, objective),
             )
         ):
             return {"error_code": "planning_execution.confirmation_stale"}, 409
