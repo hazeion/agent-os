@@ -70,6 +70,7 @@ py-modules = [
   "owner_auth",
   "owner_auth_google",
   "owner_auth_google_transport",
+  "owner_auth_google_transactions",
   "owner_auth_google_worker",
   "owner_auth_webauthn",
   "hermes_browser_events",

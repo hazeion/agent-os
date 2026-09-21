@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1905,6 +1905,30 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
     ),
 )
 
+MIGRATIONS += ((26, """
+    CREATE TABLE mentat_owner_google_transactions (
+        transaction_id TEXT PRIMARY KEY CHECK (length(transaction_id) = 32),
+        state_digest BLOB NOT NULL UNIQUE CHECK (length(state_digest) = 32),
+        browser_digest BLOB NOT NULL CHECK (length(browser_digest) = 32),
+        owner_generation INTEGER NOT NULL CHECK (owner_generation >= 1),
+        configuration_revision INTEGER NOT NULL CHECK (configuration_revision >= 1),
+        principal_digest BLOB NOT NULL CHECK (length(principal_digest) = 32),
+        client_id TEXT NOT NULL CHECK (length(client_id) BETWEEN 1 AND 255),
+        canonical_origin TEXT NOT NULL CHECK (length(canonical_origin) BETWEEN 8 AND 253),
+        nonce TEXT,
+        code_verifier TEXT,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'consumed', 'verified', 'failed', 'cancelled')),
+        created_at REAL NOT NULL,
+        expires_at REAL NOT NULL CHECK (expires_at = created_at + 300),
+        terminal_at REAL,
+        CHECK ((state = 'pending' AND length(nonce) = 43 AND nonce IS NOT NULL
+                AND length(code_verifier) = 43 AND code_verifier IS NOT NULL AND terminal_at IS NULL)
+            OR (state != 'pending' AND nonce IS NULL AND code_verifier IS NULL AND terminal_at IS NOT NULL))
+    );
+    CREATE INDEX idx_mentat_google_transaction_expiry
+        ON mentat_owner_google_transactions(state, expires_at);
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2241,7 +2265,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2355,6 +2379,8 @@ def migrate(
                     )
                 if version == 25 and schema_signature_state(connection, 24) != "expected":
                     raise MentatDatabaseError("Mentat schema 24 cannot be safely upgraded")
+                if version == 26 and schema_signature_state(connection, 25) != "expected":
+                    raise MentatDatabaseError("Mentat schema 25 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.
