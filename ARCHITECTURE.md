@@ -179,6 +179,19 @@ fixed-host key retrieval and one-use transaction/nonce binding; owner enrollment
 and session migration remain separate reviewed capabilities. Google login must
 not grant Calendar or other integration access, and an email is not owner identity.
 
+`owner_auth_google_transport.py` owns the private fixed Google token/JWKS
+exchange. Each request uses an owned disposable worker with a ten-second
+provider-work deadline and at most two workers process-wide. Worker environment,
+command and errors omit credentials; request secrets travel only over its private
+stdin. HTTPS certificates are verified, redirects/proxies are disabled, bodies
+are bounded and an authorization code is never retried. Public signing keys use
+a bounded expiry-aware cache with rate-limited unknown-key refresh. Shutdown
+invalidates pending results and retains capacity until process exit is verified.
+This remains unwired to browser login; callers must consume a durable one-use
+transaction first and perform owner matching/session issuance afterward. Frozen
+native executables cannot launch this worker and fail closed; the first hosting
+profile uses installed Python on Linux.
+
 - A Mentat **Agent** is the target canonical worker identity.
 - A runtime identity, such as a Hermes profile, is an adapter-owned execution
   reference and must not become a Mentat Agent ID.
