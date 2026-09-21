@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1831,9 +1831,81 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        25,
+        """
+        ALTER TABLE mentat_owner_auth_state ADD COLUMN auth_method TEXT NOT NULL
+            DEFAULT 'passkey' CHECK (auth_method IN ('passkey', 'google'));
+        ALTER TABLE mentat_owner_auth_state ADD COLUMN owner_generation INTEGER
+            NOT NULL DEFAULT 0 CHECK (owner_generation >= 0);
+        ALTER TABLE mentat_owner_auth_ceremonies ADD COLUMN owner_generation INTEGER
+            NOT NULL DEFAULT 0 CHECK (owner_generation >= 0);
+
+        CREATE TABLE mentat_owner_google_configuration (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            client_id TEXT NOT NULL CHECK (length(client_id) BETWEEN 1 AND 255),
+            canonical_origin TEXT NOT NULL CHECK (length(canonical_origin) BETWEEN 8 AND 253),
+            credential_source TEXT NOT NULL CHECK (credential_source = 'environment'),
+            requires_reconciliation INTEGER NOT NULL DEFAULT 1 CHECK (requires_reconciliation IN (0, 1)),
+            revision INTEGER NOT NULL CHECK (revision >= 1)
+        );
+        CREATE TABLE mentat_owner_google_principal (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            issuer TEXT NOT NULL CHECK (issuer = 'https://accounts.google.com'),
+            subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 255),
+            email TEXT NOT NULL CHECK (length(email) BETWEEN 3 AND 254),
+            principal_digest BLOB NOT NULL UNIQUE CHECK (length(principal_digest) = 32),
+            owner_generation INTEGER NOT NULL CHECK (owner_generation >= 1),
+            configuration_revision INTEGER NOT NULL CHECK (configuration_revision >= 1)
+        );
+
+        -- Do not rename the old table: SQLite would retarget the SSE FK.
+        -- FK enforcement is disabled only by the guarded migration runner.
+        CREATE TABLE mentat_owner_auth_sessions_new (
+            session_digest BLOB PRIMARY KEY CHECK (length(session_digest) = 32),
+            csrf_digest BLOB NOT NULL UNIQUE CHECK (length(csrf_digest) = 32),
+            device_id TEXT REFERENCES mentat_owner_auth_credentials(device_id) ON DELETE RESTRICT,
+            auth_method TEXT NOT NULL DEFAULT 'passkey' CHECK (auth_method IN ('passkey', 'google')),
+            owner_generation INTEGER NOT NULL DEFAULT 0 CHECK (owner_generation >= 0),
+            principal_digest BLOB CHECK (principal_digest IS NULL OR length(principal_digest) = 32),
+            state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'expired')),
+            created_at REAL NOT NULL,
+            reauthenticated_at REAL NOT NULL,
+            last_seen_at REAL NOT NULL,
+            idle_expires_at REAL NOT NULL,
+            absolute_expires_at REAL NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            revoked_at REAL,
+            CHECK (idle_expires_at >= created_at AND absolute_expires_at >= created_at),
+            CHECK ((state = 'active' AND revoked_at IS NULL) OR (state != 'active' AND revoked_at IS NOT NULL)),
+            CHECK (
+                (auth_method = 'passkey' AND device_id IS NOT NULL AND principal_digest IS NULL)
+                OR (auth_method = 'google' AND device_id IS NULL AND principal_digest IS NOT NULL AND owner_generation >= 1 AND reauthenticated_at = 0)
+            )
+        );
+        INSERT INTO mentat_owner_auth_sessions_new (
+            session_digest, csrf_digest, device_id, state, created_at,
+            reauthenticated_at, last_seen_at, idle_expires_at, absolute_expires_at,
+            revision, revoked_at
+        ) SELECT session_digest, csrf_digest, device_id, state, created_at,
+            reauthenticated_at, last_seen_at, idle_expires_at, absolute_expires_at,
+            revision, revoked_at FROM mentat_owner_auth_sessions;
+        DROP TABLE mentat_owner_auth_sessions;
+        ALTER TABLE mentat_owner_auth_sessions_new RENAME TO mentat_owner_auth_sessions;
+        CREATE INDEX idx_mentat_owner_auth_sessions_device ON mentat_owner_auth_sessions(device_id, state, created_at);
+        CREATE INDEX idx_mentat_owner_auth_sessions_expiry ON mentat_owner_auth_sessions(state, idle_expires_at, absolute_expires_at);
+        CREATE TRIGGER mentat_owner_auth_sse_release_on_session_terminal
+        AFTER UPDATE OF state ON mentat_owner_auth_sessions
+        WHEN NEW.state != 'active'
+        BEGIN
+            DELETE FROM mentat_owner_auth_sse_reservations
+             WHERE session_digest = NEW.session_digest;
+        END;
+        """,
+    ),
 )
 
-MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
+MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
     {
@@ -2169,7 +2241,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2281,6 +2353,8 @@ def migrate(
                     raise MentatDatabaseError(
                         "Mentat schema 23 cannot be safely upgraded"
                     )
+                if version == 25 and schema_signature_state(connection, 24) != "expected":
+                    raise MentatDatabaseError("Mentat schema 24 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

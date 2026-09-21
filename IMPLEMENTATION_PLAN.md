@@ -67,8 +67,16 @@ and real-provider qualification remain in the dependent work above.
 The independent [Google verifier component](https://github.com/hazeion/agent-os/issues/246)
 is implemented and reviewed without network, route, session or enrollment
 authority. Its evidence is in [the verifier log](reviews/2026-09-21-google-identity-verifier.md).
-Owner-principal/session migration and fixed-host exchange remain the next auth
-integration work after baseline acceptance.
+The fixed-host exchange is reviewed in
+[PR 249](https://github.com/hazeion/agent-os/pull/249), with no browser route or
+enrollment authority. The [owner-session migration](https://github.com/hazeion/agent-os/issues/250)
+adds schema-25 method and generation bindings, preserves historical passkey
+authority, and covers private restore/export. Its evidence is in
+[the session-method review](reviews/2026-09-21-owner-session-methods.md).
+[Durable one-use callback transactions](https://github.com/hazeion/agent-os/issues/251)
+and verified CLI owner enrollment,
+conversion and recovery are the next authentication slices; gateway wiring and
+Linux activation follow their verification. Remote serving remains disabled.
 
 ### Implemented baseline and retained boundaries
 
