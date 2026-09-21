@@ -316,16 +316,48 @@ jobs:
         run: |
           preview_data_dir="$RUNNER_TEMP/mentat-web-preview-data"
           bootstrap_port=8895
+          bootstrap_pid=""
           preview_pid=""
           cleanup() {
+            if test -n "$bootstrap_pid"; then
+              kill -TERM "$bootstrap_pid" 2>/dev/null || true
+              wait "$bootstrap_pid" 2>/dev/null || true
+            fi
             if test -n "$preview_pid"; then
               kill -TERM "$preview_pid" 2>/dev/null || true
               wait "$preview_pid" 2>/dev/null || true
             fi
           }
           trap cleanup EXIT
-          timeout --preserve-status --signal=INT --kill-after=10s 10s env MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port" >"$RUNNER_TEMP/mentat-web-bootstrap.log" 2>&1
+          timeout --preserve-status --signal=INT --kill-after=10s 90s env PYTHONUNBUFFERED=1 MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port" >"$RUNNER_TEMP/mentat-web-bootstrap.log" 2>&1 &
+          bootstrap_pid=$!
+          bootstrap_ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --connect-timeout 1 --max-time 2 "http://127.0.0.1:$bootstrap_port/api/overview" >/dev/null; then
+              bootstrap_ready=true
+              break
+            fi
+            if ! kill -0 "$bootstrap_pid" 2>/dev/null; then
+              tail -c 8192 "$RUNNER_TEMP/mentat-web-bootstrap.log" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$bootstrap_ready" != true ]; then
+            tail -c 8192 "$RUNNER_TEMP/mentat-web-bootstrap.log" >&2 || true
+            exit 1
+          fi
           test -f "$preview_data_dir/private/console/mentat.sqlite3"
+          kill -INT "$bootstrap_pid"
+          if ! wait "$bootstrap_pid"; then
+            tail -c 8192 "$RUNNER_TEMP/mentat-web-bootstrap.log" >&2 || true
+            exit 1
+          fi
+          bootstrap_pid=""
+          if curl --fail --silent --connect-timeout 1 --max-time 2 "http://127.0.0.1:$bootstrap_port/api/overview" >/dev/null; then
+            echo 'Bootstrap remained reachable after shutdown' >&2
+            exit 1
+          fi
           PYTHONUNBUFFERED=1 MENTAT_DATA_DIR="$preview_data_dir" python scripts/mentat_web_preview.py --port 8896 >"$RUNNER_TEMP/mentat-web-preview.log" 2>&1 &
           preview_pid=$!
           ready=false
