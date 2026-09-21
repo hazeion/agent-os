@@ -205,10 +205,28 @@ external signature verification.
 Google configuration stores only the client ID, canonical origin and credential
 source kind; it never stores a client secret. Migration enrolls no Google owner
 and issues no Google session. Private backup validation accepts both historical
-schema 24 and current schema 25. Restore revokes all sessions, keeps terminal
+schemas 24 and 25 and the current schema. Restore revokes all sessions, keeps terminal
 history bounded, and marks Google configuration as requiring host reconciliation.
 Schema-5 compatible export omits all owner authentication authority. Browser
 login, CLI enrollment/conversion and remote activation remain unwired.
+
+Schema 26 adds disposable ordinary Google login attempts. Python admits only
+an already enrolled Google owner with reconciled settings, using the existing
+aggregate authentication-start budget. Each five-minute attempt binds independent
+state and browser secrets by digest and captures the current owner generation,
+principal, client, origin and configuration revision. Keep at most 16 pending
+and 64 terminal attempts. Nonce and PKCE material are private and retained in
+the pending row only; codes, tokens and client secrets are never stored there.
+
+The callback boundary atomically consumes an exact state/browser match and
+clears its pending secrets before invoking the fixed transport once. Replay,
+crash and uncertain results cannot reopen an attempt. Verified exchange is
+followed by an exact owner/configuration recheck and a private receipt; it
+issues no session. Eventual session issuance must atomically claim the receipt
+and recheck browser binding and current authority. Snapshot copies remove all
+attempts before vacuuming; startup and restore discard them. Future HTTP wiring
+must use an explicit same-origin login start and a Secure, HttpOnly,
+SameSite=Lax `__Host-` browser-binding cookie for the cross-site callback.
 
 - A Mentat **Agent** is the target canonical worker identity.
 - A runtime identity, such as a Hermes profile, is an adapter-owned execution

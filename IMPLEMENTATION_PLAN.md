@@ -74,9 +74,10 @@ adds schema-25 method and generation bindings, preserves historical passkey
 authority, and covers private restore/export. Its evidence is in
 [the session-method review](reviews/2026-09-21-owner-session-methods.md).
 [Durable one-use callback transactions](https://github.com/hazeion/agent-os/issues/251)
-and verified CLI owner enrollment,
-conversion and recovery are the next authentication slices; gateway wiring and
-Linux activation follow their verification. Remote serving remains disabled.
+are the active slice; see [the transaction review](reviews/2026-09-21-google-login-transactions.md).
+[One-use Google session issuance](https://github.com/hazeion/agent-os/issues/253)
+and verified CLI owner enrollment, conversion and recovery are next; gateway
+wiring and Linux activation follow their verification. Remote serving remains disabled.
 
 ### Implemented baseline and retained boundaries
 
