@@ -81,7 +81,8 @@ is reviewed and published in [PR 255](https://github.com/hazeion/agent-os/pull/2
 is reviewed in [PR 258](https://github.com/hazeion/agent-os/pull/258), including
 the setup-only browser gateway, host confirmation, recovery and HTTPS lifecycle.
 [Website Google sign-in and authenticated access](https://github.com/hazeion/agent-os/issues/257)
-is the active slice. It implements **Continue with Google**, bounded error states,
+is reviewed and published in [PR 259](https://github.com/hazeion/agent-os/pull/259).
+It implements **Continue with Google**, bounded error states,
 browser/session sign-out and authenticated data/stream admission. See the
 [website review](reviews/2026-09-22-google-website-signin.md). Ordinary start
 remains local; the explicit owner website profile needs real host/provider

@@ -54,11 +54,15 @@ are rejected. The bridge has no catch-all route, generic proxy, state mutation,
 SQLite access, or direct Hermes access.
 
 The process creates one immutable Gateway Authority before admitting any
-request. Local mode is the only executable profile. Any configured remote or
-unknown mode fails process startup, and no request field can select a mode.
-The universal Next proxy delegates every public path to this authority. It
-accepts only the configured loopback Host and port; cross-site,
-mismatched-origin, and malformed fetch metadata requests fail closed.
+request. Ordinary launch selects local mode. The explicit owner website
+launcher selects the authenticated owner profile using the enrolled canonical
+HTTPS origin; unknown modes fail startup, and no request field selects a mode.
+The universal Next proxy delegates every public path to this authority. Local
+mode accepts only the configured loopback Host and port. Owner mode requires
+the fixed gateway forwarding contract and admits protected routes only after
+session validation. Mismatched origins and malformed fetch metadata fail
+closed; cross-site top-level document navigation is permitted for login and
+bookmark arrival, without granting access to protected content.
 
 A checked-in manifest inventories every exported API method/path operation and
 every shipped document, public asset, generated shell document, and framework
@@ -77,9 +81,10 @@ rejects legacy boundary imports or unwrapped handlers. Route-specific local
 failure envelopes remain authoritative where they differ from the shared
 fixed forbidden response.
 
-MDA-4C adds a disabled Linux-only `remote-caddy-v1` deployment profile under
-`deploy/caddy/`. It is not referenced by the local launcher, lifecycle manager,
-preview supervisor, or CLI. The renderer accepts one canonical non-local DNS
+MDA-4C added the Linux-only `remote-caddy-v1` deployment qualification profile
+under `deploy/caddy/`. Ordinary local launch does not activate it. The explicit
+owner setup and website commands build their fixed profiles on that qualified
+boundary. The renderer accepts one canonical non-local DNS
 name and the literal `127.0.0.1:8888` Node upstream, pins Caddy 2.11.4 release
 and signature material for amd64 and arm64, rejects custom modules, and gives
 every validation subprocess a credential-free environment. No profile code
@@ -94,8 +99,9 @@ replacement. TLS/SNI/Host and canonical HTTP behavior, TCP/UDP listener
 inventory, external-address isolation, atomic failed-reload rollback,
 no-store maintenance, backend loss/recovery, and live SSE keepalive, reconnect,
 closure, cancellation, and bounded drain behavior must all pass. Production
-listener, service-account, certificate, and firewall activation remains a
-separate future approval.
+activation still requires the operator's explicitly configured owner command,
+supplied certificates and host preparation; no deployment is implied by these
+disposable tests.
 
 The browser can call only the fixed same-origin routes in that manifest. Node
 builds each private request on the server, checks its bounded response, and
