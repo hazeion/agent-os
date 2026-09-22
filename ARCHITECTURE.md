@@ -924,6 +924,10 @@ previewed bounded snapshot through the existing attachment boundary.
 
 Canonical Project/Task IDs remain in their existing repositories. Their
 whole-collection replacement is not permission to cascade-delete context.
+Existing Project removal and Task membership changes remain unavailable; this
+slice does not introduce either operation. Their current rejection paths must
+preserve all context. If a later approved capability enables either operation,
+it must satisfy the incarnation and invalidation rules below atomically.
 Context scope has a private immutable incarnation. Repository mutation hooks
 must compare true before/after membership in the same transaction: actual
 Project deletion tombstones its scope and revokes grants; actual Task deletion

@@ -18,7 +18,8 @@ Implementation sequence:
 1. [Immutable Project storage](https://github.com/hazeion/agent-os/issues/260):
    Project briefs/file revisions, scope incarnations, retained
    attachment references, strict quotas and exact backup/restore support.
-   Include real Project/Task deletion and ID-reuse invariants. No dispatch.
+   Preserve rejection of unsupported Project deletion and Task moves; cover
+   supported Task deletion and all relevant ID-reuse invariants. No dispatch.
 2. [Owner editor and grants](https://github.com/hazeion/agent-os/issues/261):
    explicit revision-bound Agent grants, safe file
    access and version pruning preview/confirmation. No grant from assignment.
