@@ -140,3 +140,13 @@ TypeScript, ESLint and the production build pass. Rebuilt wheel/sdist inventory
 and integrity checks pass; an isolated installed-wheel smoke confirms exact
 deletion, retired owner history, GC protection and backup. Fresh CI remains
 required before merging the draft PR.
+
+## CI worker cleanup correction
+
+The Windows3.11 matrix reported that the immediate-completion test's worker had
+not finished within its five-second join; the temporary-root cleanup then hit
+an open initialization lock. The test now always releases and drains the worker
+in a finally block, captures a bounded stack after five seconds, and allows a
+further25 seconds for cleanup before failing. Exactly-once queue assertions and
+production deadlines are unchanged. The exact test passes locally in about two
+seconds; two independent reviews are clean.
