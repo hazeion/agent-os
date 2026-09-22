@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 PUBLIC_DATA_FILES: dict[str, tuple[str, ...]] = {
+    "share/mentat/setup": ("web/scripts/owner-setup-gateway.mjs",),
     "share/mentat/public": (
         "public/app.js", "public/core.js", "public/index.html",
         "public/mentat-logo.png", "public/mentat-mark-emerald.png", "public/styles.css",
