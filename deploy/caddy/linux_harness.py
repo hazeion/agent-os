@@ -23,6 +23,7 @@ from deploy.caddy.profile import (
     verify_signed_checksums,
 )
 from deploy.caddy.disposable_integration import run_disposable_integration
+from deploy.caddy.setup_integration import run_setup_integration
 
 
 def _require_linux() -> None:
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.test_cert is None or args.test_key is None:
                 raise DeploymentProfileError("--run-disposable requires caller-supplied --test-cert and --test-key")
             run_disposable_integration(caddy=args.caddy_bin, certificate=args.test_cert, key=args.test_key, host=args.host)
+            run_setup_integration(caddy=args.caddy_bin, certificate=args.test_cert, key=args.test_key, host=args.host)
     except (DeploymentProfileError, OSError, subprocess.SubprocessError) as exc:
         print(f"disabled Caddy harness failed: {exc}", file=sys.stderr)
         return 1

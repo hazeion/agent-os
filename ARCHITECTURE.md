@@ -207,8 +207,8 @@ source kind; it never stores a client secret. Migration enrolls no Google owner
 and issues no Google session. Private backup validation accepts both historical
 schemas 24 and 25 and the current schema. Restore revokes all sessions, keeps terminal
 history bounded, and marks Google configuration as requiring host reconciliation.
-Schema-5 compatible export omits all owner authentication authority. Browser
-login, CLI enrollment/conversion and remote activation remain unwired.
+Schema-5 compatible export omits all owner authentication authority. Ordinary
+website login and remote dashboard activation remain separate integration gates.
 
 Schema 26 adds disposable ordinary Google login attempts. Python admits only
 an already enrolled Google owner with reconciled settings, using the existing
@@ -233,6 +233,30 @@ Snapshot copies remove all
 attempts before vacuuming; startup and restore discard them. Future HTTP wiring
 must use an explicit same-origin login start and a Secure, HttpOnly,
 SameSite=Lax `__Host-` browser-binding cookie for the cross-site callback.
+
+The foreground Linux `owner-auth google-setup` ceremony is a separate host-admin
+capability. It reserves the normal server's lifetime slot under the private
+mutation lock, releases that lock during external work, and requires exact
+reservation ownership/deadline at transitions. A terminal grant starts one
+browser-bound Google exchange; its process-private candidate disappears on
+restart. The setup bridge exposes only begin/callback, never confirmation or
+general dashboard capabilities. Browser proof alone grants no owner or session.
+
+After stopping setup ingress, terminal confirmation binds the immutable
+candidate and initial owner/configuration snapshot. A validated backup precedes
+the atomic owner-generation/configuration change, revocation of all previous
+grants and credential login, and recovery-code rotation. Ordinary public login
+cannot enroll or replace an owner. The client secret stays in Python's private
+environment/memory; child Node/Caddy environments exclude it.
+
+Setup ingress uses verified pinned Caddy, supplied TLS files, fixed routes and
+bounded requests. Access/runtime logs discard callback material. The form uses
+same-origin referrer policy so browsers send a verifiable Origin; callback
+responses use no-referrer. Both CSP layers permit only self and Google's fixed
+authorization origin for form navigation. Guardians watch a parent-owned pipe
+and share the listener process group; teardown verifies group disappearance
+before reservation release. The explicit ceremony does not activate ordinary
+remote dashboard serving. See [the operator guide](docs/setup/google-owner.md).
 
 - A Mentat **Agent** is the target canonical worker identity.
 - A runtime identity, such as a Hermes profile, is an adapter-owned execution
