@@ -52,3 +52,33 @@ reported clean whole-slice findings. Final packaging checks then passed.
 Real operator Google-client enrollment, configured public DNS/TLS and the full
 owner-host acceptance remain open under the activation parent. This evidence
 does not qualify a real provider account or close the complete garage journey.
+
+## Website CI corrections
+
+The first website CI run exposed a stale source-contract test: it expected the
+old bare health fetch and one-argument CSP call. The two assertions now match
+the intentional owner-aware fetch and login-aware CSP call; deadline,
+secret-exclusion and CSP safety assertions remain intact.
+
+The mobile performance gate reported 94/93/93 against the unchanged minimum 95.
+A full pinned-Chrome report on a synthetic local fixture identified the serial
+document -> shell-runtime -> owner-session module chain. RootLayout now gives
+the existing public module a same-origin modulepreload hint. Three-run local
+A/B scores were 97/97/97 before and 100/98/98 afterward. The last-run request
+trace changes from serial module discovery to parallel start. Median LCP stayed
+approximately 2.48s. This is bounded diagnostic evidence, not proof that the
+Linux CI gate has passed; the fixture deliberately reports unavailable
+integration endpoints and is not full-site category acceptance.
+
+The rebuilt browser test exposed an evaluate-versus-navigation race when a
+second browser revoked every session. It now captures the current first-browser
+credential after its second login, proves 200 before revocation and 401 afterward
+outside the navigating document, and separately verifies that bringing the
+browser to the foreground returns it to sign-in. The request is time-bounded.
+Both independent reviewers found the complete correction clean. Authentication
+behavior and performance thresholds are unchanged.
+
+Final correction checks: 386 web tests, TypeScript, ESLint and the production
+build pass. All three Python foundation checks pass. The real built-site
+browser/sign-out and open-stream revocation tests both pass with the pinned
+Chrome browser. Fresh CI results remain required before merge.
