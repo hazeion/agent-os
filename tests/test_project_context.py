@@ -179,6 +179,96 @@ class ProjectContextTests(unittest.TestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute('UPDATE mentat_project_context_versions SET brief=? WHERE id=?', ('changed', published['id']))
 
+    def deletion_service(self):
+        from tests.sqlite_authority_support import ensure_run_sqlite_authority
+        from private_state import history_path
+        from planning_deletion import PlanningDeletionService
+        ensure_run_sqlite_authority(self.root, history_path(self.root))
+        return PlanningDeletionService(self.root)
+
+    def test_confirmed_project_deletion_retires_context_and_id_reuse_is_new_scope(self):
+        from planning_deletion import PlanningDeletionError
+        original = self.publish(self.upload())
+        service = self.deletion_service()
+        plan = service.preview('project', 'project_mentat')
+        self.assertEqual(plan.retained_context_versions, 1)
+        service.finalize(plan)
+        retired = context.read_retired_project_context(self.root, original['id'])
+        self.assertTrue(retired['retired'])
+        self.assertEqual(retired['brief'], original['brief'])
+        files.reconcile_startup(self.root, retained_run_ids=(), now=time.time()+10000)
+        self.assertEqual(files.read_attachment_bytes(self.root, original['attachment_ids'][0])[1], b'Floorplan with supplied dimensions')
+        with private_state_lock(self.root):
+            unit = backups.capture_private_console_unit(self.root)
+        target = self.root / 'retired-restore'
+        (target / 'private').mkdir(parents=True, mode=0o700)
+        backups.materialize_private_console_unit(target, unit, target / 'private' / 'console')
+        self.assertEqual(context.read_retired_project_context(target, original['id']), retired)
+        mutate_authoritative_projects(self.root, lambda items: ([*items, project()], None))
+        self.assertIsNone(context.read_project_context(self.root, 'project_mentat'))
+        replacement = self.publish(brief='New Project with reused ID')
+        self.assertNotEqual(replacement['id'], original['id'])
+        self.assertEqual(context.read_retired_project_context(self.root, original['id']), retired)
+        with self.assertRaises(PlanningDeletionError):
+            service.completed_receipt('project', 'project_mentat', plan.confirmation_id)
+        with self.assertRaises(PlanningDeletionError):
+            service.finalize(plan)
+
+    def test_context_change_invalidates_deletion_preview_and_late_failure_rolls_back_retirement(self):
+        from planning_deletion import PlanningDeletionError
+        self.publish()
+        service = self.deletion_service()
+        old = service.preview('project', 'project_mentat')
+        latest = self.publish(expected=1, brief='New approved brief')
+        with self.assertRaises(PlanningDeletionError):
+            service.finalize(old)
+        current = service.preview('project', 'project_mentat')
+        erase = service._erase
+        def fail_after_erase(connection, plan):
+            erase(connection, plan)
+            raise sqlite3.OperationalError('injected after retirement and deletion')
+        with patch.object(service, '_erase', side_effect=fail_after_erase):
+            with self.assertRaises(PlanningDeletionError):
+                service.finalize(current)
+        self.assertEqual(context.read_project_context(self.root, 'project_mentat'), latest)
+        with self.assertRaises(context.ProjectContextError):
+            context.read_retired_project_context(self.root, latest['id'])
+
+    def test_task_deletion_does_not_orphan_shared_project_file(self):
+        from tests.test_planning_deletion import PlanningDeletionTests
+        from planning_deletion import PlanningDeletionService, PlanningDeletionError
+        task_root = self.root / 'task-root'
+        task_root.mkdir()
+        root, _, _ = PlanningDeletionTests().executed_root(str(task_root), retry_count=0)
+        attachment = files.create_attachment(root, original_name='shared.md', content=b'Keep for Project')['id']
+        with closing(mentat_db.connect(root)) as connection:
+            run_id = connection.execute("SELECT id FROM mentat_runs WHERE task_id='task_run'").fetchone()[0]
+        files.bind_run_attachment(root, attachment, run_id)
+        service = PlanningDeletionService(root)
+        stale = service.preview('task', 'task_run')
+        published = context.publish_project_context(root, 'project_one', expected_project_revision=1,
+            expected_revision=0, brief='Shared goals', attachment_ids=[attachment])
+        with self.assertRaises(PlanningDeletionError):
+            service.finalize(stale)
+        plan = service.preview('task', 'task_run')
+        self.assertEqual(plan.retained_context_versions, 1)
+        service.finalize(plan)
+        files.garbage_collect(root, now=time.time()+10000, orphan_grace=0)
+        self.assertEqual(context.read_project_context(root, 'project_one'), published)
+        self.assertEqual(files.get_attachment(root, attachment)['state'], 'attached')
+
+    def test_deletion_bridge_projects_retention_count_without_context_content(self):
+        import server
+        from mentat.local_bridge import bridge_planning_deletion_preview_payload
+        self.publish(self.upload(), brief='Private garage requirements')
+        self.deletion_service()
+        with patch.object(server, 'DATA_DIR', self.root), patch.object(server, 'CONFIGURED_DATA_DIR', self.root):
+            payload, status = bridge_planning_deletion_preview_payload({'target_kind': 'project', 'target_id': 'project_mentat'})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload['retained_context_versions'], 1)
+        self.assertNotIn('Private garage requirements', json.dumps(payload))
+        self.assertNotIn('attachment_', json.dumps(payload))
+
     def test_private_restore_preserves_context_and_compatible_export_omits_it(self):
         original = self.publish(self.upload())
         with private_state_lock(self.root):
@@ -231,10 +321,10 @@ class ProjectContextTests(unittest.TestCase):
         with closing(mentat_db.connect(self.root)) as connection:
             for identifier in (None, b'x' * 46):
                 with self.assertRaises(sqlite3.IntegrityError):
-                    connection.execute('INSERT INTO mentat_project_context_scopes VALUES(?,?,1,1)', (identifier, 'project_mentat'))
+                    connection.execute('INSERT INTO mentat_project_context_scopes(id,project_id,revision,created_at) VALUES(?,?,1,1)', (identifier, 'project_mentat'))
             # Damaged input is a bounded context error even without SQL checks.
             connection.execute('PRAGMA ignore_check_constraints=ON')
-            connection.execute('INSERT INTO mentat_project_context_scopes VALUES(?,?,1,1)', ('bad', 'project_mentat'))
+            connection.execute('INSERT INTO mentat_project_context_scopes(id,project_id,revision,created_at) VALUES(?,?,1,1)', ('bad', 'project_mentat'))
             with self.assertRaises(context.ProjectContextError):
                 context.validate_project_context_connection(connection)
 

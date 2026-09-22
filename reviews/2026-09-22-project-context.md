@@ -18,8 +18,9 @@ Implementation sequence:
 1. [Immutable Project storage](https://github.com/hazeion/agent-os/issues/260):
    Project briefs/file revisions, scope incarnations, retained
    attachment references, strict quotas and exact backup/restore support.
-   Preserve rejection of unsupported Project deletion and Task moves; cover
-   supported Task deletion and all relevant ID-reuse invariants. No dispatch.
+   Preserve rejection of ordinary collection-removal and Task moves; integrate
+   the separately confirmed Project/Task deletion service and ID-reuse rules.
+   No dispatch.
 2. [Owner editor and grants](https://github.com/hazeion/agent-os/issues/261):
    explicit revision-bound Agent grants, safe file
    access and version pruning preview/confirmation. No grant from assignment.
@@ -109,3 +110,33 @@ Verification before publication:
 
 No new browser or Agent execution capability is exposed. Linux platform checks
 remain subject to PR CI; real garage/runtime acceptance is still open.
+
+## Confirmed deletion correction
+
+Following the editor's full call path exposed a gap in the initial review:
+ordinary Project replacement rejects removal, but `planning_deletion.py`
+already implements a separate confirmed deletion capability. The previous
+statement that Project deletion was unavailable was incorrect.
+
+Before the unreleased schema-27 PR merges, its scope table now supports terminal
+retirement and a unique live Project-ID mapping. Confirmed deletion retires
+scope authority atomically while retaining versions/files. Task deletion uses
+the union retention root when orphaning Run files. Previews bind affected
+context manifests and disclose retained history through a bounded count. An
+old deletion receipt cannot be replayed against a recreated target.
+
+New regressions cover Project-only files through deletion/GC/backup/restore,
+fresh context after ID reuse, stale preview after context edits, shared Run and
+Project files through Task deletion, and rollback after both retirement and
+canonical deletion. This refines the draft migration before release; all
+Project data created by this work remains disposable test data. Editor and
+grant work follows this integration correction.
+
+Correction verification: both independent reviews are clean; 88 storage,
+deletion and private-bridge checks passed, followed by 41 focused context,
+deletion and planning-bridge checks including the positive retained-count
+projection. All 386 web tests pass, including the rendered retention notice.
+TypeScript, ESLint and the production build pass. Rebuilt wheel/sdist inventory
+and integrity checks pass; an isolated installed-wheel smoke confirms exact
+deletion, retired owner history, GC protection and backup. Fresh CI remains
+required before merging the draft PR.

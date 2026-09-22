@@ -928,10 +928,12 @@ previewed bounded snapshot through the existing attachment boundary.
 
 Canonical Project/Task IDs remain in their existing repositories. Their
 whole-collection replacement is not permission to cascade-delete context.
-Existing Project removal and Task membership changes remain unavailable; this
-slice does not introduce either operation. Their current rejection paths must
-preserve all context. If a later approved capability enables either operation,
-it must satisfy the incarnation and invalidation rules below atomically.
+Ordinary Project collection replacement still rejects removal, but the separate
+confirmed planning-deletion service already supports Project deletion. That
+service retires its context scope in the same transaction and retains immutable
+versions/files. Its preview binds the context references affected by either
+Project deletion or shared Run-file removal and tells the owner that saved
+context history remains. Task membership changes remain unavailable.
 Context scope has a private immutable incarnation. Repository mutation hooks
 must compare true before/after membership in the same transaction: actual
 Project deletion tombstones its scope and revokes grants; actual Task deletion
@@ -940,6 +942,10 @@ grants. Task and Agent incarnations are bound wherever ID reuse could otherwise
 revive a receipt. Reusing an ID cannot reactivate an old scope or grant.
 Renames preserve identity. Missing or archived Projects
 cannot admit new work; retained evidence stays available to the owner.
+Retired scopes have no live Project-ID mapping. Reusing a Project ID therefore
+creates a new random scope; owner history reads address exact retired context
+IDs and never silently attach old context to the replacement Project. Deletion
+receipt replay must not claim that a newly recreated Project was deleted.
 
 **Explicit access.** A context grant binds Project incarnation, canonical Agent,
 exact context revision and a monotonically increasing grant revision. The

@@ -1932,10 +1932,13 @@ MIGRATIONS += ((26, """
 MIGRATIONS += ((27, """
     CREATE TABLE mentat_project_context_scopes (
         id TEXT NOT NULL PRIMARY KEY CHECK (typeof(id) = 'text' AND length(id) = 46),
-        project_id TEXT NOT NULL UNIQUE,
+        project_id TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK (revision >= 1),
-        created_at REAL NOT NULL CHECK (created_at > 0)
+        created_at REAL NOT NULL CHECK (created_at > 0),
+        retired_at REAL CHECK (retired_at IS NULL OR retired_at > 0)
     );
+    CREATE UNIQUE INDEX idx_mentat_project_context_live_project
+        ON mentat_project_context_scopes(project_id) WHERE retired_at IS NULL;
     CREATE TABLE mentat_project_context_versions (
         id TEXT NOT NULL PRIMARY KEY CHECK (typeof(id) = 'text' AND length(id) = 48),
         scope_id TEXT NOT NULL REFERENCES mentat_project_context_scopes(id) ON DELETE RESTRICT,
@@ -1966,6 +1969,10 @@ MIGRATIONS += ((27, """
     CREATE TRIGGER mentat_project_context_scope_identity
         BEFORE UPDATE OF id, project_id, created_at ON mentat_project_context_scopes
         BEGIN SELECT RAISE(ABORT, 'project_context.immutable'); END;
+    CREATE TRIGGER mentat_project_context_retirement_terminal
+        BEFORE UPDATE OF retired_at ON mentat_project_context_scopes
+        WHEN OLD.retired_at IS NOT NULL OR NEW.retired_at IS NULL
+        BEGIN SELECT RAISE(ABORT, 'project_context.retired'); END;
 """),)
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})

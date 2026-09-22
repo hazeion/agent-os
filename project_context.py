@@ -70,7 +70,7 @@ def validate_project_context_connection(connection: sqlite3.Connection) -> None:
     """Validate the complete bounded retained graph, including backup snapshots."""
     # No row_factory mutation: backup validators and repositories share this handle.
     scopes = connection.execute(
-        "SELECT id,project_id,revision,created_at FROM mentat_project_context_scopes ORDER BY id"
+        "SELECT id,project_id,revision,created_at,retired_at FROM mentat_project_context_scopes ORDER BY id"
     ).fetchmany(MAX_VERSIONS + 1)
     versions = connection.execute(
         "SELECT id,scope_id,revision,brief,files_digest,created_at FROM mentat_project_context_versions ORDER BY scope_id,revision"
@@ -84,10 +84,13 @@ def validate_project_context_connection(connection: sqlite3.Connection) -> None:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}
     scope_map = {}
-    for identifier, project_id, revision, created_at in scopes:
-        if (not isinstance(identifier, str) or not _SCOPE.fullmatch(identifier) or project_id not in projects
+    for identifier, project_id, revision, created_at, retired_at in scopes:
+        if (not isinstance(identifier, str) or not _SCOPE.fullmatch(identifier)
+                or (retired_at is None and project_id not in projects)
+                or not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}", project_id)
                 or type(revision) is not int or revision < 1
-                or not isinstance(created_at, (int, float)) or not math.isfinite(created_at) or created_at <= 0):
+                or not isinstance(created_at, (int, float)) or not math.isfinite(created_at) or created_at <= 0
+                or (retired_at is not None and (not isinstance(retired_at, (int, float)) or not math.isfinite(retired_at) or retired_at < created_at))):
             _fail("invalid")
         scope_map[identifier] = revision
     if scopes:
@@ -148,7 +151,7 @@ def validate_retained_capacity(connection: sqlite3.Connection) -> None:
 
 def _snapshot(connection: sqlite3.Connection, project_id: str, revision: int | None) -> dict | None:
     scope = connection.execute(
-        "SELECT id,revision FROM mentat_project_context_scopes WHERE project_id=?", (project_id,)
+        "SELECT id,revision FROM mentat_project_context_scopes WHERE project_id=? AND retired_at IS NULL", (project_id,)
     ).fetchone()
     if scope is None:
         return None
@@ -203,7 +206,7 @@ def publish_project_context(
                     _fail("project_unavailable")
                 validate_project_context_connection(connection)
                 scope = connection.execute(
-                    "SELECT id,revision FROM mentat_project_context_scopes WHERE project_id=?", (project_id,)
+                    "SELECT id,revision FROM mentat_project_context_scopes WHERE project_id=? AND retired_at IS NULL", (project_id,)
                 ).fetchone()
                 if (scope[1] if scope else 0) != expected_revision:
                     _fail("revision_conflict")
@@ -225,7 +228,7 @@ def publish_project_context(
                     connection.execute("UPDATE mentat_project_context_scopes SET revision=? WHERE id=?", (revision, scope_id))
                 else:
                     connection.execute(
-                        "INSERT INTO mentat_project_context_scopes VALUES(?,?,?,?)", (scope_id, project_id, revision, now)
+                        "INSERT INTO mentat_project_context_scopes(id,project_id,revision,created_at) VALUES(?,?,?,?)", (scope_id, project_id, revision, now)
                     )
                 connection.execute(
                     "INSERT INTO mentat_project_context_versions VALUES(?,?,?,?,?,?)",
@@ -239,3 +242,36 @@ def publish_project_context(
                     )
                 validate_project_context_connection(connection)
                 return _snapshot(connection, project_id, revision)
+
+
+def retire_project_contexts(connection: sqlite3.Connection, project_ids: tuple[str, ...]) -> None:
+    """Called only by exact confirmed deletion inside its guarded transaction."""
+    if not connection.in_transaction:
+        _fail("transaction_required")
+    for project_id in project_ids:
+        connection.execute(
+            "UPDATE mentat_project_context_scopes SET retired_at=? WHERE project_id=? AND retired_at IS NULL",
+            (time.time(), project_id),
+        )
+
+
+def read_retired_project_context(data_dir: Path, context_id: str) -> dict:
+    """Trusted owner history read; never resolve a retired scope by reused Project ID."""
+    if not isinstance(context_id, str) or not _VERSION.fullmatch(context_id):
+        _fail("version_unavailable")
+    with private_state_lock(Path(data_dir)):
+        with _open_repository_database(Path(data_dir)) as (connection, guard):
+            with _guarded_transaction(connection, guard):
+                validate_project_context_connection(connection)
+                row = connection.execute(
+                    "SELECT v.id,v.revision,v.brief,v.created_at,s.project_id FROM mentat_project_context_versions v "
+                    "JOIN mentat_project_context_scopes s ON s.id=v.scope_id WHERE v.id=? AND s.retired_at IS NOT NULL",
+                    (context_id,),
+                ).fetchone()
+                if row is None:
+                    _fail("version_unavailable")
+                identifiers = [str(item[0]) for item in connection.execute(
+                    "SELECT attachment_id FROM mentat_project_context_files WHERE context_id=? ORDER BY ordinal", (context_id,)
+                )]
+                return {"id": row[0], "project_id": row[4], "revision": row[1], "brief": row[2],
+                        "created_at": row[3], "attachment_ids": identifiers, "retired": True}
