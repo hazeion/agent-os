@@ -247,7 +247,7 @@ class GoogleTransactionMigrationTests(unittest.TestCase):
         validate_private_console_unit(unit)
         validate_private_console_unit(sanitize_owner_auth_restore_unit(unit))
         mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, 26), 'expected')
+        self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
         self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_owner_google_transactions').fetchone()[0], 0)
         self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
 

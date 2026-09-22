@@ -907,8 +907,12 @@ authority, audio, or transcripts.
 ### Approved Project context and deliverable contract
 
 This is the implementation contract for [authorized Project context and
-versioned deliverables](https://github.com/hazeion/agent-os/issues/238), not a
-claim that these capabilities are already available. Its staged implementation
+versioned deliverables](https://github.com/hazeion/agent-os/issues/238). Schema 27
+implements the storage foundation: immutable owner-authored briefs/file lists,
+exact revision publication, a real Project attachment retention root, and
+backup/restore support. An immutable file-list digest rejects partial reference
+loss. No browser context editor, Agent grant or Project dispatch capability is
+enabled by that foundation. The remaining staged implementation
 must extend the existing private SQLite/blob consistency unit. It must not
 enable execution until the complete admission and runtime qualification gates
 pass. The owner's approved Project workflow includes the following boundaries.

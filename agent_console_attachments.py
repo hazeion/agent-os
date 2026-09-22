@@ -1156,11 +1156,11 @@ def bind_run_attachment(
                 raise AttachmentUnavailable("Attachment content is not available") from exc
             retained = connection.execute(
                 "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) FROM blobs WHERE id IN ("
-                "SELECT DISTINCT a.blob_id FROM run_attachments r "
+                "SELECT DISTINCT a.blob_id FROM mentat_retained_attachments r "
                 "JOIN attachments a ON a.id = r.attachment_id)"
             ).fetchone()
             already_referenced = connection.execute(
-                "SELECT 1 FROM run_attachments r JOIN attachments a ON a.id = r.attachment_id "
+                "SELECT 1 FROM mentat_retained_attachments r JOIN attachments a ON a.id = r.attachment_id "
                 "WHERE a.blob_id = ? LIMIT 1",
                 (row["blob_id"],),
             ).fetchone()
@@ -1249,10 +1249,10 @@ def release_attachment(
             if row is None:
                 raise AttachmentNotFound("Attachment not found")
             reference = connection.execute(
-                "SELECT 1 FROM run_attachments WHERE attachment_id = ? LIMIT 1", (identifier,)
+                "SELECT 1 FROM mentat_retained_attachments WHERE attachment_id = ? LIMIT 1", (identifier,)
             ).fetchone()
             if reference is not None:
-                raise AttachmentUnavailable("Attachment is retained by Agent Console history")
+                raise AttachmentUnavailable("Attachment is retained by Mentat history or Project context")
             if row["state"] not in {"staged", "orphaned"}:
                 raise AttachmentUnavailable("Attachment cannot be released")
             connection.execute(
@@ -1311,7 +1311,7 @@ def unbind_run_attachments(
                 )
             for identifier in affected:
                 reference = connection.execute(
-                    "SELECT 1 FROM run_attachments WHERE attachment_id = ? LIMIT 1", (identifier,)
+                    "SELECT 1 FROM mentat_retained_attachments WHERE attachment_id = ? LIMIT 1", (identifier,)
                 ).fetchone()
                 if reference is None:
                     connection.execute(
@@ -1345,7 +1345,7 @@ def garbage_collect(
         with transaction(connection, immediate=True):
             expired = connection.execute(
                 "SELECT id FROM attachments a WHERE a.state = 'staged' AND a.expires_at <= ? "
-                "AND NOT EXISTS (SELECT 1 FROM run_attachments r WHERE r.attachment_id = a.id) LIMIT ?",
+                "AND NOT EXISTS (SELECT 1 FROM mentat_retained_attachments r WHERE r.attachment_id = a.id) LIMIT ?",
                 (current, batch_size),
             ).fetchall()
             for row in expired:
@@ -1359,7 +1359,7 @@ def garbage_collect(
             if remaining:
                 attached_orphans = connection.execute(
                     "SELECT id FROM attachments a WHERE a.state = 'attached' "
-                    "AND NOT EXISTS (SELECT 1 FROM run_attachments r WHERE r.attachment_id = a.id) LIMIT ?",
+                    "AND NOT EXISTS (SELECT 1 FROM mentat_retained_attachments r WHERE r.attachment_id = a.id) LIMIT ?",
                     (remaining,),
                 ).fetchall()
                 for row in attached_orphans:
@@ -1377,7 +1377,7 @@ def garbage_collect(
             due = connection.execute(
                 "SELECT id FROM attachments a WHERE a.state IN ('orphaned', 'pending_delete', 'deleting') "
                 "AND (a.delete_after IS NULL OR a.delete_after <= ?) "
-                "AND NOT EXISTS (SELECT 1 FROM run_attachments r WHERE r.attachment_id = a.id) "
+                "AND NOT EXISTS (SELECT 1 FROM mentat_retained_attachments r WHERE r.attachment_id = a.id) "
                 + active_clause + "LIMIT ?",
                 (current, *sorted(active), batch_size),
             ).fetchall()
@@ -1396,7 +1396,7 @@ def garbage_collect(
                     claimed = connection.execute(
                         "UPDATE attachments SET state = 'deleting', updated_at = ? WHERE id = ? "
                         "AND state = 'pending_delete' "
-                        "AND NOT EXISTS (SELECT 1 FROM run_attachments WHERE attachment_id = ?)",
+                        "AND NOT EXISTS (SELECT 1 FROM mentat_retained_attachments WHERE attachment_id = ?)",
                         (current, identifier, identifier),
                     )
                     if not claimed.rowcount:
@@ -1418,7 +1418,7 @@ def garbage_collect(
                             path.unlink()
                 with transaction(connection, immediate=True):
                     still_unreferenced = connection.execute(
-                        "SELECT 1 FROM run_attachments WHERE attachment_id = ? LIMIT 1", (identifier,)
+                        "SELECT 1 FROM mentat_retained_attachments WHERE attachment_id = ? LIMIT 1", (identifier,)
                     ).fetchone()
                     if still_unreferenced is not None:
                         connection.execute(
@@ -1510,7 +1510,7 @@ def reconcile_startup(
                     report["run_references_released"] += len(released)
                     for item in released:
                         remaining = connection.execute(
-                            "SELECT 1 FROM run_attachments WHERE attachment_id = ? LIMIT 1",
+                            "SELECT 1 FROM mentat_retained_attachments WHERE attachment_id = ? LIMIT 1",
                             (item["attachment_id"],),
                         ).fetchone()
                         if remaining is None:

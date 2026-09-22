@@ -72,3 +72,40 @@ This is a documentation/contract slice; no runtime tests or live execution claim
 apply. Implementation and its required acceptance evidence remain open in the
 four native child issues. The first storage child is the next implementation
 slice, with both retention and backup updated together.
+
+## Storage implementation and verification
+
+The active storage branch introduces schema 27, immutable context versions,
+ordered attachment references, exact Project/context revision publication and
+a shared retained-attachment view. GC/release/reconciliation and backup filters
+are being extended to that union. Tests exercise Project-only persistence,
+shared-blob lifetime, stale/concurrent publication, quota rollback, tampering,
+whole-collection rename and exact backup inventory. This completes the first
+storage slice, not the owner editor, grants or execution slices.
+
+Storage review corrections: explicit non-null/type-checked IDs prevent malformed
+SQLite values from escaping bounded validation; an immutable file-list digest
+detects partial reference removal; all schema allowlists retain version 26,
+including the Run repository. A new populated, claimed schema-26 Run-authority
+backup test validates, restores and upgrades the historical state. Both final
+whole-slice reviewers report no remaining actionable concerns.
+
+Verification before publication:
+
+- 196 migration, Task/Run repository, owner-auth and provider tests pass, with
+  eight platform-specific skips on Windows.
+- 46 focused Project-context, Google transaction and owner-method tests pass.
+  The additional two-Project concurrent blob-quota regression also passes.
+- The 53-test private backup/state module passed (one platform-specific skip)
+  in the broader 90-test run. That run exposed two stale current-version
+  assertions in auth tests; both were corrected and pass in the final focused
+  and migration runs above.
+- Real archive backup/restore retains Project-only files. A populated historical
+  schema-26 Run backup validates, restores and upgrades. Compatible schema-5
+  private export omits Project authority/files and leaves source unchanged.
+- Wheel and source archive pass exact inventory/integrity checks. An isolated
+  installed-wheel smoke publishes/reads context, survives GC, and captures and
+  validates the retained backup bytes.
+
+No new browser or Agent execution capability is exposed. Linux platform checks
+remain subject to PR CI; real garage/runtime acceptance is still open.
