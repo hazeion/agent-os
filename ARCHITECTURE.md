@@ -208,7 +208,8 @@ and issues no Google session. Private backup validation accepts both historical
 schemas 24 and 25 and the current schema. Restore revokes all sessions, keeps terminal
 history bounded, and marks Google configuration as requiring host reconciliation.
 Schema-5 compatible export omits all owner authentication authority. Ordinary
-website login and remote dashboard activation remain separate integration gates.
+website login uses the fixed Google flow; real operator deployment acceptance
+remains a required gate.
 
 Schema 26 adds disposable ordinary Google login attempts. Python admits only
 an already enrolled Google owner with reconciled settings, using the existing
@@ -230,9 +231,35 @@ eviction; Google sessions have no device identity or fresh reauthentication.
 Exact-session sign-out validates CSRF and current authority, revokes its SSE
 leases and retains bounded history without affecting another browser's session.
 Snapshot copies remove all
-attempts before vacuuming; startup and restore discard them. Future HTTP wiring
-must use an explicit same-origin login start and a Secure, HttpOnly,
-SameSite=Lax `__Host-` browser-binding cookie for the cross-site callback.
+attempts before vacuuming; startup and restore discard them. The website uses
+an explicit same-origin login start and a Secure, HttpOnly, SameSite=Lax
+`__Host-` browser-binding cookie for the cross-site callback.
+
+The explicit Linux `owner-auth serve` profile starts the existing Node/Python
+supervisor behind verified Caddy and supplied TLS files. Ordinary start remains
+local. Owner mode is process-owned and requires a reconciled Google principal,
+credential presence and exact canonical HTTPS origin. Caddy strips untrusted
+forwarding, private authority and middleware headers; Next's fixed loopback-hop
+metadata is checked before admission. Unknown routes fail closed. Dashboard
+documents/RSC, APIs, artifacts and generated shells require a current session;
+only sign-in, the callback/start flow and a finite asset surface are anonymous.
+
+Every protected operation validates session/CSRF before parsing its input. An
+async request context forwards only validated credentials to fixed bridge
+operations, where Python revalidates before executing. The owner client secret
+is removed before executable bridge runtime imports; Node and runtime children
+do not receive it. Host enrollment/recovery is not an ordinary website capability.
+Browser cookies are host-only/Secure with an HttpOnly session and a separate
+session-bound CSRF value. Callback queries are replaced by fixed clean routes;
+only bounded error categories are displayed.
+
+Live streams reserve at most two leases per session and recheck before reads
+and emissions without touching idle expiry. Release is awaited on completion
+or cancellation; two-minute absolute lease expiry bounds abandoned reservations.
+Sign-out revokes future disclosure, and clients clear displayed state on auth
+loss. Availability failures remain distinct from invalid sessions. Protected
+documents use no-store. Google form navigation has its explicit CSP and
+same-origin referrer policy; callbacks remain no-referrer.
 
 The foreground Linux `owner-auth google-setup` ceremony is a separate host-admin
 capability. It reserves the normal server's lifetime slot under the private

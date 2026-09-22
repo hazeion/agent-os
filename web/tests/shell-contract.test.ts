@@ -222,10 +222,10 @@ test("native planning fields and map controls retain visible token-based focus a
 
 test("the small runtime enhances the shell without exposing bridge authority", () => {
   const runtime = source("public/shell-runtime.js");
-  assert.match(runtime, /fetch\("\/api\/bridge\/health"/);
-  assert.match(runtime, /fetch\("\/api\/agents"/);
-  assert.match(runtime, /fetch\("\/api\/provider-connections"/);
-  assert.match(runtime, /fetch\("\/api\/tasks"/);
+  assert.match(runtime, /ownerFetch\("\/api\/bridge\/health"/);
+  assert.match(runtime, /ownerFetch\("\/api\/agents"/);
+  assert.match(runtime, /ownerFetch\("\/api\/provider-connections"/);
+  assert.match(runtime, /ownerFetch\("\/api\/tasks"/);
   assert.match(runtime, /Promise\.allSettled\(\[load\("\/api\/runs"\), load\("\/api\/agents"\)\]\)/);
   assert.match(runtime, /data-agents-refresh/);
   assert.match(runtime, /data-provider-connections-refresh/);

@@ -4,6 +4,9 @@ import {
   type GatewayAuthorityRequest,
 } from "./gateway-authority.ts";
 import type { GatewayRouteRule } from "./gateway-route-manifest.ts";
+import { sessionContext } from "./owner-cookies.ts";
+import { validateOwnerSession } from "./owner-bridge.ts";
+import { runWithOwnerContext } from "./owner-request-context.ts";
 
 const FORBIDDEN_HEADERS = Object.freeze({
   "Cache-Control": "private, no-store",
@@ -35,7 +38,7 @@ export type GatewayRouteContext<Value> = GatewayRouteValidationContext & Readonl
 export type GatewayRouteHandler<Value> = (context: GatewayRouteContext<Value>) => Promise<Response> | Response;
 
 type GatewayRouteWrapperOptions<Value, RouteContext> = Readonly<{
-  authority?: Pick<GatewayAuthority, "authorize">;
+  authority?: Pick<GatewayAuthority, "authorize"> & Partial<Pick<GatewayAuthority, "mode">>;
   forbidden?: () => Response;
   handler: GatewayRouteHandler<Value>;
   validator: GatewayRouteValidator<Value, RouteContext>;
@@ -53,6 +56,13 @@ function requestAuthorityInput(request: Request): GatewayAuthorityRequest {
     origin: request.headers.get("origin"),
     pathname: url.pathname,
     secFetchSite: request.headers.get("sec-fetch-site"),
+    secFetchMode: request.headers.get("sec-fetch-mode"),
+    secFetchDest: request.headers.get("sec-fetch-dest"),
+    forwardedHost: request.headers.get("x-forwarded-host"),
+    forwardedProto: request.headers.get("x-forwarded-proto"),
+    forwardedFor: request.headers.get("x-forwarded-for"),
+    forwardedPort: request.headers.get("x-forwarded-port"),
+    forbiddenForwarding: ["forwarded", "x-real-ip"].some(name => request.headers.has(name)),
   };
 }
 
@@ -73,9 +83,21 @@ export function withGatewayRoute<Value, RouteContext = void>(
     const decision = authority.authorize(requestAuthorityInput(request));
     if (!decision.allowed || decision.route !== rule) return forbidden();
 
-    const validationContext: GatewayRouteValidationContext = Object.freeze({ rule });
-    const value = await validator.validate(request, validationContext, routeContext as RouteContext);
-    return handler(Object.freeze({ rule, value }));
+    const invoke = async () => {
+      const validationContext: GatewayRouteValidationContext = Object.freeze({ rule });
+      const value = await validator.validate(request, validationContext, routeContext as RouteContext);
+      return handler(Object.freeze({ rule, value }));
+    };
+    if (authority.mode === "owner" && (rule.exposure === "owner_session" || rule.exposure === "owner_reauth")) {
+      const owner = sessionContext(request, rule.csrf === "session_bound");
+      let authenticated = false;
+      try { authenticated = Boolean(owner && await validateOwnerSession(owner)); }
+      catch { return new Response("Mentat is temporarily unavailable\n", { headers: FORBIDDEN_HEADERS, status: 503 }); }
+      if (!owner || !authenticated) return new Response("Sign in required\n", { headers: FORBIDDEN_HEADERS, status: 401 });
+      if (rule.exposure === "owner_reauth") return forbidden();
+      return runWithOwnerContext(owner, invoke);
+    }
+    return invoke();
   };
   return gatewayRoute as GatewayRouteFunction<RouteContext>;
 }

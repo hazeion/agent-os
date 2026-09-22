@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 import type {
   PublicActivityPayload,
   PublicConversation,
@@ -363,7 +364,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 async function request(path: string, init: RequestInit = {}, timeoutMilliseconds = READ_TIMEOUT_MILLISECONDS): Promise<{ response: Response; payload: unknown }> {
   try {
-    const response = await fetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeoutMilliseconds) });
+    const response = await ownerFetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeoutMilliseconds) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicConversationError("response_invalid");
     return { response, payload: await boundedJson(response) };
   } catch (error) {

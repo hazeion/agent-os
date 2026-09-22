@@ -35,6 +35,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+if __name__ == "__main__":
+    # The legacy local server has no owner OAuth capability. Never let its
+    # runtime children inherit the host's website client credential.
+    os.environ.pop("MENTAT_GOOGLE_CLIENT_SECRET", None)
 from mentat.version import DISPLAY_VERSION, __version__
 from diagnostics_bundle import build_diagnostics_bundle, redact_health_payload
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload

@@ -100,6 +100,15 @@ export function AppShell({ children, homeConsole = false, route: routeHref }: Ap
           </div>
 
           <div className="utility-actions">
+            <details className="owner-session-actions" data-owner-session hidden>
+              <summary className="icon-button">Account</summary>
+              <div className="owner-session-menu">
+                <p data-owner-session-expiry>Signed in</p>
+                <button className="icon-button" data-owner-sign-out type="button">Sign out this browser</button>
+                <button className="icon-button" data-owner-sign-out-all type="button">Sign out all browsers</button>
+                <span aria-live="polite" data-owner-session-notice />
+              </div>
+            </details>
             <BridgeStatus />
           </div>
         </header>

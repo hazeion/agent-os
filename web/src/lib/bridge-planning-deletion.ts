@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import { BridgePlanningError, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS } from "./bridge-planning.ts";
 import {
   parsePlanningDeletionMutation,
@@ -44,7 +45,7 @@ async function responseJson(response: Response): Promise<unknown> {
 async function request(path: string, body: Record<string, unknown>, fetcher: FetchLike, environment: Environment) {
   const bridge = configuration(environment);
   try {
-    const response = await fetcher(new URL(path, bridge.origin), { body: JSON.stringify(body), cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": bridge.token }, method: "POST", redirect: "error", signal: AbortSignal.timeout(PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS) });
+    const response = await fetcher(new URL(path, bridge.origin), { body: JSON.stringify(body), cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, method: "POST", redirect: "error", signal: AbortSignal.timeout(PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgePlanningError("bridge_response_invalid");
     return { response, payload: await responseJson(response) };
   } catch (error) { if (error instanceof BridgePlanningError) throw error; throw new BridgePlanningError("bridge_unavailable"); }

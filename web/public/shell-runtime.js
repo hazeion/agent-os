@@ -1,3 +1,4 @@
+import { ownerFetch, expireOwnerSession } from "./owner-session.js";
 const root = document.documentElement;
 const mobileNavigation = window.matchMedia("(max-width: 900px)");
 const compactNavigation = window.matchMedia("(min-width: 901px) and (max-width: 1199px)");
@@ -22,6 +23,7 @@ let pendingRunsSummaryNotice = "";
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
+let ownerRefreshTimer = null;
 
 function shellElements() {
   const shell = document.querySelector(".app-shell");
@@ -146,7 +148,7 @@ function applyBridgeState() {
 async function refreshBridgeStatus() {
   const request = ++bridgeRequest;
   try {
-    const response = await fetch("/api/bridge/health", {
+    const response = await ownerFetch("/api/bridge/health", {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(3500),
@@ -238,7 +240,7 @@ function appendTaskCreationEnable(card, agent) {
     action.disabled = true;
     action.textContent = "Enabling…";
     try {
-      const response = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/task-creation/enable`, {
+      const response = await ownerFetch(`/api/agents/${encodeURIComponent(agent.id)}/task-creation/enable`, {
         method: "POST",
         cache: "no-store",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
@@ -324,7 +326,7 @@ async function refreshAgents() {
   agentsAbortController = new AbortController();
   applyAgentsState("loading", "Loading canonical Agents…");
   try {
-    const response = await fetch("/api/agents", {
+    const response = await ownerFetch("/api/agents", {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal: agentsAbortController.signal,
@@ -524,7 +526,7 @@ async function refreshProviderConnections() {
   providerConnectionsAbortController = new AbortController();
   applyProviderConnectionsState("loading", "Loading provider connections…");
   try {
-    const response = await fetch("/api/provider-connections", {
+    const response = await ownerFetch("/api/provider-connections", {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal: providerConnectionsAbortController.signal,
@@ -603,7 +605,7 @@ function applyTasksState(state, detail, tasks = null) {
 function clearTaskRequest() { tasksRequest += 1; tasksAbortController?.abort(); tasksAbortController = null; }
 async function refreshTasks() {
   if (!tasksElements()) return; clearTaskRequest(); const request = tasksRequest; tasksAbortController = new AbortController(); applyTasksState("loading", "Loading current Tasks…");
-  try { const response = await fetch("/api/tasks", { cache: "no-store", headers: { Accept: "application/json" }, signal: tasksAbortController.signal }); const payload = await response.json(); if (request !== tasksRequest) return;
+  try { const response = await ownerFetch("/api/tasks", { cache: "no-store", headers: { Accept: "application/json" }, signal: tasksAbortController.signal }); const payload = await response.json(); if (request !== tasksRequest) return;
     if (response.status === 200) { const tasks = readTasksPayload(payload); if (!tasks) throw new Error("tasks_response_invalid"); applyTasksState(tasks.length ? "ready" : "empty", tasks.length ? `${tasks.length} current Task${tasks.length === 1 ? "" : "s"}.` : "No current Tasks yet.", tasks); return; }
     if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") { applyTasksState("unsupported", "This Python bridge does not support Task data yet."); return; }
     if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") { applyTasksState("unavailable", "Task data is temporarily unavailable. Check the Python connection and retry."); return; }
@@ -672,7 +674,7 @@ function applyRunsState(state, detail, runs = null, agents = []) { const element
 function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); }
 async function refreshRuns() {
   if (!runsElements()) return; clearRunRequest(); const request = runsRequest; runsAbortController = new AbortController(); applyRunsState("loading", "Loading current Runs…");
-  const load = async (path) => { const response = await fetch(path, { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); return { response, payload: await response.json() }; };
+  const load = async (path) => { const response = await ownerFetch(path, { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); return { response, payload: await response.json() }; };
   try { const [runResult, agentResult] = await Promise.allSettled([load("/api/runs"), load("/api/agents")]); if (request !== runsRequest) return; if (runResult.status !== "fulfilled") throw new Error("runs_response_invalid"); const { response, payload } = runResult.value;
     if (response.status === 200) { const runs = readRunsPayload(payload); if (!runs) throw new Error("runs_response_invalid"); let agents = []; if (agentResult.status === "fulfilled" && agentResult.value.response.status === 200) agents = readAgentsPayload(agentResult.value.payload) || []; const runtimeCount = new Set(runs.map((run) => run.runtime_type)).size; const detail = pendingRunsSummaryNotice || (runs.length ? `${runs.length} current Run${runs.length === 1 ? "" : "s"}${runtimeCount > 1 ? ` across ${runtimeCount} runtimes` : ""}.` : "No current Runs yet."); pendingRunsSummaryNotice = ""; applyRunsState(runs.length ? "ready" : "empty", detail, runs, agents); return; }
     if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") { applyRunsState("unsupported", "This Python bridge does not support Run data yet."); return; }
@@ -766,7 +768,7 @@ async function reviewRunStop(current) {
   if (current.readbackBlocked) return;
   const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.confirmationId = null; current.notice.textContent = "Reviewing the current Run state…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200) { current.notice.textContent = stopStateMessage(response); return; } if (!payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) throw new Error("stop_preview_invalid"); current.confirmationId = payload.confirmation_id; delete current.confirm.dataset.runStopReview; current.confirm.dataset.runStopConfirm = ""; current.confirm.textContent = "Confirm stop"; current.notice.textContent = "Stopping asks the selected runtime to cancel this active Run."; current.confirm.disabled = false; } catch { if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; current.notice.textContent = "Mentat could not safely review Stop."; }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200) { current.notice.textContent = stopStateMessage(response); return; } if (!payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) throw new Error("stop_preview_invalid"); current.confirmationId = payload.confirmation_id; delete current.confirm.dataset.runStopReview; current.confirm.dataset.runStopConfirm = ""; current.confirm.textContent = "Confirm stop"; current.notice.textContent = "Stopping asks the selected runtime to cancel this active Run."; current.confirm.disabled = false; } catch { if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; current.notice.textContent = "Mentat could not safely review Stop."; }
 }
 
 async function openRunStop(run, card, trigger) {
@@ -785,21 +787,21 @@ async function confirmRunStop() {
   const current = activeRunStop; if (current?.readbackBlocked || !current?.confirmationId) return;
   const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.notice.textContent = "Requesting Stop…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.disposition !== "requested") { current.notice.textContent = stopStateMessage(response); if (response.status === 409) { current.confirmationId = null; delete current.confirm.dataset.runStopConfirm; current.confirm.dataset.runStopReview = ""; current.confirm.textContent = "Review Stop again"; } current.confirm.disabled = false; return; } current.notice.textContent = "Stop requested. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunStop?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely process Stop."; current.confirm.disabled = false; } }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.disposition !== "requested") { current.notice.textContent = stopStateMessage(response); if (response.status === 409) { current.confirmationId = null; delete current.confirm.dataset.runStopConfirm; current.confirm.dataset.runStopReview = ""; current.confirm.textContent = "Review Stop again"; } current.confirm.disabled = false; return; } current.notice.textContent = "Stop requested. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunStop?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely process Stop."; current.confirm.disabled = false; } }
 }
 
 async function reviewRunMessage() {
   const current = activeRunMessage; if (!current || current.readbackBlocked) return;
   const epoch = current.readbackEpoch || 0;
   const text = current.input.value.trim(); if (!text) { current.notice.textContent = "Enter a message to review."; return; } current.input.value = text; current.review.disabled = true; current.notice.textContent = "Reviewing the current Run state…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) { current.notice.textContent = messageStateMessage(response); current.review.disabled = false; return; } current.confirmationId = payload.confirmation_id; current.input.disabled = true; current.confirm.hidden = false; current.notice.textContent = "Confirm this message for the current Run."; } catch { if (activeRunMessage?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely review this message."; current.review.disabled = false; } }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(current.run.id)}/message/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) { current.notice.textContent = messageStateMessage(response); current.review.disabled = false; return; } current.confirmationId = payload.confirmation_id; current.input.disabled = true; current.confirm.hidden = false; current.notice.textContent = "Confirm this message for the current Run."; } catch { if (activeRunMessage?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely review this message."; current.review.disabled = false; } }
 }
 
 async function confirmRunMessage() {
   const current = activeRunMessage; if (current?.readbackBlocked || !current?.confirmationId) return;
   const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.notice.textContent = "Sending message…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text: current.input.value, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { current.notice.textContent = messageStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.input.disabled = false; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Message accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunMessage?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely send this message."; current.confirm.disabled = false; } }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(current.run.id)}/message`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text: current.input.value, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { current.notice.textContent = messageStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.input.disabled = false; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Message accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunMessage?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely send this message."; current.confirm.disabled = false; } }
 }
 
 function openRunMessage(run, card, trigger) {
@@ -839,20 +841,20 @@ function selectedRunResponse(current) {
 async function reviewRunResponse() {
   const current = activeRunResponse; if (current?.readbackBlocked) return; const epoch = current?.readbackEpoch || 0; const responseValue = current && selectedRunResponse(current); if (!current || !responseValue) { if (current) current.notice.textContent = "Choose or enter a response to review."; return; }
   current.review.disabled = true; current.notice.textContent = "Reviewing the current Run state…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: responseValue }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, current.run.id, true) || payload.request.kind !== current.request.kind || JSON.stringify(payload.request) !== JSON.stringify(current.request)) { current.notice.textContent = responseStateMessage(response); current.review.disabled = false; return; } current.responseValue = responseValue; current.confirmationId = payload.confirmation_id; current.confirm.hidden = false; current.notice.textContent = "Confirm this response for the current Run."; current.confirm.focus(); } catch { if (activeRunResponse?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely review this response."; current.review.disabled = false; } }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(current.run.id)}/response/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: responseValue }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, current.run.id, true) || payload.request.kind !== current.request.kind || JSON.stringify(payload.request) !== JSON.stringify(current.request)) { current.notice.textContent = responseStateMessage(response); current.review.disabled = false; return; } current.responseValue = responseValue; current.confirmationId = payload.confirmation_id; current.confirm.hidden = false; current.notice.textContent = "Confirm this response for the current Run."; current.confirm.focus(); } catch { if (activeRunResponse?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely review this response."; current.review.disabled = false; } }
 }
 
 async function confirmRunResponse() {
   const current = activeRunResponse; if (current?.readbackBlocked || !current?.confirmationId || !current.responseValue) return;
   const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.notice.textContent = "Sending response…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: current.responseValue, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "respond" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { if (response.status === 502 && payload?.schema_version === 1 && payload?.status === "partial") { pendingRunsSummaryNotice = "Mentat could not verify the response. Check the refreshed Run before trying again."; current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = true; refreshRuns(); return; } current.notice.textContent = responseStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Response accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunResponse?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely send this response."; current.confirm.disabled = false; } }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(current.run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: current.responseValue, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "respond" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { if (response.status === 502 && payload?.schema_version === 1 && payload?.status === "partial") { pendingRunsSummaryNotice = "Mentat could not verify the response. Check the refreshed Run before trying again."; current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = true; refreshRuns(); return; } current.notice.textContent = responseStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Response accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunResponse?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely send this response."; current.confirm.disabled = false; } }
 }
 
 async function openRunResponse(run, card, trigger) {
   closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false });
   const panel = document.createElement("section"); panel.className = "run-response"; const heading = document.createElement("h4"); heading.textContent = "Respond to this Run"; const detail = document.createElement("p"); detail.className = "run-response-detail"; const form = document.createElement("div"); form.className = "run-response-form"; const notice = document.createElement("p"); notice.className = "run-stop-notice"; notice.setAttribute("aria-live", "polite"); notice.textContent = "Loading the current request…"; const actions = document.createElement("div"); actions.className = "run-stop-actions"; const cancel = document.createElement("button"); cancel.type = "button"; cancel.dataset.runResponseCancel = ""; cancel.textContent = "Cancel"; const review = document.createElement("button"); review.type = "button"; review.dataset.runResponseReview = ""; review.textContent = "Review response"; review.disabled = true; const confirm = document.createElement("button"); confirm.type = "button"; confirm.dataset.runResponseConfirm = ""; confirm.textContent = "Confirm response"; confirm.hidden = true; actions.append(cancel, review, confirm); panel.append(heading, detail, form, notice, actions); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunResponse = { trigger, panel, run, request: null, input: null, notice, review, confirm, confirmationId: null, responseValue: null };
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunResponse?.panel !== panel || activeRunResponse.readbackBlocked) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, run.id, false)) { notice.textContent = responseStateMessage(response); return; } const request = payload.request; activeRunResponse.request = request; if (request.kind === "approval") { detail.textContent = `${request.title}${request.summary ? `: ${request.summary}` : ""}`; } else { detail.textContent = request.question; }
+  try { const response = await ownerFetch(`/api/runs/${encodeURIComponent(run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunResponse?.panel !== panel || activeRunResponse.readbackBlocked) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, run.id, false)) { notice.textContent = responseStateMessage(response); return; } const request = payload.request; activeRunResponse.request = request; if (request.kind === "approval") { detail.textContent = `${request.title}${request.summary ? `: ${request.summary}` : ""}`; } else { detail.textContent = request.question; }
     if (request.kind === "approval" || request.prompt_type === "choice") { for (const choice of request.choices) { const label = document.createElement("label"); const input = document.createElement("input"); input.type = "radio"; input.name = "run-response-choice"; input.value = choice.id; input.addEventListener("change", () => { review.disabled = false; confirm.hidden = true; activeRunResponse.confirmationId = null; }); label.append(input, document.createTextNode(choice.label)); form.append(label); } } else { const label = document.createElement("label"); label.className = "run-response-text-label"; const input = document.createElement("textarea"); input.id = `run-response-${run.id}`; input.rows = 3; label.htmlFor = input.id; label.textContent = "Response"; input.addEventListener("input", () => { const characters = Array.from(input.value); if (characters.length > 2000) input.value = characters.slice(0, 2000).join(""); review.disabled = !input.value.trim(); confirm.hidden = true; activeRunResponse.confirmationId = null; }); form.append(label, input); activeRunResponse.input = input; }
     notice.textContent = "Review your response before sending it."; if (activeRunResponse.input) activeRunResponse.input.focus();
   } catch { if (activeRunResponse?.panel === panel) notice.textContent = "Mentat could not safely load this request."; }
@@ -915,7 +917,7 @@ async function refreshTimelineCard(current) {
   const timeout = window.setTimeout(() => controller.abort(), 5000);
   let retry = false;
   try {
-    const response = await fetch("/api/runs", { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: controller.signal });
+    const response = await ownerFetch("/api/runs", { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: controller.signal });
     if (response.status !== 200 || !response.body) throw new Error("runs_unavailable");
     const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8", { fatal: true }); let size = 0; let text = "";
     try { for (;;) { const next = await reader.read(); if (next.done) break; size += next.value.byteLength; if (size > 131072) { await reader.cancel(); throw new Error("runs_oversized"); } text += decoder.decode(next.value, { stream: true }); } text += decoder.decode(); } finally { reader.releaseLock(); }
@@ -985,6 +987,7 @@ function openRunTimeline(run, card, trigger) {
   const current = activeRunTimeline;
   if (!("EventSource" in window)) { notice.textContent = "Live timelines are not supported in this browser."; return; }
   const source = new EventSource(`/api/runs/${encodeURIComponent(run.id)}/events`);
+  source.addEventListener("owner-auth-required", () => { source.close(); expireOwnerSession(); });
   activeRunTimeline.source = source;
   const applyEnvelope = (message, resetText) => {
     let value; try { value = JSON.parse(message.data); } catch { value = null; }
@@ -1005,6 +1008,9 @@ function openRunTimeline(run, card, trigger) {
 
 function synchronizeShell() {
   if (!document.querySelector(".app-shell")) return;
+  if (ownerRefreshTimer === null) ownerRefreshTimer = setInterval(() => {
+    if (document.visibilityState === "visible" && root.dataset.gatewayMode === "owner") void refreshOwnerSession();
+  }, 15000);
   setSidebarAvailability(Boolean(root.dataset.navOpen));
   synchronizeSidebarToggle();
   applyBridgeState();
@@ -1012,6 +1018,7 @@ function synchronizeShell() {
   if (window.location.pathname !== observedPath) {
     hideNavigationTooltip();
     observedPath = window.location.pathname;
+    void refreshOwnerSession();
     requestAnimationFrame(() => requestAnimationFrame(refreshBridgeStatus));
     if (agentsElements()) {
       requestAnimationFrame(() => requestAnimationFrame(refreshAgents));
@@ -1027,6 +1034,48 @@ function synchronizeShell() {
     if (runsElements()) requestAnimationFrame(() => requestAnimationFrame(refreshRuns)); else clearRunRequest();
   }
 }
+
+async function refreshOwnerSession() {
+  const controls = document.querySelector("[data-owner-session]");
+  if (!(controls instanceof HTMLElement)) return;
+  try {
+    const response = await ownerFetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const owned = payload?.schema_version === 1 && payload.mode === "owner" && Number.isFinite(payload.absolute_expires_at);
+    controls.hidden = !owned;
+    if (owned) {
+      root.dataset.gatewayMode = "owner";
+      const expiry = controls.querySelector("[data-owner-session-expiry]");
+      if (expiry) expiry.textContent = `Signed in until ${new Date(payload.absolute_expires_at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    }
+  } catch { /* Existing shell status owns backend availability presentation. */ }
+}
+
+document.addEventListener("click", async (event) => {
+  const button = event.target instanceof Element ? event.target.closest("[data-owner-sign-out], [data-owner-sign-out-all]") : null;
+  if (!(button instanceof HTMLButtonElement)) return;
+  const all = button.hasAttribute("data-owner-sign-out-all");
+  if (all && !window.confirm("Sign out every browser connected to this Mentat?")) return;
+  button.disabled = true;
+  try {
+    const response = await ownerFetch(all ? "/api/auth/sign-out-all" : "/api/auth/sign-out", { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (response.ok) {
+      document.body.replaceChildren();
+      window.location.replace("/sign-in?status=signed-out");
+      return;
+    }
+    const notice = button.closest("[data-owner-session]")?.querySelector("[data-owner-session-notice]");
+    if (notice) notice.textContent = "Sign-out could not be verified. Please try again.";
+  } catch {
+    const notice = button.closest("[data-owner-session]")?.querySelector("[data-owner-session-notice]");
+    if (notice) notice.textContent = "Sign-out could not be verified. Please try again.";
+  } finally { button.disabled = false; }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && root.dataset.gatewayMode === "owner") void refreshOwnerSession();
+});
 
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;

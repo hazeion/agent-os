@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 export type PlanningDeletionTargetKind = "task" | "project";
 
 export type PublicPlanningDeletionCounts = Readonly<{
@@ -94,7 +95,7 @@ function failure(response: Response, payload: unknown): never {
 
 async function request(path: string, body: Record<string, unknown>): Promise<{ response: Response; payload: unknown }> {
   try {
-    const response = await fetch(path, { body: JSON.stringify(body), cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json" }, method: "POST", redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MILLISECONDS) });
+    const response = await ownerFetch(path, { body: JSON.stringify(body), cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json" }, method: "POST", redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MILLISECONDS) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicPlanningDeletionError("response_invalid");
     return { response, payload: await json(response) };
   } catch (error) { if (error instanceof PublicPlanningDeletionError) throw error; throw new PublicPlanningDeletionError("unavailable"); }

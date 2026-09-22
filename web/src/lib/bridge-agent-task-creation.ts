@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 const PRIVATE_ROOT = "/bridge/v1/agents";
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const CAPABILITY = /^[a-z][a-z0-9_.-]{0,63}$/u;
@@ -36,7 +37,7 @@ function agent(value: unknown, agentId: string): TaskCreationAgent {
 }
 async function request(agentId: string, init: RequestInit, fetcher: FetchLike, environment: Environment) {
   if (!AGENT_ID.test(agentId)) throw new BridgeAgentTaskCreationError("invalid"); const bridge = configuration(environment); let response: Response;
-  try { response = await fetcher(new URL(`${PRIVATE_ROOT}/${encodeURIComponent(agentId)}/task-creation/enable`, bridge.origin), { ...init, cache: "no-store", redirect: "error", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(5_000) }); } catch { throw new BridgeAgentTaskCreationError("unavailable"); }
+  try { response = await fetcher(new URL(`${PRIVATE_ROOT}/${encodeURIComponent(agentId)}/task-creation/enable`, bridge.origin), { ...init, cache: "no-store", redirect: "error", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(5_000) }); } catch { throw new BridgeAgentTaskCreationError("unavailable"); }
   const value = await read(response); if (!response.ok) failure(response, value); return value;
 }
 export async function enableBridgeAgentTaskCreation(agentId: string, expectedCapabilities: string[], fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<TaskCreationAgent> {
