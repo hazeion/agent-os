@@ -35,3 +35,11 @@ pass. Windows path-normalized tracked-secret diagnostic found no new candidates;
 ordinary Linux CI remains required. No HTTP cookie-delivery, active
 network-stream closure or live Google acceptance claim. Status: review clean
 and local verification complete; ready for PR publication.
+
+September 22 CI follow-up: the Windows Python 3.13 webhook barrier tests timed
+out during cold schema initialization before their cleanup block, leaving a
+delivery worker alive at temporary-directory teardown. The tests now initialize
+the real schema before measuring the barrier, use bounded synchronization
+windows and release/join the worker even when the initial wait fails. All 19
+webhook tests pass; two independent reviews are clean. Production webhook
+timeouts and behavior are unchanged.
