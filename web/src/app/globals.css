@@ -1,5 +1,24 @@
 @import "tailwindcss";
 
+.sign-in-page { min-height: 100svh; display: grid; place-items: center; padding: 32px 20px; background: radial-gradient(ellipse at top, var(--accent-soft), transparent 65%); }
+.sign-in-card { width: min(100%, 460px); padding: clamp(28px, 6vw, 48px); border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--panel); }
+.sign-in-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 40px; font-size: 20px; font-weight: 650; }
+.sign-in-brand .brand-mark { background: center / contain no-repeat url("/mentat-mark-emerald.png"); }
+.sign-in-eyebrow { color: var(--accent); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+.sign-in-card h1 { margin: 10px 0 14px; font-size: clamp(28px, 5vw, 34px); line-height: 1.15; letter-spacing: -.035em; }
+.sign-in-description { color: var(--text-secondary); margin-bottom: 28px; }
+.sign-in-button { display: flex; align-items: center; justify-content: center; gap: 16px; width: 100%; min-height: 48px; padding: 12px 18px; border: 1px solid var(--accent); border-radius: var(--radius-control); background: var(--accent); color: var(--canvas); font-weight: 650; text-decoration: none; cursor: pointer; }
+.sign-in-button:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 4px; }
+.sign-in-button:disabled { opacity: .7; cursor: wait; }
+.sign-in-progress { min-height: 42px; margin: 14px 0 0; color: var(--text-secondary); font-size: 13px; }
+.sign-in-footnote { padding-top: 24px; margin: 24px 0 0; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-size: 12px; }
+.sign-in-notice { padding: 12px; margin: 0 0 22px; border-left: 2px solid var(--warning); background: var(--accent-soft); color: var(--text-primary); font-size: 14px; }
+.owner-session-actions { position: relative; }
+.owner-session-actions[hidden] { display: none; }
+.owner-session-actions .icon-button { width: auto; padding: 6px 10px; white-space: nowrap; }
+.owner-session-menu { position: absolute; z-index: 80; right: 0; top: calc(100% + 8px); display: grid; gap: 8px; width: 230px; padding: 14px; border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--panel-raised); }
+.owner-session-menu p, .owner-session-menu span { margin: 0; font-size: 12px; color: var(--text-secondary); }
+
 :root {
   color-scheme: dark;
   --canvas: #070d11;

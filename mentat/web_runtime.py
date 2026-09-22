@@ -445,12 +445,18 @@ def establish_run_authority(data_dir: Path) -> None:
 
 
 def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path | None = None,
-                runtime_environment: dict[str, str] | None = None, open_browser: bool = False) -> int:
+                runtime_environment: dict[str, str] | None = None, open_browser: bool = False,
+                owner_origin: str | None = None) -> int:
     """Run one Node gateway with its authenticated, loopback-only bridge."""
 
     safe_host = str(host or "").strip().lower()
     if safe_host not in {"127.0.0.1", "::1"}:
         raise WebRuntimeError("gateway_host_must_be_loopback")
+    if owner_origin is not None:
+        from owner_auth import OwnerAuthAuthority
+        from owner_gateway import owner_origin as configured_origin
+        if sys.platform != 'linux' or safe_host != '127.0.0.1' or port != 8888 or configured_origin(OwnerAuthAuthority(data_dir)) != owner_origin:
+            raise WebRuntimeError('owner_gateway_configuration_invalid')
     node_path = find_node_24()
     if node_path is None:
         raise WebRuntimeError("node_unavailable")
@@ -498,19 +504,28 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         establish_task_authority(data_dir)
         establish_project_authority(data_dir)
         establish_run_authority(data_dir)
+        bridge_environment = child_environment(token=token, runtime_environment=runtime_environment)
+        if owner_origin is not None:
+            bridge_environment['MENTAT_OWNER_ORIGIN'] = owner_origin
+        else:
+            bridge_environment.pop('MENTAT_OWNER_ORIGIN', None)
         bridge_process = subprocess.Popen(
             bridge_command(bridge_port, safe_host), cwd=application_root(),
-            env=child_environment(token=token, runtime_environment=runtime_environment),
+            env=bridge_environment,
         )
         wait_for_health(port=bridge_port, path="/bridge/v1/health", process=bridge_process,
                         host=safe_host, token=token,
                         timeout_error="private_bridge_readiness_timeout")
-        node_startup_log_path, node_startup_log = open_gateway_startup_log(data_dir)
+        if owner_origin is None:
+            node_startup_log_path, node_startup_log = open_gateway_startup_log(data_dir)
+        gateway_environment = node_environment(token=token, bridge_port=bridge_port, gateway_port=port, gateway_host=safe_host)
+        if owner_origin is not None:
+            gateway_environment.update(MENTAT_GATEWAY_MODE='owner', MENTAT_OWNER_ORIGIN=owner_origin,
+                MENTAT_GATEWAY_INSTANCE=os.environ.get('MENTAT_GATEWAY_INSTANCE', ''))
         node_process = subprocess.Popen(
             node_command(node_path, standalone), cwd=standalone,
-            env=node_environment(token=token, bridge_port=bridge_port, gateway_port=port,
-                                 gateway_host=safe_host),
-            **node_output_options(node_startup_log),
+            env=gateway_environment,
+            **(node_output_options(node_startup_log) if owner_origin is None else {'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}),
         )
         if node_process.stdout is not None:
             node_startup_capture = start_startup_output_capture(node_process, node_startup_log)
@@ -518,19 +533,16 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             port=port, path="/api/gateway/health", process=node_process, host=safe_host,
             timeout_error="node_gateway_readiness_timeout",
         )
-        wait_for_health(
-            port=port,
-            path="/api/bridge/health",
-            process=node_process,
-            host=safe_host,
-            unavailable_error="gateway_bridge_unavailable",
-            timeout_error="node_bridge_readiness_timeout",
-            required_process=bridge_process,
-        )
+        if owner_origin is None:
+            wait_for_health(
+                port=port, path="/api/bridge/health", process=node_process, host=safe_host,
+                unavailable_error="gateway_bridge_unavailable", timeout_error="node_bridge_readiness_timeout",
+                required_process=bridge_process,
+            )
         write_runtime_state(data_dir=data_dir, node_process=node_process, host=safe_host, port=port,
                             standalone_root=standalone)
         display_host = f"[{safe_host}]" if ":" in safe_host else safe_host
-        url = f"http://{display_host}:{port}"
+        url = owner_origin or f"http://{display_host}:{port}"
         print(f"Mentat ready at {url}", flush=True)
         if open_browser:
             webbrowser.open(url)

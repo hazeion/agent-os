@@ -1,4 +1,5 @@
 "use client";
+import { expireOwnerSession } from "../../public/owner-session.js";
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -1247,6 +1248,7 @@ export function HomeConsole() {
     let source: EventSource;
     try {
       source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
+      source.addEventListener("owner-auth-required", () => { source.close(); expireOwnerSession(); });
     } catch {
       return;
     }

@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import { BridgePlanningError } from "./bridge-planning.ts";
 import { parsePlanningSearch, PublicPlanningSearchError, type PublicPlanningSearch } from "./public-planning-search.ts";
 
@@ -40,7 +41,7 @@ export async function fetchBridgePlanningSearch(query: string, fetcher: FetchLik
   if (!validQuery(query)) throw new BridgePlanningError("planning_request_invalid");
   const bridge = configuration(environment);
   try {
-    const response = await fetcher(new URL(`${PATH}?${new URLSearchParams({ q: query }).toString()}`, bridge.origin), { cache: "no-store", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token }, method: "GET", redirect: "error", signal: boundedSignal(signal) });
+    const response = await fetcher(new URL(`${PATH}?${new URLSearchParams({ q: query }).toString()}`, bridge.origin), { cache: "no-store", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, method: "GET", redirect: "error", signal: boundedSignal(signal) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgePlanningError("bridge_response_invalid");
     const payload = await responseJson(response);
     if (response.status === 200) {

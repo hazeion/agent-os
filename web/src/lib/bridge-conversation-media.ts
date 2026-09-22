@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 const PRIVATE_ROOT = "/bridge/v1";
 const MAXIMUM_JSON_BYTES = 1_500_000;
 export const MAXIMUM_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -306,7 +307,7 @@ async function jsonRequest(path: string, init: RequestInit, fetcher: FetchLike, 
       ...init,
       cache: "no-store",
       redirect: "error",
-      headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token, ...init.headers },
+      headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token, ...init.headers },
       signal: combinedSignal(timeoutMilliseconds, init.signal ?? undefined),
     });
   } catch {
@@ -387,7 +388,7 @@ export async function readBridgeConversationAttachmentContent(conversationId: st
       method: "GET",
       cache: "no-store",
       redirect: "error",
-      headers: { Accept: "image/png, image/jpeg, image/gif, image/webp, text/plain", "X-Mentat-Bridge-Token": bridge.token },
+      headers: { Accept: "image/png, image/jpeg, image/gif, image/webp, text/plain", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token },
       signal: AbortSignal.timeout(5_000),
     });
   } catch { throw new BridgeConversationMediaError("bridge_unavailable"); }
