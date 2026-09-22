@@ -79,3 +79,20 @@ Both independent whole-slice reviews are clean after the recorded fixes. The
 ignored operator guide was explicitly staged so published documentation links
 resolve. Status: local verification and review complete; ready for PR push,
 with CI/merge and later real-provider/website acceptance still open.
+
+## CI reconciliation after publication
+
+PR 258 exposed stale exact package assertions in nine matrix jobs after the
+intentional addition of `deploy`, `deploy.caddy` and the setup gateway asset.
+The expected sets now match those public payloads; private/test exclusions stay
+intact. A Windows Conversation route test also performed cold schema migration
+inside its HTTP deadline and removed its directory while a request could still
+own SQLite. It now initializes schema first and keeps the patched data root and
+directory alive until non-daemon request workers finish in teardown. No
+production behavior or timeout changed.
+
+All 66 affected quality/bridge tests pass locally. Independent authority and
+gateway reviewers both report no concerns with these corrections. The separate
+Node-foundation Agents-unavailable CI failure lacks enough diagnostic evidence
+to identify whether it was a bridge deadline or registry unavailability; it is
+not claimed resolved by these test fixes.
