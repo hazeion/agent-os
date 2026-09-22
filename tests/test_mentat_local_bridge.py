@@ -1062,56 +1062,65 @@ class LocalBridgeTests(unittest.TestCase):
     def test_conversation_routes_create_read_and_list_without_creating_a_run(
         self, _find_codex_command, _codex_binding_is_valid
     ):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with patch.object(server, "DATA_DIR", root):
-                status, payload, _headers = self.request(
-                    path=local_bridge.BRIDGE_CONVERSATIONS_PATH,
-                )
-                self.assertEqual(status, 200)
-                self.assertEqual(payload["status"], "ready")
-                self.assertEqual(payload["conversations"], [])
-                self.assertEqual(payload["direct_agent_id"], "agent_direct")
+        # tearDown drains request workers before addCleanup removes their DB.
+        self.server.daemon_threads = False
+        temporary_root = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_root.cleanup)
+        temporary = temporary_root.name
+        root = Path(temporary)
+        # Schema migration is not part of this HTTP route deadline.
+        with closing(connect_mentat_database(root)):
+            pass
+        data_root_patch = patch.object(server, "DATA_DIR", root)
+        data_root_patch.start()
+        self.addCleanup(data_root_patch.stop)
+        status, payload, _headers = self.request(
+            path=local_bridge.BRIDGE_CONVERSATIONS_PATH,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["conversations"], [])
+        self.assertEqual(payload["direct_agent_id"], "agent_direct")
 
-                status, created, _headers = self.request(
-                    method="POST",
-                    path=local_bridge.BRIDGE_CONVERSATIONS_PATH,
-                    headers={"Content-Type": "application/json"},
-                    body=b"{}",
-                )
-                self.assertEqual(status, 201)
-                self.assertEqual(created["messages"], [])
-                self.assertIsNone(created["current_run"])
-                self.assertEqual(created["queued_turns"], [])
-                conversation_id = created["conversation"]["id"]
-                self.assertNotIn("runtime_agent_ref", json.dumps(created))
-                self.assertNotIn("runtime_config_id", json.dumps(created))
+        status, created, _headers = self.request(
+            method="POST",
+            path=local_bridge.BRIDGE_CONVERSATIONS_PATH,
+            headers={"Content-Type": "application/json"},
+            body=b"{}",
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(created["messages"], [])
+        self.assertIsNone(created["current_run"])
+        self.assertEqual(created["queued_turns"], [])
+        conversation_id = created["conversation"]["id"]
+        self.assertNotIn("runtime_agent_ref", json.dumps(created))
+        self.assertNotIn("runtime_config_id", json.dumps(created))
 
-                status, detail, _headers = self.request(
-                    path=f"{local_bridge.BRIDGE_CONVERSATIONS_PATH}/{conversation_id}?before=1",
-                )
-                self.assertEqual(status, 200)
-                self.assertEqual(detail["conversation"]["id"], conversation_id)
-                self.assertEqual(detail["agent"]["id"], "agent_direct")
+        status, detail, _headers = self.request(
+            path=f"{local_bridge.BRIDGE_CONVERSATIONS_PATH}/{conversation_id}?before=1",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(detail["conversation"]["id"], conversation_id)
+        self.assertEqual(detail["agent"]["id"], "agent_direct")
 
-                status, activity, _headers = self.request(
-                    path=local_bridge.BRIDGE_AGENT_ACTIVITY_PATH,
-                )
-                self.assertEqual(status, 200)
-                self.assertEqual(activity["status"], "ready")
-                self.assertEqual(activity["direct_agent_id"], "agent_direct")
+        status, activity, _headers = self.request(
+            path=local_bridge.BRIDGE_AGENT_ACTIVITY_PATH,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(activity["status"], "ready")
+        self.assertEqual(activity["direct_agent_id"], "agent_direct")
 
-                status, listed, _headers = self.request(
-                    path=f"{local_bridge.BRIDGE_CONVERSATIONS_PATH}/{conversation_id}?after=1",
-                )
-                self.assertEqual(status, 404)
-                self.assertEqual(listed, {"error": "bridge_route_not_found"})
+        status, listed, _headers = self.request(
+            path=f"{local_bridge.BRIDGE_CONVERSATIONS_PATH}/{conversation_id}?after=1",
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(listed, {"error": "bridge_route_not_found"})
 
-                with closing(sqlite3.connect(mentat_database_path(root))) as connection:
-                    self.assertEqual(
-                        connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
-                        0,
-                    )
+        with closing(sqlite3.connect(mentat_database_path(root))) as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
+                0,
+            )
 
     def test_conversation_list_preserves_valid_cursor(self):
         canonical = {
