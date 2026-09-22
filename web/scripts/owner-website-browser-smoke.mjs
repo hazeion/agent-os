@@ -52,6 +52,21 @@ async function signIn(page, expected) {
     page.click('button[type=submit]'),
   ]);
 }
+async function tasksStatusWithCookies(cookies) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({hostname: '127.0.0.1', port, path: '/api/tasks', headers: {
+      host: 'mentat.example', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'mentat.example',
+      'sec-fetch-site': 'same-origin', cookie: cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; '),
+    }}, response => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode));
+      response.on('error', reject);
+    });
+    request.setTimeout(5000, () => request.destroy(new Error('fixture request timed out')));
+    request.on('error', reject);
+    request.end();
+  });
+}
 try {
   const first = await device();
   await first.page.setViewport({width: 1280, height: 900});
@@ -96,12 +111,17 @@ try {
   assert.equal(await first.page.evaluate(async () => (await fetch('/api/tasks')).status), 401);
   assert.equal(await second.page.evaluate(async () => (await fetch('/api/tasks')).status), 200);
   await signIn(first.page, 'owner');
+  const firstCookiesBeforeRevocation = await first.context.cookies();
+  assert.equal(await tasksStatusWithCookies(firstCookiesBeforeRevocation), 200);
   await second.page.waitForSelector('[data-owner-session]:not([hidden])');
   second.page.on('dialog', dialog => dialog.accept());
   await second.page.click('[data-owner-session] summary');
   await Promise.all([second.page.waitForFunction(() => location.pathname === '/sign-in'), second.page.click('[data-owner-sign-out-all]')]);
-  assert.equal(await first.page.evaluate(async () => (await fetch('/api/tasks')).status), 401);
-  await first.page.reload();
+  // Observe the old credential outside a document that may already be navigating
+  // in response to revocation, then verify the actual browser withdraws the UI.
+  assert.equal(await tasksStatusWithCookies(firstCookiesBeforeRevocation), 401);
+  await first.page.bringToFront();
+  await first.page.waitForFunction(() => location.pathname === '/sign-in');
   assert.equal(new URL(first.page.url()).pathname, '/sign-in');
   process.stdout.write('Owner website browser checks passed\n');
 } finally { await browser.close(); }
