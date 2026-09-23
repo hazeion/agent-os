@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { deliverableRequest, type DeliverableContent, type DeliverableProject, type DeliverableSlot, type DeliverableVersion, type LayoutContent, type ProductsContent, type StepsContent } from "@/lib/project-deliverable-contract";
 import { deliverablePreviewUrl, projectDeliverables, PublicDeliverableError } from "@/lib/public-project-deliverables";
+import { ProjectDeliverableReview } from "./project-deliverable-review";
 
 export type DeliverableDraft = { projectRevision: number; slotRevision: number; sourceVersionId: string | null; content: DeliverableContent };
 type DraftChange = (slot: DeliverableSlot, update: (current: DeliverableDraft | null) => DeliverableDraft | null) => void;
@@ -36,14 +37,14 @@ function downloadDocument(slot: "products" | "steps", content: ProductsContent |
 function resultView(slot: DeliverableSlot, content: DeliverableContent, versionId: string, previewId: string | null) {
   if (slot === "layout") {
     const layout = content as LayoutContent;
-    return <><p>{layout.width_mm / 1000} m wide × {layout.depth_mm / 1000} m deep</p>{previewId ? <><img alt="Saved dimensioned garage layout" className="project-deliverable-preview" height={900} src={deliverablePreviewUrl(versionId)} width={1200} /><a download="garage-layout.png" href={deliverablePreviewUrl(versionId)}>Download layout image</a></> : null}<p>{layout.notes}</p></>;
+    return <><p>{layout.width_mm / 1000} m wide × {layout.depth_mm / 1000} m deep</p>{previewId ? <><img alt="Saved dimensioned garage layout" className="project-deliverable-preview" height={900} src={deliverablePreviewUrl(versionId)} width={1200} /><a download="garage-layout.png" href={deliverablePreviewUrl(versionId)}>Download layout image</a></> : null}<p>{layout.notes}</p><p>Placed objects</p><ul>{layout.placements.map((item) => <li key={item.id}>{item.label} ({item.kind}): {item.x_mm} mm from left, {item.y_mm} mm from top; {item.width_mm} × {item.depth_mm} mm</li>)}</ul>{!layout.placements.length ? <p>No objects placed.</p> : null}<p>Doors and windows</p><ul>{layout.openings.map((item, index) => <li key={index}>{item.kind.replaceAll("_", " ")} on {item.edge} wall: {item.offset_mm} mm from corner; {item.width_mm} mm wide</li>)}</ul>{!layout.openings.length ? <p>No openings recorded.</p> : null}</>;
   }
   if (slot === "products") {
     const products = content as ProductsContent;
     return <><ol>{products.items.map((item) => <li key={item.id}>{item.name} × {item.quantity} · <a href={item.url} rel="noopener noreferrer" target="_blank">Source</a>{item.notes ? ` · ${item.notes}` : ""}</li>)}</ol><p>{products.notes}</p><button onClick={() => downloadDocument("products", products)} type="button">Download product document</button></>;
   }
   const steps = content as StepsContent;
-  return <><ol>{steps.steps.map((item) => <li key={item.id}><strong>{item.title}</strong>{item.details ? ` · ${item.details}` : ""}</li>)}</ol><p>{steps.notes}</p><button onClick={() => downloadDocument("steps", steps)} type="button">Download implementation document</button></>;
+  return <><ol>{steps.steps.map((item) => <li key={item.id}><strong>{item.title}</strong>{item.details ? ` · ${item.details}` : ""}{item.after.length ? ` · After: ${item.after.join(", ")}` : ""}</li>)}</ol><p>{steps.notes}</p><button onClick={() => downloadDocument("steps", steps)} type="button">Download implementation document</button></>;
 }
 function LayoutForm({ value, change, disabled }: { value: LayoutContent; change: (value: LayoutContent) => void; disabled: boolean }) {
   return <div className="project-deliverable-form">
@@ -83,7 +84,7 @@ function StepsForm({ value, change, disabled }: { value: StepsContent; change: (
 export function ProjectDeliverableEditor({ projectId, drafts, onDraftChange }: { projectId: string; drafts?: Partial<Record<DeliverableSlot, DeliverableDraft | null>>; onDraftChange: DraftChange }) {
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [needsReconciliation, setNeedsReconciliation] = useState(false);
-  const [view, setView] = useState<DeliverableProject | null>(null), [slot, setSlot] = useState<DeliverableSlot>("layout"), [selected, setSelected] = useState<DeliverableVersion | null>(null);
+  const [view, setView] = useState<DeliverableProject | null>(null), [viewGeneration, setViewGeneration] = useState(0), [slot, setSlot] = useState<DeliverableSlot>("layout"), [selected, setSelected] = useState<DeliverableVersion | null>(null);
   const mounted = useRef(true), locked = useRef(false);
   const published = useRef<{ slot: DeliverableSlot; versionId: string; draft: DeliverableDraft } | null>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -102,7 +103,7 @@ export function ProjectDeliverableEditor({ projectId, drafts, onDraftChange }: {
   async function refresh(): Promise<"current" | "history" | false> {
     const data = await projectDeliverables("project", { project_id: projectId });
     if (!mounted.current) return false;
-    setView(data); setSelected(null);
+    setView(data); setViewGeneration((currentGeneration) => currentGeneration + 1); setSelected(null);
     const pending = published.current;
     if (pending) {
       const slotView = data.slots.find((item) => item.slot === pending.slot);
@@ -156,6 +157,7 @@ export function ProjectDeliverableEditor({ projectId, drafts, onDraftChange }: {
         {draft ? <><p>Editing version {draft.slotRevision + 1}. Saving creates history; it does not start an Agent.</p>{slot === "layout" ? <LayoutForm change={(value) => changeContent(value)} disabled={busy || stale} value={draft.content as LayoutContent} /> : slot === "products" ? <ProductsForm change={(value) => changeContent(value)} disabled={busy || stale} value={draft.content as ProductsContent} /> : <StepsForm change={(value) => changeContent(value)} disabled={busy || stale} value={draft.content as StepsContent} />}<div className="project-context-actions"><button disabled={busy || !canSave} onClick={() => void perform(save)} type="button">Save result version</button><button disabled={busy} onClick={() => onDraftChange(slot, () => null)} type="button">Discard draft</button></div></> : null}
         {current ? <><p>Saved versions</p><ul>{current.versions.map((item) => <li key={item.id}><button disabled={busy} onClick={() => void perform(() => inspect(item.id))} type="button">View version {item.revision}</button>{item.revision === current.head_revision ? " · latest" : ""}</li>)}</ul></> : <p>No saved {LABELS[slot].toLowerCase()} yet.</p>}
         {shown?.content ? <section aria-label="Saved Project result"><h5>Version {shown.revision}</h5>{resultView(slot, shown.content, shown.id, shown.preview_attachment_id)}</section> : null}
+        {view.project.status === "active" ? <ProjectDeliverableReview hasDrafts={Object.values(drafts ?? {}).some(Boolean)} key={`${viewGeneration}:${view.project.revision}:${view.slots.map((item) => item.versions[0]?.id ?? "").join(":")}`} projectId={projectId} projectView={view} renderResult={resultView} /> : null}
       </> : !busy ? <p>Project results are unavailable. Refresh to try again.</p> : null}
     </div> : null}
   </section>;
