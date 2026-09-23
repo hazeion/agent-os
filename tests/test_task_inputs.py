@@ -323,3 +323,34 @@ class TaskInputStorageTests(unittest.TestCase):
         with closing(mentat_db.connect(self.root)) as connection:
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_scopes').fetchone()[0], 0)
             project_context.validate_project_context_connection(connection)
+
+    def test_prepared_inputs_block_ordinary_run_once_before_adapter_dispatch(self):
+        from types import SimpleNamespace
+        import server
+        from orchestration_service import OrchestrationService, OrchestrationServiceError
+        mutate_authoritative_tasks(self.root, lambda rows: ([{**rows[0], 'source':'dashboard', 'planning_state':'planned', 'workflow_stage':'planned'}], None))
+        revised = {**self.payload, 'expected_task_revision': 2,
+                   'expected_task_token': read_task_input_editor(self.root, 'task_research')['expected_task_token']}
+        with patch.object(server, 'DATA_DIR', self.root):
+            before, status = server.mentat_planning_task_run_once_preview('task_research', {'expected_revision': 2})
+            self.assertEqual(status, 200)
+            saved = publish_task_inputs(self.root, revised)
+            public = server.mentat_planning_task_execution_payload('task_research')
+            self.assertFalse(public['execution']['available'])
+            self.assertEqual(public['execution']['reason'], 'project_inputs_unavailable')
+            rejected, status = server.mentat_planning_task_run_once_preview('task_research', {'expected_revision': 2})
+            self.assertEqual(status, 409)
+            rejected, status = server.mentat_planning_task_run_once('task_research', {'expected_revision': 2,
+                'idempotency_key': 'owner-prepared-input-test-key', 'confirmation_id': before['confirmation_id']})
+            self.assertEqual(status, 409)
+        adapter_calls = []
+        registry = SimpleNamespace(runtime_types=('codex',), require=lambda _runtime: adapter_calls.append('require'))
+        service = OrchestrationService(self.root, runtime_registry=registry,
+            agent_registry=AgentRegistry(self.root, supported_runtime_types=('codex',)))
+        with self.assertRaisesRegex(OrchestrationServiceError, 'project_inputs_unavailable'):
+            service.dispatch_task(task_id='task_research', expected_revision=2,
+                idempotency_key='prepared-input-generic-dispatch-test-key')
+        self.assertEqual(adapter_calls, [])
+        with closing(mentat_db.connect(self.root)) as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_runs').fetchone()[0], 0)
+            self.assertEqual(connection.execute('SELECT id FROM mentat_task_input_versions').fetchone()[0], saved['input_id'])

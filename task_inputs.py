@@ -93,6 +93,15 @@ def normalize_input_selection(payload: object) -> TaskInputSelection:
     return TaskInputSelection(**{**payload, 'attachment_ids': tuple(identifiers)})
 
 
+def task_has_saved_inputs(connection, task_id: str) -> bool:
+    """Read one live Task incarnation, never a reused display ID or retired scope."""
+    return connection.execute(
+        'SELECT 1 FROM mentat_task_input_scopes s JOIN mentat_tasks t '
+        'ON t.id=s.task_id AND t.input_incarnation=s.task_incarnation '
+        'WHERE t.id=? AND s.retired_at IS NULL LIMIT 1', (task_id,),
+    ).fetchone() is not None
+
+
 def validate_selected_files(selection: TaskInputSelection | _RetainedSelection, metadata: object, *,
                             adapter_file_limit: int = MAX_INPUT_FILES,
                             adapter_image_limit: int = MAX_INPUT_IMAGES,

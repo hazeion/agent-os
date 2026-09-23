@@ -15,7 +15,7 @@ function message(error: unknown): string {
   return "Mentat could not verify the save. Your draft is preserved. Refresh before deciding what to do next.";
 }
 
-export function ProjectTaskInputEditor({ taskId, draft: sharedDraft, onDraftChange }: { taskId: string; draft?: TaskInputDraft | null; onDraftChange?: DraftChange }) {
+export function ProjectTaskInputEditor({ taskId, draft: sharedDraft, onDraftChange, onSaved }: { taskId: string; draft?: TaskInputDraft | null; onDraftChange?: DraftChange; onSaved?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [data, setData] = useState<EditorData | null>(null);
   const [localDraft, setLocalDraft] = useState<TaskInputDraft | null>(null);
@@ -61,6 +61,7 @@ export function ProjectTaskInputEditor({ taskId, draft: sharedDraft, onDraftChan
     const result = await publishTaskInputs({ task_id: taskId, project_id: data.task.project_id, agent_id: data.task.assigned_agent_id,
       expected_task_revision: data.task.revision, expected_input_revision: data.input_revision, expected_task_token: data.expected_task_token,
       context_id: eligible.context.id, expected_grant_revision: eligible.grant_revision, instructions, attachment_ids: selected });
+    onSaved?.(taskId);
     changeDraft((current) => current && (current.taskToken !== data.expected_task_token || current.inputRevision !== data.input_revision || current.instructions !== instructions || current.contextId !== eligible.context.id || current.selected.join() !== selected.join()) ? current : null);
     await refresh();
     if (mounted.current) setNotice(`Saved Task input version ${result.revision}. No Agent work was started.`);

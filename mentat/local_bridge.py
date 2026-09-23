@@ -2091,7 +2091,7 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
     if (
         source.get("schema_version") != 1
         or type(execution.get("available")) is not bool
-        or execution.get("reason") is not None and execution.get("reason") != "unavailable"
+        or execution.get("reason") not in (None, "unavailable", "project_inputs_unavailable")
         or not isinstance(attempts, list)
         or len(attempts) > 8
         or execution.get("attempt_count") != len(attempts)

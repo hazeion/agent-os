@@ -121,6 +121,56 @@ test("the inspector identifies the Task, summarizes saved planning, and submits 
   assert.equal(fixture.rows[0].title, "Revised Alpha");
 });
 
+test("prepared Task inputs hide text-only Run once with a clear reason", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  fixture.override = (url) => {
+    if (!url.pathname.endsWith("/planning-task-execution")) return null;
+    const baseline = fixture.execution();
+    const execution = baseline.execution as Record<string, unknown>;
+    return Response.json({ ...baseline, execution: { ...execution, available: false, reason: "project_inputs_unavailable" } });
+  };
+  render(<ProjectsTasksWorkspace />);
+  const user = userEvent.setup({ document: dom.window.document });
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await screen.findByText(/Run once cannot use this Task's saved inputs yet/u);
+  assert.equal(screen.queryByRole("button", { name: "Run once" }), null);
+});
+
+test("saving the first Task input removes Run once before the fresh execution read", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  let saved = false;
+  const pendingExecution = deferred<Response>();
+  const contextId = `project_context_${"a".repeat(32)}`;
+  fixture.override = (url, init) => {
+    if (url.pathname.endsWith("/planning-task-execution")) {
+      if (saved) return pendingExecution.promise;
+      return Response.json(fixture.execution());
+    }
+    if (url.pathname === `/api/planning/tasks/${task.id}/inputs`) {
+      if (init?.method === "POST") {
+        saved = true;
+        return Response.json({ input_id: `task_input_${"b".repeat(32)}`, revision: 1 });
+      }
+      return Response.json({ task: { id: task.id, title: task.title, revision: 1, project_id: project.id, project_status: "active", assigned_agent_id: "agent_alpha" },
+        input_revision: saved ? 1 : 0, expected_task_token: "f".repeat(64), version: null, versions: [],
+        eligible_contexts: [{ context: { id: contextId, revision: 1, brief: "Garage dimensions", created_at: 1790035200, project_id: project.id, retired: false, current: true, files: [], prune_blocked: "current_version" }, grant_revision: 1 }] });
+    }
+    return null;
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await screen.findByRole("button", { name: "Run once" });
+  await user.click(screen.getByRole("button", { name: "Prepare inputs" }));
+  await screen.findByLabelText("Task-specific instructions");
+  await user.click(screen.getByRole("button", { name: "Save input version" }));
+  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Run once" }), null));
+  assert.ok(screen.getByText("Loading execution status…"));
+  pendingExecution.resolve(Response.json({ ...fixture.execution(), execution: { ...fixture.execution().execution as object, available: false, reason: "project_inputs_unavailable" } }));
+  await screen.findByText(/Run once cannot use this Task's saved inputs yet/u);
+});
+
 test("mobile Task selection and compact jumps reach the inspector, Tasks, and Projects without changing drafts", async () => {
   const originalWidth = window.innerWidth;
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });

@@ -330,3 +330,16 @@ exact artifact verification. An isolated installed-wheel smoke covers input
 publication, owner read, backup/restore and retired-history removal. A Windows
 path-normalized secret diagnostic and Linux raw CI scan remain separate gates.
 No live provider or user account was used.
+
+## Follow-up: prevent text-only execution of prepared inputs
+
+Once a live Task has a saved input version, ordinary Run once, direct
+orchestration dispatch and legacy Hermes Kanban create/retry/revision actions
+fail closed. Existing delegated work can still be inspected and controlled.
+The Task inspector invalidates any old Run-once preview immediately after a
+confirmed input save, then fetches fresh availability even though the Task
+revision did not change. This guard does not constitute approved Project
+execution; Run-input receipts and runtime qualification remain in issue 262.
+Both follow-up reviews are clean. Focused Python and rendered browser tests
+cover the guard, including inputs appearing during Hermes readback and before
+revision creation.
