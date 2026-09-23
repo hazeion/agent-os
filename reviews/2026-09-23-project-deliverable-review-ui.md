@@ -1,6 +1,6 @@
 # Project result review website
 
-Status: implementation reviewed; full PR pending.
+Status: reviewed and published in full PR #272; CI pending.
 
 The authenticated owner website exposes fixed Project review status, preview,
 and confirmation routes over the Python decision authority. The owner reviews
