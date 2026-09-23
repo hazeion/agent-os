@@ -1,6 +1,6 @@
 # Project deliverable review storage
 
-Status: reviewed implementation; full PR pending.
+Status: reviewed implementation, published in full PR #271; CI pending.
 
 This slice adds the private schema-32 owner decision record for the three
 garage result slots. A decision binds the current layout, products and steps
