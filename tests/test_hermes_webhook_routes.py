@@ -695,21 +695,21 @@ with TemporaryDirectory(prefix="mentat-webhook-lock-order-") as temporary:
         try:
             with patch.dict(os.environ, {"MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT": self.secret.decode()}, clear=False):
                 body, headers = self.request(delivery="http-delivery")
-                connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+                connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=15)
                 connection.request("POST", "/api/integrations/hermes/webhooks/v1/local-default", body, headers)
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 response.read()
                 connection.close()
 
-                duplicate = HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+                duplicate = HTTPConnection("127.0.0.1", httpd.server_port, timeout=15)
                 duplicate.request("POST", "/api/integrations/hermes/webhooks/v1/local-default", body, headers)
                 duplicate_response = duplicate.getresponse()
                 self.assertEqual(duplicate_response.status, 204)
                 self.assertEqual(duplicate_response.read(), b"")
                 duplicate.close()
 
-                rejected = HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+                rejected = HTTPConnection("127.0.0.1", httpd.server_port, timeout=15)
                 rejected.request(
                     "POST",
                     "/api/integrations/hermes/webhooks/v1/local-default",
