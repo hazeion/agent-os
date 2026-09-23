@@ -227,7 +227,7 @@ class ProjectContextAccessMigrationTests(unittest.TestCase):
                 historical = backups.capture_private_console_unit(root)
         backups.validate_private_console_unit(historical)
         with closing(mentat_db.connect(root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection, 31), 'expected')
+            self.assertEqual(mentat_db.schema_signature_state(connection, 32), 'expected')
             context.validate_project_context_connection(connection)
         service = fixture.deletion_service()
         service.finalize(service.preview('project','project_mentat'))
