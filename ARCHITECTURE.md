@@ -1003,6 +1003,16 @@ deletion and Project ID reuse. New generated versions fail validation until a
 trusted Run-output promotion capability can bind an exact successful Run and
 input receipt. Owner storage alone does not mark work complete or accepted.
 
+The owner website exposes these slots through fixed same-origin Project and
+retired-history routes. A Project editor stages dimensioned layouts, product
+links and ordered steps locally, then publishes only at exact Project and
+slot revisions. Current reads are bounded; older content appears only after
+explicit version selection, and retained history has bounded pages. The PNG
+route names one exact immutable version and returns validated owner-session
+bytes with no local path, blob key or digest in the browser. Markdown product
+and step downloads derive from validated saved content. Saving a version
+starts no Agent and grants no approval.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains

@@ -181,7 +181,7 @@ class OwnerDeliverableStorageTests(unittest.TestCase):
             self.assertIsNotNone(connection.execute(
                 "SELECT retired_at FROM mentat_deliverable_slots WHERE id=?", (first["slot_id"],),
             ).fetchone()[0])
-        self.assertEqual(read_retired_deliverable_history(self.root)[0]["id"], first["version_id"])
+        self.assertEqual(read_retired_deliverable_history(self.root)["versions"][0]["id"], first["version_id"])
         self.assertEqual(read_retired_deliverable_version(self.root, first["version_id"])["content"], garage_layout())
         self.assertTrue(read_deliverable_preview(self.root, first["version_id"]).startswith(b"\x89PNG"))
         agent_console_attachments.garbage_collect(self.root, now=9999999999, orphan_grace=0)

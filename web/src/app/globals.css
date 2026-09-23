@@ -926,6 +926,11 @@ button {
 .project-context-body ul { margin: 0; padding: 0; list-style: none; }
 .project-context-body li span { text-transform: none; font-size: inherit; }
 .project-context-body a { overflow-wrap: anywhere; }
+.project-deliverable-form { display: grid; min-width: 0; gap: 12px; }
+.project-deliverable-row { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 9px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+.project-deliverable-row input, .project-deliverable-row select, .project-deliverable-row textarea { min-width: 0; width: 100%; }
+.project-deliverable-row button { justify-self: end; }
+.project-deliverable-preview { display: block; width: min(100%, 720px); height: auto; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); }
 .project-context-brief { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
 .project-context-confirmation { display: grid; gap: 10px; margin: 10px 0; padding: 10px; border: 1px solid var(--border-subtle); }
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
