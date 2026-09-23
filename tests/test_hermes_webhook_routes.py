@@ -437,6 +437,10 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.assertEqual(delivery_results, ["accepted"])
 
     def test_slow_external_projection_does_not_delay_newer_webhook_or_shutdown(self):
+        # Keep cold schema setup outside the concurrency deadline. The newer
+        # request below measures a blocked projection, not first-run migration.
+        connection = connect(self.data_dir)
+        connection.close()
         local_snapshot_complete = threading.Event()
         external_started = threading.Event()
         release_external = threading.Event()
@@ -462,8 +466,10 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.assertTrue(server.HERMES_EVENT_REFRESH.enqueue(older_event))
 
         coordinator = server.HERMES_EVENT_REFRESH
-        try:
-            with patch.object(server, "read_task_snapshot", return_value=[]):
+        request_thread = None
+        request_errors = []
+        with patch.object(server, "read_task_snapshot", return_value=[]):
+            try:
                 server.HERMES_EVENT_REFRESH.start()
                 self.assertTrue(local_snapshot_complete.wait(2))
                 self.assertTrue(external_started.is_set())
@@ -473,15 +479,28 @@ class HermesWebhookRouteTests(unittest.TestCase):
                 response_complete = threading.Event()
 
                 def submit_newer():
-                    responses.append(self.invoke(newer_body, newer_headers))
-                    response_complete.set()
+                    try:
+                        responses.append(self.invoke(newer_body, newer_headers))
+                    except Exception as exc:
+                        request_errors.append(type(exc).__name__)
+                    finally:
+                        response_complete.set()
 
                 request_thread = Thread(target=submit_newer)
                 request_thread.start()
-                self.assertTrue(response_complete.wait(5))
+                if not response_complete.wait(5):
+                    frame = sys._current_frames().get(request_thread.ident)
+                    locations = []
+                    for _ in range(12):
+                        if frame is None:
+                            break
+                        locations.append(f'{Path(frame.f_code.co_filename).name}:{frame.f_code.co_name}:{frame.f_lineno}')
+                        frame = frame.f_back
+                    self.fail('newer webhook stalled; worker=' + ','.join(locations)[:4096])
                 self.assertFalse(release_external.is_set())
                 request_thread.join(timeout=1)
                 self.assertFalse(request_thread.is_alive())
+                self.assertEqual(request_errors, [])
                 self.assertEqual(self.status(responses[0]), 202)
 
                 started = time.monotonic()
@@ -492,8 +511,11 @@ class HermesWebhookRouteTests(unittest.TestCase):
                     )
                 )
                 self.assertLess(time.monotonic() - started, 0.25)
-        finally:
-            release_external.set()
+            finally:
+                release_external.set()
+                if request_thread is not None:
+                    request_thread.join(timeout=30)
+                coordinator.stop(timeout=10)
 
         self.assertIsNone(server.HERMES_EVENT_REFRESH)
         self.assertTrue(coordinator.stop(timeout=1))
