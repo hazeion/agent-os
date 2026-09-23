@@ -1118,7 +1118,30 @@ class TaskRepository:
             }
             self.connection.execute("DELETE FROM mentat_task_dependencies")
             self.connection.execute("DELETE FROM mentat_task_tags")
-            self.connection.execute("DELETE FROM mentat_tasks")
+            if removed_ids:
+                self.connection.execute(
+                    f"DELETE FROM mentat_tasks WHERE id IN ({placeholders})",
+                    removed_ids,
+                )
+            # Preserve existing rows and their private identity. Parking the
+            # bounded sort orders avoids UNIQUE collisions during reordering.
+            self.connection.execute(
+                "UPDATE mentat_tasks SET sort_order=sort_order+?", (MAX_TASKS,)
+            )
+            columns = (
+                "id", "sort_order", "revision", "title", "description", "project", "project_id",
+                "status", "priority", "assignee", "assigned_agent_id", "assigned_agent_id_present",
+                "due_date", "source", "review_required", "needs_attention", "planned_for_today",
+                "manual_rank", "estimated_minutes", "recurrence_parent_id", "planning_state",
+                "depends_on_present", "nested_planning_json", "extensions_json", "created_at",
+                "updated_at", "completed_at",
+            )
+            # Column names are fixed repository code, never caller input.
+            upsert = (
+                "INSERT INTO mentat_tasks (" + ",".join(columns) + ") VALUES ("
+                + ",".join("?" for _ in columns) + ") ON CONFLICT(id) DO UPDATE SET "
+                + ",".join(f"{column}=excluded.{column}" for column in columns[1:])
+            )
             for sort_order, task in enumerate(normalized):
                 previous = current_by_id.get(task["id"])
                 revision = (
@@ -1129,13 +1152,7 @@ class TaskRepository:
                     else 1
                 )
                 self.connection.execute(
-                    "INSERT INTO mentat_tasks ("
-                    "id, sort_order, revision, title, description, project, project_id, status, priority, "
-                    "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
-                    "review_required, needs_attention, planned_for_today, manual_rank, "
-                    "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
-                    "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    upsert,
                     (
                         task["id"],
                         sort_order,

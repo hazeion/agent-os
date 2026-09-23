@@ -1,6 +1,6 @@
 # Approved Project Task inputs and plan admission
 
-Status: contract reviewed; implementation pending. Execution is not qualified
+Status: contract reviewed; implementation in progress. Execution is not qualified
 or enabled.
 Scope: [exact Task inputs](https://github.com/hazeion/agent-os/issues/262) and
 the prerequisite admission contract for
@@ -223,3 +223,26 @@ that Hermes is absent from every location, and WSL is not a selected production
 host. No provider credentials were inspected and no Agent work was started.
 Actual host/runtime inventory and live qualification remain outstanding;
 authority storage and approval implementation can proceed independently.
+
+## Implementation resume point
+
+The legacy whole-collection Task mutation used to delete/reinsert every row.
+It now deletes only removed IDs, parks bounded sort orders and updates existing
+rows using fixed-column UPSERT, preserving revisions and rollback. This is a
+prerequisite for private Task incarnations: normal edits and reordering must
+not fire deletion/creation identity hooks. Identity initialization must use an
+AFTER INSERT trigger, because UPSERT can execute BEFORE INSERT hooks even when
+it ultimately updates an existing row. Focused trigger-observation tests prove
+insert/delete behavior and rollback. The 108-test Task/Project/deletion/context
+regression run passes with six platform skips; authority review is clean.
+
+`task_inputs.py` currently normalizes immutable owner selections and enforces
+exact bounded revisions/instructions, complete file order, per-file sizes and
+the eight-input/one-image ceiling (or a smaller declared adapter limit). Five
+tests pass. These pure checks do not establish membership, grants, verified
+bytes or runtime qualification and are not exposed through a route. Schema,
+durable input versions, exact approval records, retention/backup integration
+and execution admission still need implementation before this slice publishes.
+The second prerequisite review caught malformed metadata raising a raw type
+error; explicit string checks and kind/MIME regressions now return the fixed
+Task-input error. Re-review is clean.

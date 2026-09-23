@@ -865,6 +865,35 @@ class TaskRepositoryTests(unittest.TestCase):
             ensure_task_sqlite_authority(root)
             self.assertEqual(read_authoritative_tasks(root), [])
 
+    def test_collection_edits_and_reordering_preserve_rows_and_delete_only_removed_tasks(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task('task_a'), task('task_b')])
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            connection = connect(root)
+            try:
+                connection.executescript('''
+                    CREATE TEMP TABLE task_row_events(kind TEXT,id TEXT);
+                    CREATE TEMP TRIGGER observe_task_delete AFTER DELETE ON main.mentat_tasks
+                    BEGIN INSERT INTO task_row_events VALUES('delete',OLD.id); END;
+                    CREATE TEMP TRIGGER observe_task_insert AFTER INSERT ON main.mentat_tasks
+                    BEGIN INSERT INTO task_row_events VALUES('insert',NEW.id); END;
+                ''')
+                repository = TaskRepository(connection)
+                repository.mutate_collection(lambda rows: ([{**rows[1], 'title': 'Updated'}, rows[0], task('task_c')], None))
+                self.assertEqual([tuple(row) for row in connection.execute('SELECT * FROM task_row_events')], [('insert','task_c')])
+                self.assertEqual([item['id'] for item in repository.list_tasks()], ['task_b','task_a','task_c'])
+                before = repository.list_tasks()
+                with patch.object(repository, '_insert_children', side_effect=RuntimeError('injected rollback')):
+                    with self.assertRaisesRegex(RuntimeError, 'injected rollback'):
+                        repository.mutate_collection(lambda rows: ([rows[2], rows[0]], None))
+                self.assertEqual(repository.list_tasks(), before)
+                self.assertEqual([tuple(row) for row in connection.execute('SELECT * FROM task_row_events')], [('insert','task_c')])
+                repository.mutate_collection(lambda rows: ([rows[2], rows[0]], None))
+                self.assertEqual([tuple(row) for row in connection.execute('SELECT * FROM task_row_events')], [('insert','task_c'),('delete','task_a')])
+            finally:
+                connection.close()
+
     def test_collection_mutation_preserves_revisions_and_rolls_back_invalid_state(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
