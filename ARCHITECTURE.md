@@ -960,7 +960,17 @@ Task-specific input is a separately versioned set of approved references and
 bounded instructions. Exact owner approval binds that input version, Task
 revision/membership, selected Agent, runtime configuration/capability snapshot,
 Project context version and grant revision. Outputs from another Task cross
-this boundary only as explicitly selected immutable deliverable versions.
+this boundary as explicitly selected immutable deliverable versions, or as
+exact versions resolved under an owner-approved conditional transfer in the
+same plan segment. Such a transfer binds producer and destination Task/Agent
+incarnations, the approved producer attempt, named output slots,
+schema/type/count/byte bounds, allowed uses and limits. Only registered outputs
+from verified successful work may resolve it; their exact immutable identities
+are frozen before destination reservation. Missing, ambiguous, malformed, extra
+or replaced outputs require an owner checkpoint. Dependencies alone confer no
+permission, and no unrestricted latest-result alias or general Project read
+right is created. Owners can require manual approval on any transfer. This is
+an approved-plan contract, not a capability currently advertised by an adapter.
 Changing an assignment, input, execution configuration or grant invalidates
 the pending approval. It never changes an already-dispatched snapshot.
 
