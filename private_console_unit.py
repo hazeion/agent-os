@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -104,6 +105,7 @@ PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION = 28
 TASK_INPUT_DATABASE_SCHEMA_VERSION = 29
 RUN_INPUT_DATABASE_SCHEMA_VERSION = 30
 DELIVERABLE_DATABASE_SCHEMA_VERSION = 31
+DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION = 32
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -132,6 +134,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     TASK_INPUT_DATABASE_SCHEMA_VERSION,
     RUN_INPUT_DATABASE_SCHEMA_VERSION,
     DELIVERABLE_DATABASE_SCHEMA_VERSION,
+    DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -382,6 +385,12 @@ def _initialize_database(
             # Virtual empty snapshots must have a stable identity. They carry no
             # context authority; the first real context publication activates it.
             connection.execute('UPDATE mentat_project_context_access_state SET approval_epoch=zeroblob(32) WHERE singleton=1')
+        if schema_version >= DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION:
+            # Virtual empty units are captured twice during restore preview.
+            # Their identity must be stable; a real review preview activates it.
+            connection.execute(
+                'UPDATE mentat_deliverable_review_state SET confirmation_epoch=zeroblob(32) WHERE singleton=1'
+            )
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             connection.execute(
                 "INSERT OR IGNORE INTO mentat_agent_registry_state ("
@@ -1626,6 +1635,22 @@ def sanitize_owner_auth_restore_unit(
             if version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
                 from project_context_access import revoke_after_restore
                 revoke_after_restore(connection, now=now, epoch_seed=epoch_seed)
+            if version >= DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION:
+                # Decisions remain part of the restored Project history, but
+                # a preview from the old authority must never confirm here.
+                if epoch_seed is None:
+                    connection.execute(
+                        "UPDATE mentat_deliverable_review_state SET confirmation_epoch=randomblob(32) WHERE singleton=1"
+                    )
+                else:
+                    original = connection.execute(
+                        "SELECT confirmation_epoch FROM mentat_deliverable_review_state WHERE singleton=1"
+                    ).fetchone()[0]
+                    rotated = hmac.new(original, b"mentat-deliverable-review-restore-v1\0" + epoch_seed, hashlib.sha256).digest()
+                    connection.execute(
+                        "UPDATE mentat_deliverable_review_state SET confirmation_epoch=? WHERE singleton=1",
+                        (rotated,),
+                    )
             connection.commit()
         except (sqlite3.Error, RuntimeError) as exc:
             connection.rollback()

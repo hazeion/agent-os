@@ -119,6 +119,11 @@ Project route. Typed garage content and retained owner preview versions are
 published in [PR 269](https://github.com/hazeion/agent-os/pull/269). The
 Project results website editor follows. Generated-output promotion and
 grouped owner review remain necessary before issue 263 is complete.
+The owner results editor is reviewed and published in
+[PR 270](https://github.com/hazeion/agent-os/pull/270). Schema-32 immutable
+bundle decisions and deletion disclosure form the next reviewed storage
+foundation. The browser review workflow and trusted generated promotion are
+still separate work; no Project Agent execution is enabled by this storage.
 The next Project-execution step is exact owner approval and atomic Run/receipt
 reservation against the retained evidence. The current Kanban adapter has no
 qualified operation binding
