@@ -71,10 +71,12 @@ def _version_detail(connection, context_id):
         'SELECT attachment_id FROM mentat_project_context_files WHERE context_id=? ORDER BY ordinal', (context_id,)
     )]
     granted = connection.execute("SELECT 1 FROM mentat_project_context_grants WHERE context_id=? AND state='active'", (context_id,)).fetchone() is not None
+    has_inputs = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mentat_task_input_versions'").fetchone() is not None
+    pinned_input = has_inputs and connection.execute('SELECT 1 FROM mentat_task_input_versions WHERE context_id=? LIMIT 1', (context_id,)).fetchone() is not None
     current = row[5] is None and row[1] == row[6]
     return {'id': row[0], 'revision': row[1], 'brief': row[2], 'created_at': row[3], 'project_id': row[4],
             'retired': row[5] is not None, 'current': current, 'files': files,
-            'prune_blocked': 'current_version' if current else 'granted_version' if granted else None}
+            'prune_blocked': 'current_version' if current else 'granted_version' if granted else 'task_input' if pinned_input else None}
 
 
 def read_context_version(data_dir: Path, context_id: str) -> dict:
@@ -199,6 +201,9 @@ def read_project_file(data_dir: Path, *, attachment_id: str, project_id: str | N
 
 def _prune_snapshot(connection, context_id):
     context.validate_project_context_connection(connection, require_available=False)
+    has_inputs = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mentat_task_input_versions'").fetchone() is not None
+    if has_inputs and connection.execute('SELECT 1 FROM mentat_task_input_versions WHERE context_id=? LIMIT 1', (context_id,)).fetchone() is not None:
+        _fail('task_input')
     row = connection.execute(
         'SELECT v.scope_id,v.revision,v.brief,v.files_digest,s.revision,s.retired_at FROM mentat_project_context_versions v '
         'JOIN mentat_project_context_scopes s ON s.id=v.scope_id WHERE v.id=?', (context_id,)

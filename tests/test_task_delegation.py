@@ -122,6 +122,75 @@ class TaskDelegationTests(unittest.TestCase):
         self.assertIn("Cite sources", preview["context"])
         self.assertEqual(preview["target"]["profile_id"], "researcher")
 
+    def test_saved_task_inputs_block_legacy_create_and_replacement_work(self):
+        preview, status = server.preview_task_delegation("task-1", self.intent())
+        self.assertEqual(status, 200)
+        with patch.object(server, "_task_has_prepared_project_inputs", return_value=True):
+            denied, status = server.preview_task_delegation("task-1", self.intent())
+            self.assertEqual(status, 409)
+            self.assertIn("Saved Task inputs", denied["error"])
+            _, error = server.reserve_task_delegation("task-1", preview["task"], {"reservation_id": "blocked"})
+            self.assertIn("Saved Task inputs", error)
+        result, status = server.delegate_confirmed_task("task-1", {
+            **self.intent(), "confirmed": True, "confirmation_id": preview["confirmation_id"]
+        })
+        self.assertEqual(status, 201)
+        self.assertEqual(result["task"]["delegation"]["kanban_task_id"], "t-hermes-1")
+        with patch.object(server, "_task_has_prepared_project_inputs", return_value=True):
+            denied, status = server.preview_delegation_action("task-1", {"action": "retry"})
+            self.assertEqual(status, 409)
+            self.assertIn("Saved Task inputs", denied["error"])
+            accepted, _ = server.preview_delegation_action("task-1", {"action": "accept"})
+            self.assertNotIn("Saved Task inputs", accepted.get("error", ""))
+
+    def test_inputs_saved_during_remote_read_block_revision_before_mutation(self):
+        preview, _ = server.preview_task_delegation("task-1", self.intent())
+        server.delegate_confirmed_task("task-1", {**self.intent(), "confirmed": True, "confirmation_id": preview["confirmation_id"]})
+        self.adapter.remote_status = "review"
+        capability = {"status": "available", "capabilities": {"tasks.create": True, "tasks.comment": True}}
+        with patch.object(self.adapter, "detect_capabilities", return_value=capability):
+            action_preview, status = server.preview_delegation_action("task-1", {"action": "request_revision", "note": "Add sources"})
+        self.assertEqual(status, 200)
+        original_get = self.adapter.get_task
+        prepared = False
+        def get_and_save(board, remote_id):
+            nonlocal prepared
+            remote = original_get(board, remote_id)
+            prepared = True
+            return remote
+        self.adapter.calls.clear()
+        with (patch.object(self.adapter, "detect_capabilities", return_value=capability),
+              patch.object(self.adapter, "get_task", side_effect=get_and_save),
+              patch.object(server, "_task_has_prepared_project_inputs", side_effect=lambda _id: prepared)):
+            denied, status = server.execute_confirmed_delegation_action("task-1", {"action": "request_revision", "note": "Add sources", "confirmed": True, "confirmation_id": action_preview["confirmation_id"]})
+        self.assertEqual(status, 409)
+        self.assertIn("Saved Task inputs", denied["error"])
+        self.assertFalse(any(call[0] in {"comment", "create"} for call in self.adapter.calls))
+
+    def test_inputs_saved_after_revision_comment_block_new_hermes_task(self):
+        preview, _ = server.preview_task_delegation("task-1", self.intent())
+        server.delegate_confirmed_task("task-1", {**self.intent(), "confirmed": True, "confirmation_id": preview["confirmation_id"]})
+        self.adapter.remote_status = "review"
+        capability = {"status": "available", "capabilities": {"tasks.create": True, "tasks.comment": True}}
+        with patch.object(self.adapter, "detect_capabilities", return_value=capability):
+            action_preview, status = server.preview_delegation_action("task-1", {"action": "request_revision", "note": "Add sources"})
+        self.assertEqual(status, 200)
+        original_comment = self.adapter.comment_task
+        prepared = False
+        def comment_and_save(board, remote_id, note):
+            nonlocal prepared
+            result = original_comment(board, remote_id, note)
+            prepared = True
+            return result
+        self.adapter.calls.clear()
+        with (patch.object(self.adapter, "detect_capabilities", return_value=capability),
+              patch.object(self.adapter, "comment_task", side_effect=comment_and_save),
+              patch.object(server, "_task_has_prepared_project_inputs", side_effect=lambda _id: prepared)):
+            denied, status = server.execute_confirmed_delegation_action("task-1", {"action": "request_revision", "note": "Add sources", "confirmed": True, "confirmation_id": action_preview["confirmation_id"]})
+        self.assertEqual(status, 409)
+        self.assertTrue(denied["partial"])
+        self.assertFalse(any(call[0] == "create" for call in self.adapter.calls))
+
     def test_confirmed_delegation_creates_verifies_and_persists_link(self):
         preview, _ = server.preview_task_delegation("task-1", self.intent())
         payload, status = server.delegate_confirmed_task("task-1", {

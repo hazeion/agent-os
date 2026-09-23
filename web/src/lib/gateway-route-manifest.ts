@@ -79,6 +79,13 @@ function staticRule(path: `/${string}`, source: GatewayRouteSource): GatewayRout
 
 /** Exactly one frozen row per API operation and per static method/surface pair. */
 export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze([
+  rule("GET", "/api/task-inputs/history", "web/src/app/api/task-inputs/history/route.ts"),
+  rule("GET", "/api/task-inputs/[inputId]", "web/src/app/api/task-inputs/[inputId]/route.ts"),
+  rule("POST", "/api/task-inputs/[inputId]/prune/preview", "web/src/app/api/task-inputs/[inputId]/prune/preview/route.ts"),
+  rule("POST", "/api/task-inputs/[inputId]/prune", "web/src/app/api/task-inputs/[inputId]/prune/route.ts"),
+  rule("GET", "/api/planning/tasks/[taskId]/inputs", "web/src/app/api/planning/tasks/[taskId]/inputs/route.ts"),
+  rule("POST", "/api/planning/tasks/[taskId]/inputs", "web/src/app/api/planning/tasks/[taskId]/inputs/route.ts"),
+  rule("GET", "/api/planning/tasks/[taskId]/inputs/[inputId]", "web/src/app/api/planning/tasks/[taskId]/inputs/[inputId]/route.ts"),
   rule("GET", "/api/projects/[projectId]/context", "web/src/app/api/projects/[projectId]/context/route.ts"),
   rule("POST", "/api/projects/[projectId]/context", "web/src/app/api/projects/[projectId]/context/route.ts"),
   rule("POST", "/api/projects/[projectId]/context/files", "web/src/app/api/projects/[projectId]/context/files/route.ts"),

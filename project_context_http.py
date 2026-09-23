@@ -106,7 +106,7 @@ def dispatch_project_context(data_dir: Path, operation: str, body: object) -> tu
         reason = str(exc).rsplit('.', 1)[-1]
         allowed = {'stale','project_changed','project_unavailable','context_unavailable','agent_unavailable','file_unavailable',
                    'version_unavailable','current_version','granted_version','capacity','blob_capacity','staging_changed','revision_conflict',
-                   'file_scope','files_invalid','brief_invalid','revision_invalid','confirmation_invalid'}
+                   'file_scope','files_invalid','brief_invalid','revision_invalid','confirmation_invalid','task_input'}
         return _failure(reason if reason in allowed else 'unavailable', 409)
     except (TaskRepositoryError, ProjectRepositoryError, OSError, sqlite3.Error):
         return _failure('unavailable', 503)
