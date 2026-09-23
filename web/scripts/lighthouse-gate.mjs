@@ -10,6 +10,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { killAll, launch as launchChrome } from "chrome-launcher";
+import { summarizeAttribution } from "./lighthouse-attribution.mjs";
 
 import {
   runBoundedProcess,
@@ -181,6 +182,7 @@ function summarize(lhr, mode, run) {
     tbt_ms: numericAudit(lhr, "total-blocking-time"),
     cls: numericAudit(lhr, "cumulative-layout-shift"),
     transfer_bytes: transferredBytes(lhr),
+    attribution: summarizeAttribution(lhr),
   };
   return summary;
 }

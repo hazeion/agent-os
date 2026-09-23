@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
+import traceback
 from tempfile import TemporaryDirectory
 import threading
 import time
@@ -1714,15 +1716,25 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=submit_first)
             worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            pending = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="Claim this concurrent follow-up exactly once",
-                idempotency_key="conversation-immediate-complete-key-2",
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
-            self.assertFalse(worker.is_alive())
+            try:
+                self.assertTrue(runtime.submit_entered.wait(timeout=5))
+                pending = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Claim this concurrent follow-up exactly once",
+                    idempotency_key="conversation-immediate-complete-key-2",
+                )
+            finally:
+                # Drain even when admission/assertions fail, before removing the
+                # private SQLite root. This is an ordering test, not a benchmark.
+                runtime.submit_release.set()
+                worker.join(timeout=5)
+                stalled = ""
+                if worker.is_alive():
+                    frame = sys._current_frames().get(worker.ident)
+                    stalled = "".join(traceback.format_stack(frame, limit=12))[:4096] if frame else "worker exited during capture"
+                    print("Slow completion worker:\n" + stalled, file=sys.stderr)
+                    worker.join(timeout=25)
+                self.assertFalse(worker.is_alive(), stalled)
             if failures:
                 raise failures[0]
             detail = ConversationRepository(

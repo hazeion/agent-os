@@ -22,7 +22,7 @@ export function AppShell({ children, homeConsole = false, route: routeHref }: Ap
 
       <aside className="sidebar" id="primary-navigation" aria-label="Primary navigation">
         <div className="sidebar-heading">
-          <Link aria-label="Mentat home" className="brand" data-nav-link href="/">
+          <Link aria-label="Mentat home" className="brand" data-nav-link href="/" prefetch={routeHref === "/" ? undefined : false}>
             <span aria-hidden="true" className="brand-mark" />
             <span className="brand-copy">
               <strong>Mentat</strong>
@@ -49,6 +49,7 @@ export function AppShell({ children, homeConsole = false, route: routeHref }: Ap
               data-tooltip={item.label}
               href={item.href}
               key={item.href}
+              prefetch={item.href === routeHref ? undefined : false}
             >
               <ShellIcon name={item.icon} />
               <span className="nav-copy">
