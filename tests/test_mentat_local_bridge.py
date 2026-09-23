@@ -51,7 +51,7 @@ class RequestDiagnosticTests(unittest.TestCase):
         frame = None
         for _ in range(20):
             frame = SimpleNamespace(f_code=SimpleNamespace(co_filename='/private/root/worker.py', co_name='dispatch'),
-                                    f_lineno=42, f_back=frame, f_locals={'secret': 'never include'})
+                                    f_lineno=42, f_back=frame, f_locals={'secret': object()})
         with patch.object(sys, '_current_frames', return_value={123: frame}):
             result = bounded_request_stack(123)
             self.assertEqual(result.splitlines(), ['worker.py:dispatch:42'] * 12)
