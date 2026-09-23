@@ -95,8 +95,12 @@ four native children: [storage and backup](https://github.com/hazeion/agent-os/i
 [owner editor and grants](https://github.com/hazeion/agent-os/issues/261),
 [approved Task inputs](https://github.com/hazeion/agent-os/issues/262), and
 [versioned deliverables](https://github.com/hazeion/agent-os/issues/263).
-The storage child is implemented and has two clean reviews; its verification
-is recorded in the context review above. The owner editor and grants are next.
+The storage child is implemented in PR 265; its verification is recorded in
+the context review above. Its current CI still has a Windows Conversations-read
+timeout and a mobile Lighthouse performance failure requiring diagnosis.
+The owner editor and grants are implemented with two clean reviews and built
+desktop/mobile acceptance in [the editor review](reviews/2026-09-22-project-context-editor.md).
+Publication and CI are pending; approved Task inputs are the next product slice.
 Project execution remains
 unavailable until exact admission and runtime qualification are implemented;
 the contract is not completion evidence.

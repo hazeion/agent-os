@@ -46,6 +46,7 @@ BRIDGE_TOKEN_ENV = "MENTAT_BRIDGE_TOKEN"
 BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
 OWNER_GATEWAY_ROOT = "/bridge/v1/owner/"
+PROJECT_CONTEXT_ROOT = "/bridge/v1/project-context/"
 OWNER_GATEWAY_OPERATIONS = frozenset({'login-start', 'login-callback', 'login-cancel', 'session', 'validate', 'sign-out', 'sign-out-all', 'sse-reserve', 'sse-check', 'sse-release'})
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
 BRIDGE_PROVIDER_CONNECTIONS_PATH = "/bridge/v1/provider-connections"
@@ -6209,6 +6210,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if parsed.path != BRIDGE_HEALTH_PATH and not self._owner_access_allowed(unsafe=False):
             self._send_json({'error': 'owner_authentication_required'}, 401)
             return
+        if parsed.path.startswith(PROJECT_CONTEXT_ROOT):
+            from project_context_http import READ_OPERATIONS, dispatch_project_context
+            from server import DATA_DIR
+            operation = parsed.path[len(PROJECT_CONTEXT_ROOT):]
+            if operation not in READ_OPERATIONS or len(parsed.query) > 1024:
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+                operation = ''
+            if len(pairs) != len(dict(pairs)):
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            payload, status = dispatch_project_context(DATA_DIR, operation, dict(pairs))
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_HEALTH_PATH and not parsed.query:
             self._send_json(
                 {
@@ -6716,6 +6735,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         stream_readback = bool(self.headers.get_all('X-Mentat-Owner-Lease', []) and not parsed.query and re.fullmatch(r'/bridge/v1/runs/[^/]+/refresh', parsed.path))
         if not self._owner_access_allowed(unsafe=not stream_readback):
             self._send_json({'error': 'owner_authentication_required'}, 401)
+            return
+        if parsed.path.startswith(PROJECT_CONTEXT_ROOT) and not parsed.query:
+            from project_context_http import WRITE_OPERATIONS, MAX_UPLOAD_JSON_BYTES, dispatch_project_context
+            from server import DATA_DIR
+            operation = parsed.path[len(PROJECT_CONTEXT_ROOT):]
+            if operation not in WRITE_OPERATIONS:
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            body = self._action_json_body(MAX_UPLOAD_JSON_BYTES if operation == 'upload' else 128 * 1024)
+            payload, status = dispatch_project_context(DATA_DIR, operation, body)
+            self._send_json(payload, status)
             return
         if parsed.path in {"/bridge/v1/agent-setup/check", "/bridge/v1/agent-setup/preview", "/bridge/v1/agent-setup/confirm"} and not parsed.query:
             body = self._action_json_body(1_024)

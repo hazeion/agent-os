@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1975,6 +1975,50 @@ MIGRATIONS += ((27, """
         BEGIN SELECT RAISE(ABORT, 'project_context.retired'); END;
 """),)
 
+MIGRATIONS += ((28, """
+    CREATE TABLE mentat_project_context_access_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        approval_epoch BLOB NOT NULL CHECK(typeof(approval_epoch)='blob' AND length(approval_epoch)=32)
+    );
+    INSERT INTO mentat_project_context_access_state VALUES(1,randomblob(32));
+    ALTER TABLE mentat_agents ADD COLUMN context_incarnation TEXT NOT NULL DEFAULT ''
+        CHECK (typeof(context_incarnation)='text' AND length(context_incarnation) IN (0,32));
+    UPDATE mentat_agents SET context_incarnation=lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX idx_mentat_agent_context_incarnation ON mentat_agents(context_incarnation)
+        WHERE context_incarnation!='';
+    CREATE TRIGGER mentat_agent_context_incarnation_create AFTER INSERT ON mentat_agents
+        WHEN NEW.context_incarnation=''
+        BEGIN UPDATE mentat_agents SET context_incarnation=lower(hex(randomblob(16))) WHERE id=NEW.id; END;
+    CREATE TRIGGER mentat_agent_context_incarnation_immutable BEFORE UPDATE OF context_incarnation ON mentat_agents
+        WHEN OLD.context_incarnation!=''
+        BEGIN SELECT RAISE(ABORT,'agent.context_identity_immutable'); END;
+    CREATE TABLE mentat_project_context_grants (
+        scope_id TEXT NOT NULL REFERENCES mentat_project_context_scopes(id) ON DELETE RESTRICT,
+        agent_id TEXT NOT NULL,
+        agent_incarnation TEXT NOT NULL CHECK (typeof(agent_incarnation)='text' AND length(agent_incarnation)=32),
+        context_id TEXT REFERENCES mentat_project_context_versions(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK (typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+        state TEXT NOT NULL CHECK (state IN ('active','revoked')),
+        reason TEXT CHECK (reason IN ('owner','project_deleted','agent_deleted','restored','context_pruned')),
+        updated_at REAL NOT NULL CHECK (updated_at>0),
+        PRIMARY KEY(scope_id,agent_id),
+        CHECK ((state='active' AND revision<9007199254740991 AND context_id IS NOT NULL AND reason IS NULL) OR (state='revoked' AND reason IS NOT NULL))
+    );
+    CREATE TRIGGER mentat_project_context_retire_grants AFTER UPDATE OF retired_at ON mentat_project_context_scopes
+        WHEN NEW.retired_at IS NOT NULL
+        BEGIN UPDATE mentat_project_context_grants SET state='revoked',reason='project_deleted',revision=revision+1,
+            updated_at=CAST(strftime('%s','now') AS REAL) WHERE scope_id=NEW.id AND state='active'; END;
+    CREATE TRIGGER mentat_agent_delete_context_grants BEFORE DELETE ON mentat_agents
+        BEGIN UPDATE mentat_project_context_grants SET state='revoked',reason='agent_deleted',revision=revision+1,
+            updated_at=CAST(strftime('%s','now') AS REAL)
+            WHERE agent_id=OLD.id AND agent_incarnation=OLD.context_incarnation AND state='active'; END;
+    CREATE TABLE mentat_project_context_staged (
+        attachment_id TEXT NOT NULL PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL,
+        created_at REAL NOT NULL CHECK(created_at>0)
+    );
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2311,7 +2355,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2429,6 +2473,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 25 cannot be safely upgraded")
                 if version == 27 and schema_signature_state(connection, 26) != "expected":
                     raise MentatDatabaseError("Mentat schema 26 cannot be safely upgraded")
+                if version == 28 and schema_signature_state(connection, 27) != "expected":
+                    raise MentatDatabaseError("Mentat schema 27 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

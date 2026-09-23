@@ -79,6 +79,19 @@ function staticRule(path: `/${string}`, source: GatewayRouteSource): GatewayRout
 
 /** Exactly one frozen row per API operation and per static method/surface pair. */
 export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze([
+  rule("GET", "/api/projects/[projectId]/context", "web/src/app/api/projects/[projectId]/context/route.ts"),
+  rule("POST", "/api/projects/[projectId]/context", "web/src/app/api/projects/[projectId]/context/route.ts"),
+  rule("POST", "/api/projects/[projectId]/context/files", "web/src/app/api/projects/[projectId]/context/files/route.ts"),
+  rule("GET", "/api/projects/[projectId]/context/files/[attachmentId]", "web/src/app/api/projects/[projectId]/context/files/[attachmentId]/route.ts"),
+  rule("DELETE", "/api/projects/[projectId]/context/files/[attachmentId]", "web/src/app/api/projects/[projectId]/context/files/[attachmentId]/route.ts"),
+  rule("GET", "/api/project-context/history", "web/src/app/api/project-context/history/route.ts"),
+  rule("GET", "/api/project-context/[contextId]", "web/src/app/api/project-context/[contextId]/route.ts"),
+  rule("GET", "/api/project-context/[contextId]/files/[attachmentId]", "web/src/app/api/project-context/[contextId]/files/[attachmentId]/route.ts"),
+  rule("POST", "/api/project-context/[contextId]/grant/preview", "web/src/app/api/project-context/[contextId]/grant/preview/route.ts"),
+  rule("POST", "/api/project-context/[contextId]/grant", "web/src/app/api/project-context/[contextId]/grant/route.ts"),
+  rule("POST", "/api/projects/[projectId]/context/revoke", "web/src/app/api/projects/[projectId]/context/revoke/route.ts"),
+  rule("POST", "/api/project-context/[contextId]/prune/preview", "web/src/app/api/project-context/[contextId]/prune/preview/route.ts"),
+  rule("POST", "/api/project-context/[contextId]/prune", "web/src/app/api/project-context/[contextId]/prune/route.ts"),
   ...staticRule("/sign-in", "web/src/app/sign-in/page.tsx"),
   ...([ ["POST", "/auth/google/start"], ["GET", "/auth/google/callback"] ] as const).map(([method, path]) => Object.freeze({
     method, path, exposure: "anonymous_auth" as const, csrf: "not_required" as const,

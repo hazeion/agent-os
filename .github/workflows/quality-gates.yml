@@ -308,6 +308,10 @@ jobs:
           npm --prefix web audit --audit-level=high
           python -m unittest tests.test_mentat_local_bridge tests.test_mentat_web_preview -v
 
+      - name: Verify Project context desktop and mobile workflow
+        shell: bash
+        run: CHROME_PATH="$MENTAT_LIGHTHOUSE_CHROME_PATH" python -m unittest tests.test_project_context_browser.ProjectContextBrowserTests -v
+
       - name: Run the production Node and Python browser smoke
         shell: bash
         env:

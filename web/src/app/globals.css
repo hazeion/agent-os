@@ -903,6 +903,31 @@ button {
 .planning-calendar-picker .planning-section-actions span { flex: 1 1 110px; color: var(--text-secondary); font-size: .72rem; text-align: center; }
 .planning-note-picker > label { display: grid; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
 .planning-stage-controls,
+.project-context-panel { min-width: 0; padding: 10px 0; border-top: 1px solid var(--border-subtle); font-size: .82rem; }
+.project-context-heading, .project-context-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.project-context-heading h3 { margin: 0; margin-right: auto; font-size: .9rem; }
+.project-context-actions { justify-content: flex-end; }
+.project-context-body { display: grid; min-width: 0; gap: 10px; padding-top: 10px; }
+.project-context-body p { margin: 0; }
+.project-context-body label { display: grid; gap: 6px; min-width: 0; }
+.project-context-body textarea, .project-context-body select, .project-context-body input[type="file"] { width: 100%; max-width: 100%; min-width: 0; }
+.project-context-body textarea, .project-context-body select { padding: 8px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+.project-context-body textarea { resize: vertical; }
+.project-context-panel button { min-height: 34px; padding: 6px 9px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+.project-context-panel button:disabled { opacity: .5; cursor: not-allowed; }
+.project-context-body input[type="file"]::file-selector-button { padding: 6px 9px; margin-right: 6px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+@media (max-width: 760px) { .project-context-panel button, .project-context-body select { min-height: 44px; } }
+.project-context-body fieldset { min-width: 0; border: 1px solid var(--border-subtle); padding: 10px; }
+.project-context-body small { color: var(--text-secondary); }
+.project-context-file-choice, .project-context-grants li, .project-context-files li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 5px 0; overflow-wrap: anywhere; }
+.project-context-file-choice label { display: flex; align-items: center; flex: 1; }
+.project-context-file-choice input[type="checkbox"] { width: auto; flex: 0 0 auto; }
+.project-context-grants li > span { flex: 1; }
+.project-context-body ul { margin: 0; padding: 0; list-style: none; }
+.project-context-body li span { text-transform: none; font-size: inherit; }
+.project-context-body a { overflow-wrap: anywhere; }
+.project-context-brief { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
+.project-context-confirmation { display: grid; gap: 10px; margin: 10px 0; padding: 10px; border: 1px solid var(--border-subtle); }
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
 .planning-stage-controls > p,
 .planning-project-lifecycle > p { width: 100%; margin: 0; }

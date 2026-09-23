@@ -54,7 +54,7 @@ class VercelConnectionTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             record = self.configure(root)
-            self.assertEqual(SCHEMA_VERSION, 27)
+            self.assertEqual(SCHEMA_VERSION, 28)
             self.assertEqual(record.id, VERCEL_CONNECTION_ID)
             self.assertEqual(record.revision, 1)
 
