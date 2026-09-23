@@ -150,3 +150,14 @@ in a finally block, captures a bounded stack after five seconds, and allows a
 further25 seconds for cleanup before failing. Exactly-once queue assertions and
 production deadlines are unchanged. The exact test passes locally in about two
 seconds; two independent reviews are clean.
+
+## CI attribution follow-up
+
+The c122da1 run reports a Windows Python 3.12 Conversations GET timeout and
+mobile Lighthouse median 94 against the required 95. The exact HTTP test
+passes locally in about two seconds; aggregate CI timings do not establish a
+production root cause. Add a test-only bounded handler stack on the existing
+30-second timeout and fixed-label numeric Lighthouse attribution to the
+existing failure artifact. No deadline, score threshold or retry behavior is
+changed. The two diagnostic tests and exact HTTP test pass; independent
+backend and performance reviews are clean. Further CI evidence is required.
