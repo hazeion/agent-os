@@ -80,8 +80,8 @@ class Schema20ForwardMigrationTests(unittest.TestCase):
             self._schema19(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 30)
-                self.assertEqual(schema_signature_state(connection, 30), "expected")
+                self.assertEqual(SCHEMA_VERSION, 31)
+                self.assertEqual(schema_signature_state(connection, 31), "expected")
                 self.assertEqual(
                     connection.execute("PRAGMA foreign_key_list(mentat_task_delegation_action_receipts)").fetchall(),
                     [],

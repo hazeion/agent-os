@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2149,6 +2149,86 @@ MIGRATIONS += ((29, """
         UNION SELECT attachment_id FROM mentat_run_input_files;
 """),)
 
+MIGRATIONS += ((31, """
+    ALTER TABLE mentat_projects ADD COLUMN deliverable_incarnation TEXT NOT NULL DEFAULT ''
+        CHECK(typeof(deliverable_incarnation)='text' AND length(deliverable_incarnation) IN (0,32));
+    UPDATE mentat_projects SET deliverable_incarnation=lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX idx_mentat_project_deliverable_incarnation ON mentat_projects(deliverable_incarnation)
+        WHERE deliverable_incarnation!='';
+    CREATE TRIGGER mentat_project_deliverable_incarnation_create AFTER INSERT ON mentat_projects
+        WHEN NEW.deliverable_incarnation=''
+        BEGIN UPDATE mentat_projects SET deliverable_incarnation=lower(hex(randomblob(16))) WHERE id=NEW.id; END;
+    CREATE TRIGGER mentat_project_deliverable_incarnation_immutable BEFORE UPDATE OF deliverable_incarnation ON mentat_projects
+        WHEN OLD.deliverable_incarnation!=''
+        BEGIN SELECT RAISE(ABORT,'project.deliverable_identity_immutable'); END;
+    CREATE TABLE mentat_deliverable_slots (
+        id TEXT NOT NULL PRIMARY KEY CHECK(length(id)=44),
+        project_id TEXT NOT NULL,
+        project_incarnation TEXT NOT NULL CHECK(length(project_incarnation)=32),
+        slot TEXT NOT NULL CHECK(slot IN ('layout','products','steps')),
+        head_revision INTEGER NOT NULL CHECK(typeof(head_revision)='integer' AND head_revision BETWEEN 1 AND 32),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        retired_at REAL CHECK(retired_at IS NULL OR retired_at>=created_at),
+        UNIQUE(project_incarnation,slot)
+    );
+    CREATE UNIQUE INDEX idx_mentat_deliverable_live_slot ON mentat_deliverable_slots(project_id,slot)
+        WHERE retired_at IS NULL;
+    CREATE TRIGGER mentat_deliverable_slot_identity_immutable
+        BEFORE UPDATE OF id,project_id,project_incarnation,slot,created_at ON mentat_deliverable_slots
+        BEGIN SELECT RAISE(ABORT,'deliverable.immutable'); END;
+    CREATE TRIGGER mentat_deliverable_slot_no_delete BEFORE DELETE ON mentat_deliverable_slots
+        BEGIN SELECT RAISE(ABORT,'deliverable.retained'); END;
+    CREATE TRIGGER mentat_deliverable_slot_retirement_terminal BEFORE UPDATE OF retired_at ON mentat_deliverable_slots
+        WHEN OLD.retired_at IS NOT NULL OR NEW.retired_at IS NULL
+        BEGIN SELECT RAISE(ABORT,'deliverable.retired'); END;
+    CREATE TABLE mentat_deliverable_versions (
+        id TEXT NOT NULL PRIMARY KEY CHECK(length(id)=52),
+        slot_id TEXT NOT NULL REFERENCES mentat_deliverable_slots(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 32),
+        origin TEXT NOT NULL CHECK(origin IN ('owner_edit','generated')),
+        source_version_id TEXT REFERENCES mentat_deliverable_versions(id) ON DELETE RESTRICT,
+        associated_task_id TEXT,
+        associated_task_incarnation TEXT CHECK(associated_task_incarnation IS NULL OR length(associated_task_incarnation)=32),
+        content_json TEXT NOT NULL CHECK(length(content_json) BETWEEN 2 AND 65536),
+        content_digest TEXT NOT NULL CHECK(length(content_digest)=64),
+        source_run_id TEXT,
+        source_receipt_digest TEXT CHECK(source_receipt_digest IS NULL OR length(source_receipt_digest)=64),
+        source_task_id TEXT,
+        source_task_incarnation TEXT CHECK(source_task_incarnation IS NULL OR length(source_task_incarnation)=32),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        UNIQUE(slot_id,revision),
+        CHECK ((associated_task_id IS NULL AND associated_task_incarnation IS NULL)
+            OR (associated_task_id IS NOT NULL AND associated_task_incarnation IS NOT NULL)),
+        CHECK ((origin='owner_edit' AND source_run_id IS NULL AND source_receipt_digest IS NULL AND source_task_id IS NULL AND source_task_incarnation IS NULL)
+            OR (origin='generated' AND source_run_id IS NOT NULL AND source_receipt_digest IS NOT NULL AND source_task_id IS NOT NULL AND source_task_incarnation IS NOT NULL))
+    );
+    CREATE TRIGGER mentat_deliverable_version_immutable BEFORE UPDATE ON mentat_deliverable_versions
+        BEGIN SELECT RAISE(ABORT,'deliverable.immutable'); END;
+    CREATE TRIGGER mentat_deliverable_version_no_delete BEFORE DELETE ON mentat_deliverable_versions
+        BEGIN SELECT RAISE(ABORT,'deliverable.retained'); END;
+    CREATE TABLE mentat_deliverable_files (
+        version_id TEXT NOT NULL REFERENCES mentat_deliverable_versions(id) ON DELETE RESTRICT,
+        attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE RESTRICT,
+        role TEXT NOT NULL CHECK(role='preview'),
+        blob_sha256 TEXT NOT NULL CHECK(length(blob_sha256)=64),
+        PRIMARY KEY(version_id,role)
+    );
+    CREATE TRIGGER mentat_deliverable_file_immutable BEFORE UPDATE ON mentat_deliverable_files
+        BEGIN SELECT RAISE(ABORT,'deliverable.immutable'); END;
+    CREATE TRIGGER mentat_deliverable_file_no_delete BEFORE DELETE ON mentat_deliverable_files
+        BEGIN SELECT RAISE(ABORT,'deliverable.retained'); END;
+    CREATE TRIGGER mentat_project_retire_deliverables BEFORE DELETE ON mentat_projects
+        BEGIN UPDATE mentat_deliverable_slots SET retired_at=MAX(created_at,CAST(strftime('%s','now') AS REAL))
+            WHERE project_id=OLD.id AND project_incarnation=OLD.deliverable_incarnation AND retired_at IS NULL; END;
+    DROP VIEW mentat_retained_attachments;
+    CREATE VIEW mentat_retained_attachments AS
+        SELECT attachment_id FROM run_attachments
+        UNION SELECT attachment_id FROM mentat_project_context_files
+        UNION SELECT attachment_id FROM mentat_task_input_files
+        UNION SELECT attachment_id FROM mentat_run_input_files
+        UNION SELECT attachment_id FROM mentat_deliverable_files;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2485,7 +2565,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2609,6 +2689,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 28 cannot be safely upgraded")
                 if version == 30 and schema_signature_state(connection, 29) != "expected":
                     raise MentatDatabaseError("Mentat schema 29 cannot be safely upgraded")
+                if version == 31 and schema_signature_state(connection, 30) != "expected":
+                    raise MentatDatabaseError("Mentat schema 30 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.
