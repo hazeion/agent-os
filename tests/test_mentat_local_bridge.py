@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import socket
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -28,6 +29,36 @@ from vercel_connections import VercelConnectionError, VercelConnectionUnavailabl
 
 TOKEN = "bridge-token-that-is-long-enough-for-256-bits-of-entropy"
 BRIDGE_REQUEST_TIMEOUT_SECONDS = 30
+
+
+def bounded_request_stack(thread_id: int | None) -> str:
+    """Test diagnostics only: bounded code locations, never locals/source text."""
+    frame = sys._current_frames().get(thread_id)
+    locations = []
+    try:
+        for _ in range(12):
+            if frame is None:
+                break
+            locations.append(f'{Path(frame.f_code.co_filename).name}:{frame.f_code.co_name}:{frame.f_lineno}')
+            frame = frame.f_back
+        return '\n'.join(locations)[:4096] or 'worker frame unavailable'
+    finally:
+        del frame
+
+
+class RequestDiagnosticTests(unittest.TestCase):
+    def test_stack_capture_is_bounded_and_excludes_source_and_locals(self):
+        frame = None
+        for _ in range(20):
+            frame = SimpleNamespace(f_code=SimpleNamespace(co_filename='/private/root/worker.py', co_name='dispatch'),
+                                    f_lineno=42, f_back=frame, f_locals={'secret': 'never include'})
+        with patch.object(sys, '_current_frames', return_value={123: frame}):
+            result = bounded_request_stack(123)
+            self.assertEqual(result.splitlines(), ['worker.py:dispatch:42'] * 12)
+            self.assertLessEqual(len(result), 4096)
+            self.assertNotIn('private', result)
+            self.assertNotIn('secret', result)
+            self.assertEqual(bounded_request_stack(None), 'worker frame unavailable')
 
 
 def trusted_vercel_message_event_id(run_id: str) -> str:
@@ -1074,9 +1105,22 @@ class LocalBridgeTests(unittest.TestCase):
         data_root_patch = patch.object(server, "DATA_DIR", root)
         data_root_patch.start()
         self.addCleanup(data_root_patch.stop)
-        status, payload, _headers = self.request(
-            path=local_bridge.BRIDGE_CONVERSATIONS_PATH,
-        )
+        observed = {}
+        original_get = self.server.RequestHandlerClass.do_GET
+        def observed_get(handler):
+            observed['thread'] = threading.get_ident()
+            observed['started'] = time.monotonic()
+            return original_get(handler)
+        started = time.monotonic()
+        with patch.object(self.server.RequestHandlerClass, 'do_GET', observed_get):
+            try:
+                status, payload, _headers = self.request(
+                    path=local_bridge.BRIDGE_CONVERSATIONS_PATH,
+                )
+            except TimeoutError:
+                phase = 'request dispatch' if 'thread' in observed else 'awaiting dispatch'
+                self.fail(f'Conversations read timeout during {phase}; elapsed={time.monotonic()-started:.1f}s\n'
+                          + bounded_request_stack(observed.get('thread', self.thread.ident)))
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["conversations"], [])
