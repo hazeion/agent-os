@@ -56,7 +56,8 @@ are rejected. Direct sanitizer tests alone do not prove this lifecycle.
 Staging, explicit permissions and history pruning are implemented in private
 Python capabilities and connected to the Project editor. Rendered browser
 acceptance and whole-slice reviews remain pending. The branch is work in
-progress and has no PR yet.
+progress toward integrated acceptance and is published in
+[PR 266](https://github.com/hazeion/agent-os/pull/266), pending CI and merge.
 
 Current targeted verification: 43 context/access/deletion tests pass. A virtual
 empty snapshot initially changed identity because migration 28 generated fresh

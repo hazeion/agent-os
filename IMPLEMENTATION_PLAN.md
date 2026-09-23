@@ -100,7 +100,8 @@ the context review above. Its current CI still has a Windows Conversations-read
 timeout and a mobile Lighthouse performance failure requiring diagnosis.
 The owner editor and grants are implemented with two clean reviews and built
 desktop/mobile acceptance in [the editor review](reviews/2026-09-22-project-context-editor.md).
-Publication and CI are pending; approved Task inputs are the next product slice.
+Published in [PR 266](https://github.com/hazeion/agent-os/pull/266), pending CI
+and merge; approved Task inputs are the next product slice.
 Project execution remains
 unavailable until exact admission and runtime qualification are implemented;
 the contract is not completion evidence.
