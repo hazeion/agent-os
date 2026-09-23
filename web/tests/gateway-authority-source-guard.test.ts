@@ -55,6 +55,7 @@ const APPROVED_WRAPPER_BACKED_ROUTE_FACTORIES = new Set([
   "@/lib/planning-task-route",
   "@/lib/planning-tasks-route",
   "@/lib/project-creation-route",
+  "@/lib/project-context-route",
 ]);
 
 type ImportBinding = Readonly<{ local: string; module: string }>;

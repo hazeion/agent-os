@@ -210,7 +210,7 @@ def _closure(connection: sqlite3.Connection, target_kind: str, target_id: str) -
 
 def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) -> DeletionPlan:
     try:
-        validate_project_context_connection(connection)
+        validate_project_context_connection(connection, require_available=False)
     except ProjectContextError as exc:
         raise PlanningDeletionError("planning.deletion_unavailable") from exc
     task_ids, project_ids = _closure(connection, target_kind, target_id)
@@ -281,10 +281,13 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         f"SELECT conversation_id, attachment_id FROM mentat_conversation_staged_attachments WHERE conversation_id IN {conversation_sql} ORDER BY conversation_id, attachment_id",
         conversation_args,
     )
+    staged_context_rows = _rows(connection,
+        f'SELECT attachment_id,project_id,created_at FROM mentat_project_context_staged WHERE project_id IN {project_sql} ORDER BY attachment_id', project_args)
     attachment_ids = tuple(sorted(
         {str(row["attachment_id"]) for row in artifact_rows}
         | {str(row["attachment_id"]) for row in attachment_rows}
         | {str(row["attachment_id"]) for row in staged_rows}
+        | {str(row["attachment_id"]) for row in staged_context_rows}
     ))
     active_runs = tuple(sorted(
         str(row["id"]) for row in run_rows if str(row["status"]) in ACTIVE_STATUSES
@@ -296,6 +299,10 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         f"WHERE (s.project_id IN {project_sql} AND s.retired_at IS NULL) OR EXISTS "
         f"(SELECT 1 FROM mentat_project_context_files f WHERE f.context_id=v.id AND f.attachment_id IN {attachment_sql}) "
         "ORDER BY s.id,v.revision", project_args + attachment_args)
+    context_scope_sql, context_scope_args = _placeholders(sorted({str(row[0]) for row in context_rows}))
+    grant_rows = _rows(connection,
+        'SELECT scope_id,agent_id,agent_incarnation,context_id,revision,state,reason,updated_at '
+        f'FROM mentat_project_context_grants WHERE scope_id IN {context_scope_sql} ORDER BY scope_id,agent_id', context_scope_args)
     snapshot = {
         "target": [target_kind, target_id],
         "projects": [(str(row["id"]), int(row["revision"])) for row in project_rows],
@@ -311,6 +318,8 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         "staged_attachments": [(str(row["conversation_id"]), str(row["attachment_id"])) for row in staged_rows],
         "attachments": attachment_ids,
         "retained_project_context": [tuple(row) for row in context_rows],
+        "project_context_grants": [tuple(row) for row in grant_rows],
+        "staged_project_context": [tuple(row) for row in staged_context_rows],
     }
     # A delegated artifact commonly has both its task mapping and a synthetic
     # run attachment. The public preview reports distinct affected items, not
@@ -482,8 +491,9 @@ class PlanningDeletionService:
         connection.execute(f"DELETE FROM mentat_conversations WHERE id IN {conversation_sql}", conversation_args)
         connection.execute(f"DELETE FROM mentat_tasks WHERE id IN {task_sql}", task_args)
         retire_project_contexts(connection, plan.project_ids)
+        connection.execute(f'DELETE FROM mentat_project_context_staged WHERE project_id IN {project_sql}', project_args)
         connection.execute(f"DELETE FROM mentat_projects WHERE id IN {project_sql}", project_args)
-        validate_project_context_connection(connection)
+        validate_project_context_connection(connection, require_available=False)
         # Both authoritative repositories deliberately require contiguous
         # ordering.  Shift first so the UNIQUE constraint cannot collide while
         # compacting a deleted middle member.

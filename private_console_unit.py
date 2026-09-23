@@ -100,6 +100,7 @@ OWNER_AUTH_DATABASE_SCHEMA_VERSION = 24
 OWNER_METHOD_DATABASE_SCHEMA_VERSION = 25
 GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION = 26
 PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION = 27
+PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION = 28
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -124,6 +125,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     OWNER_METHOD_DATABASE_SCHEMA_VERSION,
     GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION,
     PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION,
+    PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -370,6 +372,10 @@ def _initialize_database(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, 0)",
                 (version,),
             )
+        if schema_version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
+            # Virtual empty snapshots must have a stable identity. They carry no
+            # context authority; the first real context publication activates it.
+            connection.execute('UPDATE mentat_project_context_access_state SET approval_epoch=zeroblob(32) WHERE singleton=1')
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             connection.execute(
                 "INSERT OR IGNORE INTO mentat_agent_registry_state ("
@@ -1021,6 +1027,8 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             else:
                 _require_empty_unclaimed_run_store(path)
         placeholders = ",".join("?" for _ in retained)
+        if schema_version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
+            connection.execute('DELETE FROM mentat_project_context_staged')
         if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION:
             from owner_auth_google_transactions import discard_transactions
             discard_transactions(connection)
@@ -1134,6 +1142,8 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
         retained_table = "mentat_retained_attachments" if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION else "run_attachments"
         if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0]:
             raise PrivateConsoleUnitError("private_database_not_filtered")
+        if schema_version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION and connection.execute('SELECT COUNT(*) FROM mentat_project_context_staged').fetchone()[0]:
+            raise PrivateConsoleUnitError('private_database_not_filtered')
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
         signature_state = _schema_signature_state(connection, schema_version)
@@ -1568,7 +1578,10 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
     return unit
 
 
-def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUnit:
+def sanitize_owner_auth_restore_unit(
+    unit: PrivateConsoleUnit, *, now: float | None = None,
+    epoch_seed: bytes | None = None, legacy: bool = False,
+) -> PrivateConsoleUnit:
     """Return a restored private unit with live owner-auth grants invalidated.
 
     A pristine migrated authority is byte-for-byte unchanged, preserving the
@@ -1582,10 +1595,12 @@ def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsole
         connection = sqlite3.connect(database)
         try:
             version = int(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0)
+            if legacy and version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
+                raise PrivateConsoleUnitError('private_restore_protocol_unsupported')
             if version < OWNER_AUTH_DATABASE_SCHEMA_VERSION:
                 return unit
             state = connection.execute("SELECT state FROM mentat_owner_auth_state WHERE singleton = 1").fetchone()
-            live = (
+            owner_live = (
                 state is not None and state[0] != "unbootstrapped"
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state = 'active'").fetchone()[0])
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_ceremonies WHERE state = 'pending'").fetchone()[0])
@@ -1593,11 +1608,18 @@ def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsole
                 or version >= OWNER_METHOD_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_configuration").fetchone()[0])
                 or version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0])
             )
-            if not live:
+            # Even an unsubmitted preview must not survive a restore. Rotate the
+            # private approval epoch whenever this authority exists.
+            context_live = version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION
+            if not owner_live and not context_live:
                 return unit
             from owner_auth import sanitize_after_restore
             connection.execute("BEGIN IMMEDIATE")
-            sanitize_after_restore(connection)
+            if owner_live:
+                sanitize_after_restore(connection, now=now)
+            if version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
+                from project_context_access import revoke_after_restore
+                revoke_after_restore(connection, now=now, epoch_seed=epoch_seed)
             connection.commit()
         except (sqlite3.Error, RuntimeError) as exc:
             connection.rollback()
@@ -1612,6 +1634,78 @@ def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsole
                 blobs=unit.blobs,
             )
         )
+
+
+def matching_legacy_owner_restore_unit(
+    source: PrivateConsoleUnit, live: PrivateConsoleUnit,
+) -> PrivateConsoleUnit | None:
+    """Recognize an exact legacy publication, never merely revoked-looking rows.
+
+    The old receipt omitted its clock. Only fields that the fixed sanitizer
+    changes can supply a candidate; regenerating the entire unit must then
+    match the live digest. The complete published tree is the durable witness.
+    """
+    expected = private_console_unit_digest(live)
+    try:
+        zero = sanitize_owner_auth_restore_unit(source, now=0.0, legacy=True)
+    except PrivateConsoleUnitError as exc:
+        if str(exc) == 'private_restore_protocol_unsupported':
+            raise
+    else:
+        if private_console_unit_digest(zero) == expected:
+            return zero
+    with TemporaryDirectory(prefix='mentat-legacy-restore-witness-') as temporary:
+        source_path, live_path = Path(temporary) / 'source.sqlite3', Path(temporary) / 'live.sqlite3'
+        source_path.write_bytes(source.database_raw)
+        live_path.write_bytes(live.database_raw)
+        before = after = None
+        timestamps: set[float] = set()
+        try:
+            before = sqlite3.connect(_sqlite_readonly_uri(source_path), uri=True)
+            after = sqlite3.connect(_sqlite_readonly_uri(live_path), uri=True)
+            version = before.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
+            if not OWNER_AUTH_DATABASE_SCHEMA_VERSION <= version < PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
+                return None
+            for table, key, old_state, new_state, timestamp, maximum in (
+                ('mentat_owner_auth_sessions','session_digest','active','revoked','revoked_at',32),
+                ('mentat_owner_auth_ceremonies','ceremony_id','pending','cancelled','consumed_at',32),
+                ('mentat_owner_auth_recovery_codes','recovery_id','reserved','active','updated_at',10),
+            ):
+                identifiers = before.execute(f'SELECT {key} FROM {table} WHERE state=?', (old_state,)).fetchmany(maximum + 1)
+                if len(identifiers) > maximum:
+                    return None
+                for identifier, in identifiers:
+                    row = after.execute(f'SELECT {timestamp} FROM {table} WHERE {key}=? AND state=?', (identifier,new_state)).fetchone()
+                    if row is not None:
+                        timestamps.add(row[0])
+            state = before.execute('SELECT state FROM mentat_owner_auth_state WHERE singleton=1').fetchone()
+            if state and state[0] == 'bootstrap_open':
+                row = after.execute("SELECT updated_at FROM mentat_owner_auth_state WHERE singleton=1 AND state='unbootstrapped'").fetchone()
+                if row is not None:
+                    timestamps.add(row[0])
+            for notice in ('restore_invalidated_sessions','restore_snapshot_credentials_restored'):
+                if before.execute('SELECT 1 FROM mentat_owner_auth_notices WHERE notice=?', (notice,)).fetchone() is None:
+                    row = after.execute('SELECT created_at FROM mentat_owner_auth_notices WHERE notice=?', (notice,)).fetchone()
+                    if row is not None:
+                        timestamps.add(row[0])
+            if before.execute("SELECT 1 FROM mentat_owner_auth_audit WHERE event='restore_sanitized'").fetchone() is None:
+                row = after.execute("SELECT occurred_at FROM mentat_owner_auth_audit WHERE event='restore_sanitized'").fetchone()
+                if row is not None:
+                    timestamps.add(row[0])
+        except sqlite3.Error as exc:
+            raise PrivateConsoleUnitError('private_legacy_restore_invalid') from exc
+        finally:
+            if before is not None:
+                before.close()
+            if after is not None:
+                after.close()
+    if len(timestamps) != 1:
+        return None
+    timestamp = next(iter(timestamps))
+    if type(timestamp) not in {int,float} or not 0 < timestamp <= 253402300799.0:
+        return None
+    candidate = sanitize_owner_auth_restore_unit(source, now=timestamp, legacy=True)
+    return candidate if private_console_unit_digest(candidate) == expected else None
 
 
 def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
