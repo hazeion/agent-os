@@ -30,6 +30,9 @@ ACCESS_MAX_METADATA_BYTES = LEGACY_MAX_METADATA_BYTES + 64 * 1024
 # Schema 29 reserves every supported Task identity slot plus empty input graph
 # framing. Full schema-28 roots must remain valid after the identity migration.
 MAX_METADATA_BYTES = ACCESS_MAX_METADATA_BYTES + 512 * 1024
+# Schema 30 charges immutable Run-input receipts and exact file identities in
+# the same bounded graph. Empty migration overhead is intentionally small.
+RUN_INPUT_MAX_METADATA_BYTES = MAX_METADATA_BYTES + 512 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -108,6 +111,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'task_input.capacity':
                 _fail('capacity')
             _fail('task_inputs_invalid')
+    if schema_version >= 30:
+        budget = RUN_INPUT_MAX_METADATA_BYTES
+        from run_input_receipts import RunInputReceiptError, validate_run_input_connection
+        try:
+            metadata.extend(validate_run_input_connection(connection, require_available=require_available))
+        except RunInputReceiptError as exc:
+            if str(exc) == 'run_input.capacity':
+                _fail('capacity')
+            _fail('run_inputs_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}
