@@ -249,7 +249,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 28)
+            self.assertEqual(SCHEMA_VERSION, 29)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -1568,6 +1568,33 @@ class TaskRepositoryTests(unittest.TestCase):
             self.assertEqual(upgraded.raw, exported.raw)
             self.assertEqual(len(upgraded.raw), maximum)
 
+    def test_maximum_size_new_task_identity_uses_one_database_write(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [])
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert(task_with_export_size(task_repository.MAX_EXPORT_BYTES))
+            finally:
+                connection.close()
+            self.assertLess(database_path(root).stat().st_size, task_repository.MAX_DATABASE_BYTES)
+            self.assertEqual(len(export_tasks(root, require_authority=True).raw), task_repository.MAX_EXPORT_BYTES)
+
+    def test_maximum_size_task_remains_exportable_after_edit(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [])
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert(task_with_export_size(task_repository.MAX_EXPORT_BYTES))
+            finally:
+                connection.close()
+            mutate_authoritative_tasks(root, lambda rows: ([{**rows[0], 'title':'X' + rows[0]['title'][1:]}], None))
+            self.assertLess(database_path(root).stat().st_size, task_repository.MAX_DATABASE_BYTES)
+            self.assertEqual(len(export_tasks(root, require_authority=True).raw), task_repository.MAX_EXPORT_BYTES)
+
     def test_plain_export_rejects_post_write_trailing_byte_drift(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
@@ -2097,36 +2124,18 @@ class TaskRepositoryTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             write_tasks(root, [task("source")])
-            connection = connect(root)
+            from mentat_db import ensure_private_console_dir
+            ensure_private_console_dir(root)
+            private_console_unit._initialize_database(database_path(root), schema_version=5)
+            connection = sqlite3.connect(database_path(root))
             try:
-                TaskRepository(connection).insert_collection([task("occupied")])
-                with transaction(connection, immediate=True):
-                    connection.execute("DROP INDEX idx_mentat_tasks_project_id_order")
-                    connection.execute("ALTER TABLE mentat_tasks DROP COLUMN project_id")
-                    connection.execute("DROP TABLE mentat_project_store_state")
-                    connection.execute("DROP TABLE mentat_projects")
-                    connection.execute(
-                        "DROP TABLE mentat_conversation_run_attempts"
-                    )
-                    connection.execute(
-                        "DROP TABLE mentat_conversation_submission_results"
-                    )
-                    connection.execute("DROP TABLE mentat_conversation_messages")
-                    connection.execute("DROP TABLE mentat_conversation_turns")
-                    connection.execute("DROP TABLE mentat_conversations")
-                    connection.execute("DROP TABLE mentat_agent_events")
-                    connection.execute("DROP TABLE mentat_dispatch_reservations")
-                    connection.execute("DROP TABLE mentat_task_dispatch_heads")
-                    connection.execute("DROP TABLE mentat_runs")
-                    connection.execute("DROP TABLE mentat_run_store_state")
-                    connection.execute("DROP TABLE mentat_task_store_state")
-                    connection.execute("DROP TABLE mentat_agent_registry_state")
-                    connection.execute("DROP TABLE mentat_agents")
-                    connection.execute("DROP TABLE agent_runtime_configs")
-                    connection.execute("DROP TABLE provider_connections")
-                    connection.execute(
-                        "DELETE FROM schema_migrations WHERE version > 5"
-                    )
+                connection.execute(
+                    "INSERT INTO mentat_tasks(id,sort_order,title,description,project,status,priority,source,"
+                    "review_required,needs_attention,created_at,updated_at) VALUES(?,0,?,?,?,?,?,?,0,0,?,?)",
+                    ("occupied", "Task occupied", "", "Mentat", "todo", "medium", "test",
+                     "2026-08-18T09:00:00-07:00", "2026-08-18T09:05:00-07:00"),
+                )
+                connection.commit()
             finally:
                 connection.close()
             preview = preview_task_sqlite_migration(root)

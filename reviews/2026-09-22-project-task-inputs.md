@@ -246,3 +246,87 @@ and execution admission still need implementation before this slice publishes.
 The second prerequisite review caught malformed metadata raising a raw type
 error; explicit string checks and kind/MIME regressions now return the fixed
 Task-input error. Re-review is clean.
+
+Schema 29 is now under implementation. It gives canonical Tasks private
+incarnations, immutable input scopes/versions and ordered file references. An
+exact publication helper binds current Task membership and assignment, active
+Agent incarnation, current Project context grant/revision and verified selected
+file bytes in one guarded transaction. Input references join the retained-file
+view. Task or Project deletion retires live scopes; a new Task with the same
+display ID gets a different incarnation and a new input scope. Context pruning
+blocks a version retained by a Task input. Fourteen focused input tests pass,
+including actual reassignment, ID reuse, backup/restore sanitization and
+malformed retained metadata. A 45-test context/access/deletion run passed before
+the final MIME/identity hardening, which received a clean focused re-review.
+The historical migration and private-state suite passed 81 tests with one
+platform skip. Exact execution approval, Run-input receipts and real runtime
+qualification remain outstanding beyond this preparation slice.
+
+## Preparation interface and verification
+
+The owner can now prepare a Task-specific input version from an Agent-granted
+Project context in Projects & Tasks. The editor shows exact eligible brief/file
+versions, an eight-file/one-image selection and bounded instructions. A save
+binds the Task's private incarnation through an opaque revision token, current
+Task membership/assignment/revision, exact Agent grant, verified selected bytes
+and immutable input version in one transaction. Save does not approve a plan,
+dispatch a Run, hand off a result or broaden Agent tools. The built desktop and
+mobile garage fixture successfully publishes Project context, grants an Agent,
+selects a floorplan for a Task, saves one input version, revokes the grant and
+reads retained history. No provider or real owner login was used.
+
+Historical Task inputs show the saved Project brief and exact selected files
+even after a grant is revoked. Per-Task drafts survive navigation; an uncertain
+save requires refresh, and a changed Task identity or input head blocks replay
+until the owner explicitly reviews the current Task. Named Python and Node
+capabilities enforce owner admission, CSRF, exact paths/bodies, bounded
+projections and file memberships. The gateway/UI review is clean after adding
+historical file inspection. The authority review found an uncaught context
+access error during a pause-before-save race; it now returns a fixed 409, with
+a real owner-session/CSRF bridge regression and clean re-review.
+
+The first broad Task regression found that SQLite's after-insert identity hook
+rewrote a valid maximum-size Task and left enough freelist pages to exceed the
+old 32 MiB Task read ceiling. Repository inserts now set the private identity
+in their first write, while the AFTER INSERT hook remains a fallback for direct
+new rows. Ordinary valid edits can still leave free pages, so Task read limits
+now match the existing 64 MiB database, 32 MiB WAL, 4 MiB SHM and 96 MiB
+aggregate snapshot caps. The public Task document limit remains 16 MiB. Tests
+cover maximum-size creation, edit and exact export. The historical schema-5
+preview fixture now uses a real schema-5 database instead of dropping columns
+from a current schema. The storage-boundary re-review is clean. The built
+desktop/mobile garage fixture now also saves an exact Task input version with
+the selected floorplan and confirms no Run was started. The full 413-test web
+suite passed before the final paused-Project error correction and one
+historical-file display regression; their focused tests pass, and the final
+full web and Python checks are running.
+
+Preparation is an independently reviewable slice; the approved-plan admission,
+Run-input receipt, bounded coordinator and real runtime qualification in issues
+262/239 are not yet implemented. Keep both issues open.
+
+## Retained input history and deletion disclosure
+
+Task and Project deletion previews now disclose the number of live Task-input
+versions that will remain. The owner can open retained history separately from
+current Tasks, inspect the exact old Project brief and file manifest, and remove
+eligible versions through a bounded preview and confirmation. The current live
+Task input cannot be removed; changing its Task revision, underlying references
+or restore epoch invalidates a pending confirmation. Pruning retains shared
+files and lets empty retired scopes go away. Future Run-input receipts must pin
+their consumed versions before approved execution can be enabled. This
+preparation slice starts no Runs and claims no runtime isolation.
+
+The built desktop/mobile garage fixture now covers Project context publication,
+an Agent grant, floorplan selection, Task input publication, grant revocation,
+Task deletion disclosure, retained Task input view/removal and retired Project
+context cleanup. Fixed route/source-guard checks and focused Python/web tests
+pass. Both independent reviews are clean after the historical-file, paused
+Project and retention corrections. Final checks pass: 143 focused Task/Project/
+context/deletion/bridge tests (six platform skips), 415 web tests, TypeScript,
+full ESLint, a production Next build, and desktop/mobile Chromium workflows
+against Python/SQLite with disposable data. The refreshed wheel/sdist pass
+exact artifact verification. An isolated installed-wheel smoke covers input
+publication, owner read, backup/restore and retired-history removal. A Windows
+path-normalized secret diagnostic and Linux raw CI scan remain separate gates.
+No live provider or user account was used.

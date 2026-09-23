@@ -400,6 +400,16 @@ are revalidated from project-owned JSON and canonical SQLite in one guarded
 snapshot; missing, moved, or ambiguous targets remain bounded stale references
 until an exact Conversation-revision rebind or clear.
 
+Schema 29 gives each canonical Task a private incarnation and stores immutable,
+owner-prepared Task input versions tied to one live Project context and exact
+Agent grant. These versions select at most eight verified files and one image;
+edits, Task deletion/recreation, changed Agent access and restores cannot
+silently reuse stale preparation. Input files retain their blobs and prevent
+pruning their context version. Preparing or saving Task inputs grants no Run,
+delegation, provider tool, or automatic execution authority. Approved-plan
+admission, durable Run-input receipts and adapter qualification remain separate
+capabilities; never reinterpret a saved input version as execution approval.
+
 Home planning selectors stage locally until explicit Apply or Clear and remain
 blocked by active/finalizing Runs or queue-active Turns. Planning suggestions
 may fill an empty draft but never Send. The right rail shows only a capped safe

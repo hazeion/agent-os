@@ -83,7 +83,7 @@ function mutationRefreshFixture() {
       if (row.workflow_stage === "done" && row.recurrence) fixture.rows.push({ ...row, id: "task_successor", revision: 1, due_date: "2026-08-30", workflow_stage: "planned", planning_state: "planned", status: "todo" });
       return Response.json({ ...envelope, action: "edit", project: fixture.project, task: fixture.summary(row) });
     }
-    if (path.endsWith("/delete/preview")) return Response.json({ ...envelope, affected: { projects: 0, tasks: 1, conversations: 0, runs: 0, artifacts: 0 }, confirmation_id: "a".repeat(64), has_active_runs: false, retained_context_versions: 0, target_kind: "task", target_id: task.id });
+    if (path.endsWith("/delete/preview")) return Response.json({ ...envelope, affected: { projects: 0, tasks: 1, conversations: 0, runs: 0, artifacts: 0 }, confirmation_id: "a".repeat(64), has_active_runs: false, retained_context_versions: 0, retained_input_versions: 0, target_kind: "task", target_id: task.id });
     if (path.endsWith("/delete")) { fixture.rows = fixture.rows.filter((row) => row.id !== task.id); return Response.json({ ...envelope, action: "delete", deletion: { projects: 0, tasks: 1, conversations: 0, runs: 0, artifacts: 0 }, target_kind: "task", target_id: task.id }); }
     if (path === `/api/planning/projects/${project.id}/rename`) {
       const body = JSON.parse(String(init?.body)); fixture.project = { ...fixture.project, name: body.name, revision: fixture.project.revision + 1 };
@@ -2036,7 +2036,7 @@ test("dependency editor prevents saves beyond the 100-prerequisite boundary", as
 test("Task deletion shows only count effects, then confirms the exact preview before refreshing authority", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const reminderDetail = { ...taskDetail, reminders: [{ at: "2030-09-03T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_delete" }] };
-  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 1, projects: 0, runs: 1, tasks: 2 }, confirmation_id: "a".repeat(64), has_active_runs: true, retained_context_versions: 0, target_id: task.id, target_kind: "task" as const };
+  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 1, projects: 0, runs: 1, tasks: 2 }, confirmation_id: "a".repeat(64), has_active_runs: true, retained_context_versions: 0, retained_input_versions: 0, target_id: task.id, target_kind: "task" as const };
   const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: task.id, target_kind: "task" as const };
   const calls: Array<{ body: unknown; path: string }> = [];
   let deleted = false;
@@ -2070,7 +2070,7 @@ test("Task deletion shows only count effects, then confirms the exact preview be
 test("Project deletion clears every local reminder schedule because a count-only cascade can span dependent Tasks", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const reminderDetail = { ...taskDetail, reminders: [{ at: "2030-09-03T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_project_delete" }] };
-  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 0, projects: 1, runs: 0, tasks: 2 }, confirmation_id: "b".repeat(64), has_active_runs: false, retained_context_versions: 2, target_id: project.id, target_kind: "project" as const };
+  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 0, projects: 1, runs: 0, tasks: 2 }, confirmation_id: "b".repeat(64), has_active_runs: false, retained_context_versions: 2, retained_input_versions: 0, target_id: project.id, target_kind: "project" as const };
   const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: project.id, target_kind: "project" as const };
   let deleted = false;
   globalThis.fetch = async (input) => {

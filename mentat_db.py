@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2019,6 +2019,78 @@ MIGRATIONS += ((28, """
     );
 """),)
 
+MIGRATIONS += ((29, """
+    ALTER TABLE mentat_tasks ADD COLUMN input_incarnation TEXT NOT NULL DEFAULT ''
+        CHECK(typeof(input_incarnation)='text' AND length(input_incarnation) IN (0,32));
+    UPDATE mentat_tasks SET input_incarnation=lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX idx_mentat_task_input_incarnation ON mentat_tasks(input_incarnation)
+        WHERE input_incarnation!='';
+    CREATE TRIGGER mentat_task_input_incarnation_create AFTER INSERT ON mentat_tasks
+        WHEN NEW.input_incarnation=''
+        BEGIN UPDATE mentat_tasks SET input_incarnation=lower(hex(randomblob(16))) WHERE id=NEW.id; END;
+    CREATE TRIGGER mentat_task_input_incarnation_immutable BEFORE UPDATE OF input_incarnation ON mentat_tasks
+        WHEN OLD.input_incarnation!=''
+        BEGIN SELECT RAISE(ABORT,'task.input_identity_immutable'); END;
+    CREATE TABLE mentat_task_input_scopes (
+        id TEXT NOT NULL PRIMARY KEY CHECK(typeof(id)='text' AND length(id)=49),
+        task_id TEXT NOT NULL,
+        task_incarnation TEXT NOT NULL CHECK(length(task_incarnation)=32),
+        project_scope_id TEXT NOT NULL REFERENCES mentat_project_context_scopes(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        retired_at REAL CHECK(retired_at IS NULL OR retired_at>=created_at)
+    );
+    CREATE UNIQUE INDEX idx_mentat_task_input_live_scope ON mentat_task_input_scopes(task_id)
+        WHERE retired_at IS NULL;
+    CREATE TRIGGER mentat_task_input_scope_immutable
+        BEFORE UPDATE OF id,task_id,task_incarnation,project_scope_id,created_at ON mentat_task_input_scopes
+        BEGIN SELECT RAISE(ABORT,'task_input.immutable'); END;
+    CREATE TRIGGER mentat_task_input_retirement_terminal BEFORE UPDATE OF retired_at ON mentat_task_input_scopes
+        WHEN OLD.retired_at IS NOT NULL OR NEW.retired_at IS NULL
+        BEGIN SELECT RAISE(ABORT,'task_input.retired'); END;
+    CREATE TABLE mentat_task_input_versions (
+        id TEXT NOT NULL PRIMARY KEY CHECK(typeof(id)='text' AND length(id)=43),
+        scope_id TEXT NOT NULL REFERENCES mentat_task_input_scopes(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+        task_revision INTEGER NOT NULL CHECK(typeof(task_revision)='integer' AND task_revision>0),
+        agent_id TEXT NOT NULL,
+        agent_incarnation TEXT NOT NULL CHECK(length(agent_incarnation)=32),
+        context_id TEXT NOT NULL REFERENCES mentat_project_context_versions(id) ON DELETE RESTRICT,
+        grant_revision INTEGER NOT NULL CHECK(typeof(grant_revision)='integer' AND grant_revision>0),
+        binding_digest TEXT NOT NULL CHECK(length(binding_digest)=64),
+        instructions TEXT NOT NULL,
+        files_digest TEXT NOT NULL CHECK(length(files_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        UNIQUE(scope_id,revision)
+    );
+    CREATE TRIGGER mentat_task_input_version_immutable BEFORE UPDATE ON mentat_task_input_versions
+        BEGIN SELECT RAISE(ABORT,'task_input.immutable'); END;
+    CREATE TABLE mentat_task_input_files (
+        input_id TEXT NOT NULL REFERENCES mentat_task_input_versions(id) ON DELETE RESTRICT,
+        attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE RESTRICT,
+        ordinal INTEGER NOT NULL CHECK(typeof(ordinal)='integer' AND ordinal BETWEEN 0 AND 7),
+        PRIMARY KEY(input_id,ordinal), UNIQUE(input_id,attachment_id)
+    );
+    CREATE TRIGGER mentat_task_input_file_immutable BEFORE UPDATE ON mentat_task_input_files
+        BEGIN SELECT RAISE(ABORT,'task_input.immutable'); END;
+    CREATE TRIGGER mentat_task_delete_input_scope BEFORE DELETE ON mentat_tasks
+        BEGIN UPDATE mentat_task_input_scopes SET retired_at=MAX(created_at,CAST(strftime('%s','now') AS REAL))
+            WHERE task_id=OLD.id AND task_incarnation=OLD.input_incarnation AND retired_at IS NULL; END;
+    CREATE TRIGGER mentat_task_move_input_scope AFTER UPDATE OF project_id ON mentat_tasks
+        WHEN NEW.project_id IS NOT OLD.project_id
+        BEGIN UPDATE mentat_task_input_scopes SET retired_at=MAX(created_at,CAST(strftime('%s','now') AS REAL))
+            WHERE task_id=OLD.id AND task_incarnation=OLD.input_incarnation AND retired_at IS NULL; END;
+    CREATE TRIGGER mentat_project_retire_input_scopes AFTER UPDATE OF retired_at ON mentat_project_context_scopes
+        WHEN NEW.retired_at IS NOT NULL
+        BEGIN UPDATE mentat_task_input_scopes SET retired_at=MAX(created_at,NEW.retired_at)
+            WHERE project_scope_id=NEW.id AND retired_at IS NULL; END;
+    DROP VIEW IF EXISTS mentat_retained_attachments;
+    CREATE VIEW mentat_retained_attachments AS
+        SELECT attachment_id FROM run_attachments
+        UNION SELECT attachment_id FROM mentat_project_context_files
+        UNION SELECT attachment_id FROM mentat_task_input_files;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2355,7 +2427,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2475,6 +2547,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 26 cannot be safely upgraded")
                 if version == 28 and schema_signature_state(connection, 27) != "expected":
                     raise MentatDatabaseError("Mentat schema 27 cannot be safely upgraded")
+                if version == 29 and schema_signature_state(connection, 28) != "expected":
+                    raise MentatDatabaseError("Mentat schema 28 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

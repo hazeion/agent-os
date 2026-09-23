@@ -49,7 +49,7 @@ PUBLIC_MODULES = {
     "link_preview_workers",
     "mentat_db", "mentat_lifecycle", "orchestration_service", "private_console_migration",
     "owner_auth", "owner_auth_setup", "owner_gateway", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_context", "project_context_access", "project_context_editor", "project_context_http", "project_repository", "remote_hermes", "runtime_config",
-    "run_repository", "server", "task_delegation_receipts", "task_planning", "task_repository",
+    "run_repository", "server", "task_delegation_receipts", "task_planning", "task_repository", "task_inputs", "task_inputs_http",
     "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }
 PUBLIC_PACKAGES = {"mentat", "deploy", "deploy.caddy"}

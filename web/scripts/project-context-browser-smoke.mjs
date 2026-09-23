@@ -21,7 +21,8 @@ try {
   await page.goto(`http://127.0.0.1:${port}/tasks`, { waitUntil: 'networkidle0' });
   async function click(text, scope = '') {
     const selector = `${scope} ::-p-text(${text})`.trim();
-    await page.waitForSelector(selector);
+    const element = await page.waitForSelector(selector);
+    await element.evaluate((node) => node.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
     await page.locator(selector).click();
   }
   async function waitText(text) { await page.waitForFunction(value => document.body.innerText.toLowerCase().replace(/\s+/gu, ' ').includes(value.toLowerCase()), {}, text); }
@@ -34,15 +35,27 @@ try {
   const preview = await page.$eval('[aria-label="Agent access preview"]', node => node.innerText);
   assert(preview.includes('dimensions.md') && preview.includes('reserve a workbench'));
   await click('Approve access'); await waitText('Agent access approved for the reviewed version.');
+  await click('Research garage organization');
+  await click('Prepare inputs'); await page.waitForSelector('section[aria-label="Task inputs"] input[type="checkbox"]');
+  await page.click('section[aria-label="Task inputs"] input[type="checkbox"]');
+  await page.type('section[aria-label="Task inputs"] textarea', 'Research organization options and preserve bicycle clearance.');
+  await click('Save input version'); await waitText('Saved Task input version 1.');
   await click('Revoke access'); await waitText('Agent access revoked.');
+  await click('Delete Task'); await waitText('Saved Task inputs (1 versions)');
+  await click('Confirm delete Task'); await waitText('Deleted 0 Projects, 1 Task');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
   assert.equal(overflow, false, 'context editor creates horizontal overflow');
   const output = resolve('../artifacts/project-context-editor'); await mkdir(output, { recursive: true });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: resolve(output, `${width}.png`), fullPage: true });
   if (width === 390) await click('Projects and saved views');
-  await click('Retained Project history'); await waitText('Previous garage goals');
+  await click('Retained Task inputs'); await waitText('Research organization options');
+  await click('View retained input'); await click('Review input removal'); await waitText('This cannot be undone.');
+  await click('Confirm input removal'); await waitText('No retained Task inputs.');
+  await click('Retained Project history');
   const history = 'section[aria-label="Retained Project history"]';
+  assert.equal(await page.$eval(`${history} button`, element => element.getAttribute('aria-expanded')), 'true');
+  await waitText('Previous garage goals');
   await click('View saved version', history); await page.waitForSelector(`${history} h4`);
   await click('Review removal', history); await waitText('This cannot be undone.');
   await click('Confirm removal', history); await waitText('No retained history.');

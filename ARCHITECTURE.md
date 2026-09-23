@@ -974,6 +974,13 @@ an approved-plan contract, not a capability currently advertised by an adapter.
 Changing an assignment, input, execution configuration or grant invalidates
 the pending approval. It never changes an already-dispatched snapshot.
 
+Schema 29 implements the preparation side: private Task incarnations, immutable
+input scopes/versions, exact Project/Task/Agent grant and file selection, a
+bounded owner editor and retention through backup/restore. The owner action is
+**Save input version**; it does not approve execution or create a Run.
+Approval, qualified adapter isolation, Run-input receipts and conditional
+handoff resolution described below are still to be implemented.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains

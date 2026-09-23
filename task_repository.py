@@ -32,6 +32,10 @@ from json_store import (
 )
 from mentat_db import (
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
+    MAX_READONLY_DATABASE_BYTES,
+    MAX_READONLY_WAL_BYTES,
+    MAX_READONLY_SHM_BYTES,
+    MAX_READONLY_SNAPSHOT_BYTES,
     MIGRATIONS,
     MentatDatabaseError,
     _validate_database_set,
@@ -52,8 +56,8 @@ from task_planning import (
 MAX_TASKS = 2_048
 MAX_TASK_DOCUMENT_BYTES = MAX_PREFLIGHT_JSON_BYTES
 MAX_EXPORT_BYTES = MAX_PREFLIGHT_JSON_BYTES
-MAX_DATABASE_BYTES = 32 * 1024 * 1024
-MAX_DATABASE_SIDECAR_BYTES = 64 * 1024 * 1024
+MAX_DATABASE_BYTES = MAX_READONLY_DATABASE_BYTES
+MAX_DATABASE_SIDECAR_BYTES = MAX_READONLY_WAL_BYTES
 TASK_AUTHORITY_CONTRACT = "mentat-task-sqlite-cutover-v1"
 TASK_STATUSES = frozenset({"todo", "in progress", "waiting", "needs attention", "completed"})
 TASK_PRIORITIES = frozenset({"high", "medium", "low"})
@@ -102,6 +106,14 @@ CORE_FIELDS = frozenset(
 )
 REQUIRED_CORE_FIELDS = CORE_FIELDS - {"assigned_agent_id", "project_id"}
 MODELED_FIELDS = CORE_FIELDS | TASK_PLANNING_FIELDS
+TASK_STORAGE_COLUMNS = (
+    "id", "sort_order", "revision", "title", "description", "project", "project_id",
+    "status", "priority", "assignee", "assigned_agent_id", "assigned_agent_id_present",
+    "due_date", "source", "review_required", "needs_attention", "planned_for_today",
+    "manual_rank", "estimated_minutes", "recurrence_parent_id", "planning_state",
+    "depends_on_present", "nested_planning_json", "extensions_json", "created_at",
+    "updated_at", "completed_at",
+)
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$")
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 UNKNOWN_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
@@ -658,14 +670,15 @@ class TaskRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
         allowed_versions = (
-            {5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, DATABASE_SCHEMA_VERSION}
+            {5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, DATABASE_SCHEMA_VERSION}
             if self.allow_pre_authority_schema
-            else {6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, DATABASE_SCHEMA_VERSION}
+            else {6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, DATABASE_SCHEMA_VERSION}
         )
         if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")
         if _task_schema_fingerprint(self.connection) != _expected_task_schema_fingerprint(version):
             raise TaskRepositoryError("task_repository.schema_unsupported")
+        self.schema_version = version
 
     def count(self) -> int:
         row = self.connection.execute("SELECT COUNT(*) FROM mentat_tasks").fetchone()
@@ -755,25 +768,23 @@ class TaskRepository:
                 (task["id"], dependency, ordinal),
             )
 
+    def _insert_task_row(self, task: Mapping[str, Any], sort_order: int, revision: int) -> None:
+        """Create the private incarnation in the first write of a new Task row."""
+        identity_column = ",input_incarnation" if self.schema_version >= 29 else ""
+        identity_value = ",lower(hex(randomblob(16)))" if self.schema_version >= 29 else ""
+        sql = (
+            "INSERT INTO mentat_tasks (" + ",".join(TASK_STORAGE_COLUMNS) + identity_column
+            + ") VALUES (" + ",".join("?" for _ in TASK_STORAGE_COLUMNS) + identity_value + ")"
+        )
+        self.connection.execute(sql, (task["id"], sort_order, revision, *self._storage_values(task, sort_order)[1:]))
+
     def insert_collection(self, tasks: Sequence[Mapping[str, Any]]) -> None:
         normalized = normalize_task_collection(tasks)
         with self._mutation():
             if self.count() != 0:
                 raise TaskRepositoryConflict("task_repository.occupied")
             for sort_order, task in enumerate(normalized):
-                self.connection.execute(
-                    "INSERT INTO mentat_tasks ("
-                    "id, sort_order, revision, title, description, project, project_id, status, priority, "
-                    "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
-                    "review_required, needs_attention, planned_for_today, manual_rank, "
-                    "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
-                    "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
-                    ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        task["id"],
-                        *self._storage_values(task, sort_order),
-                    ),
-                )
+                self._insert_task_row(task, sort_order, 1)
             for task in normalized:
                 self._insert_children(task)
 
@@ -792,16 +803,7 @@ class TaskRepository:
             candidate = [*current, normalized]
             normalize_task_collection(candidate)
             self._validate_project_memberships(current, candidate)
-            self.connection.execute(
-                "INSERT INTO mentat_tasks ("
-                "id, sort_order, revision, title, description, project, project_id, status, priority, "
-                "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
-                "review_required, needs_attention, planned_for_today, manual_rank, "
-                "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
-                "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
-                ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" ,
-                (normalized["id"], *self._storage_values(normalized, len(current))),
-            )
+            self._insert_task_row(normalized, len(current), 1)
             self._insert_children(normalized)
             stored = self.get(normalized["id"])
             if stored.revision != 1 or stored.document != normalized:
@@ -847,6 +849,11 @@ class TaskRepository:
         for expected_order, row in enumerate(rows):
             if int(row["sort_order"]) != expected_order:
                 raise TaskRepositoryError("task_repository.corrupt")
+            if 'input_incarnation' in row.keys() and (
+                not isinstance(row['input_incarnation'], str)
+                or re.fullmatch(r'[0-9a-f]{32}', row['input_incarnation']) is None
+            ):
+                raise TaskRepositoryError('task_repository.corrupt')
             try:
                 nested = json.loads(str(row["nested_planning_json"]))
                 extensions = json.loads(str(row["extensions_json"]))
@@ -1047,16 +1054,7 @@ class TaskRepository:
                 raise TaskRepositoryConflict("task_repository.revision_conflict")
             self._insert_children(replacement)
             if normalized_successor is not None:
-                self.connection.execute(
-                    "INSERT INTO mentat_tasks ("
-                    "id, sort_order, revision, title, description, project, project_id, status, priority, "
-                    "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
-                    "review_required, needs_attention, planned_for_today, manual_rank, "
-                    "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
-                    "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
-                    ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" ,
-                    (normalized_successor["id"], *self._storage_values(normalized_successor, len(documents))),
-                )
+                self._insert_task_row(normalized_successor, len(documents), 1)
                 self._insert_children(normalized_successor)
             stored = next(
                 (item for item in self._list_tasks() if item["id"] == identifier),
@@ -1128,20 +1126,9 @@ class TaskRepository:
             self.connection.execute(
                 "UPDATE mentat_tasks SET sort_order=sort_order+?", (MAX_TASKS,)
             )
-            columns = (
-                "id", "sort_order", "revision", "title", "description", "project", "project_id",
-                "status", "priority", "assignee", "assigned_agent_id", "assigned_agent_id_present",
-                "due_date", "source", "review_required", "needs_attention", "planned_for_today",
-                "manual_rank", "estimated_minutes", "recurrence_parent_id", "planning_state",
-                "depends_on_present", "nested_planning_json", "extensions_json", "created_at",
-                "updated_at", "completed_at",
-            )
+            columns = TASK_STORAGE_COLUMNS
             # Column names are fixed repository code, never caller input.
-            upsert = (
-                "INSERT INTO mentat_tasks (" + ",".join(columns) + ") VALUES ("
-                + ",".join("?" for _ in columns) + ") ON CONFLICT(id) DO UPDATE SET "
-                + ",".join(f"{column}=excluded.{column}" for column in columns[1:])
-            )
+            update_sql = "UPDATE mentat_tasks SET " + ",".join(f"{column}=?" for column in columns[1:]) + " WHERE id=? AND revision=?"
             for sort_order, task in enumerate(normalized):
                 previous = current_by_id.get(task["id"])
                 revision = (
@@ -1151,15 +1138,13 @@ class TaskRepository:
                     if previous is not None
                     else 1
                 )
-                self.connection.execute(
-                    upsert,
-                    (
-                        task["id"],
-                        sort_order,
-                        revision,
-                        *self._storage_values(task, sort_order)[1:],
-                    ),
-                )
+                values = (sort_order, revision, *self._storage_values(task, sort_order)[1:])
+                if previous is None:
+                    self._insert_task_row(task, sort_order, revision)
+                else:
+                    result_update = self.connection.execute(update_sql, (*values, task["id"], revisions[task["id"]]))
+                    if result_update.rowcount != 1:
+                        raise TaskRepositoryConflict("task_repository.revision_conflict")
             for task in normalized:
                 self._insert_children(task)
             if self._list_tasks() != normalized:
@@ -1340,11 +1325,7 @@ def _expected_task_schema_fingerprint(schema_version: int = DATABASE_SCHEMA_VERS
     connection = sqlite3.connect(":memory:")
     try:
         for version, script in MIGRATIONS:
-            if (
-                version == 5
-                or (version == 6 and schema_version >= 6)
-                or (version == 18 and schema_version >= 18)
-            ):
+            if version <= schema_version:
                 connection.executescript(script)
         return _task_schema_fingerprint(connection)
     finally:
@@ -1426,6 +1407,19 @@ def _read_database_snapshot(path: Path, private: Path):
     identities = _validate_database_set(path, private)
     wal = Path(f"{path}-wal")
     shm = Path(f"{path}-shm")
+    total = 0
+    for candidate in (path, wal, shm):
+        identity = identities.get(candidate)
+        if identity is None:
+            continue
+        details = os.lstat(candidate)
+        if (int(details.st_dev), int(details.st_ino)) != identity or (
+            candidate == shm and details.st_size > MAX_READONLY_SHM_BYTES
+        ):
+            raise TaskRepositoryUnavailable("task_repository.unavailable")
+        total += details.st_size
+    if total > MAX_READONLY_SNAPSHOT_BYTES:
+        raise TaskRepositoryUnavailable("task_repository.unavailable")
     captured: dict[Path, bytes] = {}
     for candidate, maximum in (
         (path, MAX_DATABASE_BYTES),

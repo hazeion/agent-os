@@ -6,7 +6,7 @@ export const CONTEXT_UPLOAD_LIMIT = 14 * 1024 * 1024;
 export const CONTEXT_JSON_LIMIT = 128 * 1024;
 export type ContextFile = { id: string; name: string; mime_type: string; kind: "text" | "image"; byte_size: number; state: string; created_at: string; expires_at: string | null; available: boolean };
 export type ContextSummary = { id: string; revision: number; created_at: number };
-export type ContextVersion = ContextSummary & { brief: string; project_id: string; retired: boolean; current: boolean; files: ContextFile[]; prune_blocked: "current_version" | "granted_version" | null };
+export type ContextVersion = ContextSummary & { brief: string; project_id: string; retired: boolean; current: boolean; files: ContextFile[]; prune_blocked: "current_version" | "granted_version" | "task_input" | null };
 export type ContextGrant = { agent_id: string; context_id: string | null; revision: number; state: "active" | "revoked"; reason: string | null };
 export type ContextEditor = { project: { id: string; name: string; revision: number; status: string }; current: ContextVersion | null; versions: ContextSummary[]; staged: ContextFile[]; grants: ContextGrant[] };
 export type GrantPreview = { project_id: string; context_id: string; context_revision: number; brief: string; files: ContextFile[]; agent_id: string; agent_name: string; grant_revision: number; confirmation_id: string };
@@ -67,13 +67,15 @@ function file(value: unknown): void {
   requireValue(["uploading", "staged", "attached", "orphaned", "pending_delete", "deleting", "missing"].includes(String(value.state)) && typeof value.available === "boolean" && iso(value.created_at) && (value.expires_at === null || iso(value.expires_at)));
   if (value.available) requireValue(value.state === "attached" || value.state === "staged");
 }
+export function parseContextFile(value: unknown): ContextFile { file(value); return value as ContextFile; }
 function files(value: unknown): void { list(value, 16, file); unique(value.map((entry) => (entry as RecordValue).id)); }
 function summary(value: RecordValue): void { requireValue(id(value.id, "context_id") && integer(value.revision, 1) && timestamp(value.created_at)); }
 function version(value: unknown): void {
   exact(value, "id,revision,brief,created_at,project_id,retired,current,files,prune_blocked"); summary(value);
   requireValue(brief(value.brief) && id(value.project_id, "project_id") && typeof value.retired === "boolean" && typeof value.current === "boolean" && !(value.retired && value.current));
-  requireValue([null, "current_version", "granted_version"].includes(value.prune_blocked as string | null) && (value.current === (value.prune_blocked === "current_version"))); files(value.files);
+  requireValue([null, "current_version", "granted_version", "task_input"].includes(value.prune_blocked as string | null) && (value.current === (value.prune_blocked === "current_version"))); files(value.files);
 }
+export function parseContextVersion(value: unknown): ContextVersion { version(value); return value as ContextVersion; }
 export function contextResult<K extends ContextOperation>(operation: K, value: unknown, request: RecordValue): ContextResults[K] {
   if (operation === "project") {
     exact(value, "project,current,versions,staged,grants"); exact(value.project, "id,name,revision,status");
