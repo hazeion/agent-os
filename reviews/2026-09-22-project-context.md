@@ -161,3 +161,21 @@ production root cause. Add a test-only bounded handler stack on the existing
 existing failure artifact. No deadline, score threshold or retry behavior is
 changed. The two diagnostic tests and exact HTTP test pass; independent
 backend and performance reviews are clean. Further CI evidence is required.
+
+## Windows webhook and mobile Home follow-up
+
+The next Windows 3.11 CI run failed a webhook concurrency test's five-second
+completion check, then could not delete the fixture database while its request
+worker remained live. The test now warms the disposable database before the
+barrier, captures a bounded worker stack on timeout, and releases/joins workers
+and stops the coordinator before cleanup while the snapshot patch remains
+active. The exact test and all 19 webhook-route tests pass locally. Production
+locking and the five-second assertion are unchanged. Independent review is clean.
+
+Three mobile CI Lighthouse runs remain at 94 against the required 95. A narrow
+Home navigation change disables speculative prefetch for noncurrent sidebar
+routes. Pinned local measurements show four fewer initial requests and roughly
+9 KiB less transfer, but no median score gain (98 before and after). Broader
+loading experiments did not improve median performance and were removed.
+Independent correctness review is clean; the mobile CI gate still needs fresh
+evidence before this change can be called a passing performance fix.
