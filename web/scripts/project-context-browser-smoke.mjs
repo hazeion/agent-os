@@ -5,10 +5,18 @@ import puppeteer from 'puppeteer-core';
 
 const port = Number(process.env.MENTAT_CONTEXT_TEST_PORT), width = Number(process.env.MENTAT_CONTEXT_TEST_WIDTH);
 assert(Number.isInteger(port) && port > 0 && port < 65536 && [390, 1280].includes(width));
-const browser = await puppeteer.launch({ executablePath: process.env.CHROME_PATH, headless: true });
+// Opt-in for the disposable CI runner, whose user namespaces are disabled.
+const browser = await puppeteer.launch({ executablePath: process.env.CHROME_PATH, headless: true,
+  args: process.env.MENTAT_CONTEXT_TEST_NO_SANDBOX === '1' ? ['--no-sandbox'] : [],
+});
 let page;
 try {
   page = await browser.newPage(); await page.setViewport({ width, height: 950, deviceScaleFactor: 1 });
+  await page.setRequestInterception(true);
+  page.on('request', request => {
+    if (new URL(request.url()).origin === `http://127.0.0.1:${port}`) void request.continue();
+    else void request.abort();
+  });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${port}/tasks`, { waitUntil: 'networkidle0' });
   async function click(text, scope = '') {

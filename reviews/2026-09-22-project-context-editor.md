@@ -166,3 +166,13 @@ wheel smoke verifies upload, publication, grant, safe editor projection and
 backup/restore validation without importing the source checkout. Windows
 path-normalized secret diagnostics report no new findings; Linux CI remains
 the authoritative raw scan gate.
+
+## CI harness follow-up
+
+The first Node CI job could not launch pinned Chrome because the Ubuntu runner
+disables its required user namespaces. The disposable synthetic-data browser
+harness now accepts an explicit CI-only sandbox override and permits requests
+only to the exact fixture loopback origin. Defaults and production settings are
+unchanged. Desktop/mobile acceptance passes with that explicit option; review
+is clean. The reviewed parent diagnostics are integrated so subsequent Windows
+timeout and mobile performance failures retain useful bounded attribution.

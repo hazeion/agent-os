@@ -67,7 +67,7 @@ class ProjectContextBrowserTests(unittest.TestCase):
             thread = threading.Thread(target=bridge.serve_forever, daemon=True); thread.start()
             with socket.socket() as candidate:
                 candidate.bind(('127.0.0.1', 0)); port = candidate.getsockname()[1]
-            environment = {key: value for key, value in os.environ.items() if key in {'PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'CHROME_PATH'}}
+            environment = {key: value for key, value in os.environ.items() if key in {'PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'CHROME_PATH', 'MENTAT_CONTEXT_TEST_NO_SANDBOX'}}
             environment.update(PORT=str(port), HOSTNAME='127.0.0.1', NODE_ENV='production', MENTAT_GATEWAY_MODE='local', MENTAT_BRIDGE_ORIGIN=f'http://127.0.0.1:{bridge.server_port}', MENTAT_BRIDGE_TOKEN=token)
             process = subprocess.Popen([shutil.which('node'), str(STANDALONE / 'server.js')], cwd=STANDALONE, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             try:
@@ -81,7 +81,7 @@ class ProjectContextBrowserTests(unittest.TestCase):
                     time.sleep(.1)
                 else: self.fail('website_not_ready')
                 browser_environment = {key: value for key, value in environment.items() if not key.startswith('MENTAT_')}
-                browser_environment.update(MENTAT_CONTEXT_TEST_PORT=str(port), MENTAT_CONTEXT_TEST_WIDTH=str(width), MENTAT_CONTEXT_TEST_FILE=str(floorplan))
+                browser_environment.update(MENTAT_CONTEXT_TEST_PORT=str(port), MENTAT_CONTEXT_TEST_WIDTH=str(width), MENTAT_CONTEXT_TEST_FILE=str(floorplan), MENTAT_CONTEXT_TEST_NO_SANDBOX=environment.get('MENTAT_CONTEXT_TEST_NO_SANDBOX', ''))
                 result = subprocess.run([shutil.which('node'), str(ROOT / 'web/scripts/project-context-browser-smoke.mjs')], cwd=ROOT / 'web', env=browser_environment, capture_output=True, text=True, timeout=120)
                 self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr[-4000:])
                 state = read_project_editor(fixture.root, 'project_mentat')
