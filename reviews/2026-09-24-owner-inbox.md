@@ -187,5 +187,12 @@ The broader affected Python run passed 204 of 205 tests: the remaining Windows
 owner-only ACL test also fails unchanged on the parent branch in this managed
 sandbox with `SetNamedSecurityInfoW` access denied. Hosted CI and the separate
 package/lifecycle check remain publication gates.
+
+Hosted Ubuntu CI found that schema 34 had not joined the existing exact
+source-schema migration gate. The new migration now checks the schema-33
+signature under the same immediate write transaction as its DDL and receipt.
+Normal upgrade, drifted-source rejection and the competing schema-writer race
+pass locally; two independent read-only reviews found no remaining issue in
+this correction. Cross-platform reruns remain required before merge.
 The item-bound owner review destination, Inbox page and other producers remain
 the next slices; this backend does not make issue #240 complete.

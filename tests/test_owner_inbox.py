@@ -47,6 +47,16 @@ class OwnerInboxTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_inbox_items").fetchone()[0], 0)
                 validate_inbox_connection(connection)
 
+    def test_schema_34_upgrade_rejects_a_drifted_schema_33_source(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "drifted.sqlite3"
+            private_console_unit._initialize_database(path, schema_version=33)
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute("ALTER TABLE mentat_projects ADD COLUMN unsafe_extension TEXT")
+                with self.assertRaises(mentat_db.MentatDatabaseError):
+                    mentat_db.migrate(connection)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
+
     def test_exact_pending_generation_read_and_ack_are_durable_and_idempotent(self):
         self.assertEqual(read_inbox(self.root), [])
         self.complete()
