@@ -9,6 +9,7 @@ export type TaskInputDraft = { projectId: string; taskToken: string; inputRevisi
 type DraftChange = (change: (current: TaskInputDraft | null) => TaskInputDraft | null) => void;
 function message(error: unknown): string {
   if (error instanceof PublicTaskInputError) {
+    if (error.code === "retained_plan") return "A saved Project plan still references this input version. Keep it in history.";
     if (["task_changed", "grant_changed", "revision_conflict", "version_unavailable", "project_unavailable", "context_unavailable", "agent_unavailable"].includes(error.code)) return "The Project, Task, Agent access, or saved inputs changed. Your draft is preserved. Refresh and review the current state.";
     if (["file_scope", "files_unavailable", "image_limit", "capacity"].includes(error.code)) return "A selected file is unavailable or exceeds the limit. Review the complete file selection.";
   }
