@@ -46,7 +46,7 @@ class RunIdentityTests(unittest.TestCase):
             self.assertEqual(mentat_db.schema_signature_state(connection, 34), "expected")
             connection.commit()
             mentat_db.migrate(connection)
-            self.assertEqual(mentat_db.schema_signature_state(connection, 35), "expected")
+            self.assertEqual(mentat_db.schema_signature_state(connection, 36), "expected")
             original = connection.execute(
                 "SELECT incarnation,created_at FROM mentat_run_identities WHERE run_id='run_existing'"
             ).fetchone()
@@ -187,7 +187,10 @@ class RunIdentityTests(unittest.TestCase):
             connection.commit()
             page_size = connection.execute("PRAGMA page_size").fetchone()[0]
             old_size = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
-            mentat_db.migrate(connection)
+            with patch.object(mentat_db, "MIGRATIONS", tuple(
+                item for item in mentat_db.MIGRATIONS if item[0] <= 35
+            )), patch.object(mentat_db, "SCHEMA_VERSION", 35):
+                mentat_db.migrate(connection)
             new_size = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM mentat_run_identities"
@@ -257,7 +260,7 @@ class RunIdentityTests(unittest.TestCase):
                 target, unit, target / "private" / "console"
             )
             with closing(mentat_db.connect(target)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, 35), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 36), "expected")
                 self.assertRegex(connection.execute(
                     "SELECT incarnation FROM mentat_run_identities WHERE run_id='run_schema34_backup'"
                 ).fetchone()[0], r"^[0-9a-f]{32}$")

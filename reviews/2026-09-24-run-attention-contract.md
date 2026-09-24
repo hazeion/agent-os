@@ -202,3 +202,17 @@ unfinalized imported terminals and every `unknown` Run, and measured storage
 headroom at the 10,000-Run bound. The revised contract includes these
 requirements. Neither reviewer found a remaining design blocker; code and
 cross-platform verification are still required.
+
+## Schema 36 storage review record
+
+The storage slice reserves one private Run-attention row at admission,
+materializes exact unknown/terminal notices, reopens on canonical outcome or
+result-detail changes, and freezes a bounded receipt before Run deletion.
+It does not yet project those rows into the website Inbox. Two independent
+read-only code reviews found four gaps: post-Stop deletion confirmation needed
+to bind dispatch evidence, same-status result-detail changes needed to reopen
+attention, semantic validation needed a duplicate source-pair check, and
+source/item lookups needed indexes at the 10,000-Run bound. Those gaps were
+fixed and both reviewers found no remaining blocker on re-review. Tests cover
+capacity backpressure and pruning, maximum-length IDs, schema-35 upgrade,
+Run retention, Project deletion, backup/restore, and legacy empty-store checks.
