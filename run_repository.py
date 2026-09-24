@@ -84,7 +84,7 @@ GLOBAL_EVENT_COUNT_RETENTION = 50_000
 GLOBAL_EVENT_CONTENT_RETENTION_BYTES = 16 * 1024 * 1024
 RUN_DETAILS_LIMIT = 1024 * 1024
 TASK_SNAPSHOT_LIMIT = 128 * 1024
-RUN_STORE_DATABASE_BUDGET = 56 * 1024 * 1024
+RUN_STORE_DATABASE_BUDGET = 63 * 1024 * 1024
 IDEMPOTENCY_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -395,6 +395,8 @@ def _run_schema_objects(schema_version: int) -> frozenset[str]:
         objects |= _CODEX_TASK_CREATE_SCHEMA_OBJECTS
     if schema_version >= 35:
         objects |= frozenset({"mentat_run_identities"})
+    if schema_version >= 36:
+        objects |= frozenset({"mentat_run_attention", "mentat_inbox_items"})
     return objects
 
 
@@ -1442,6 +1444,7 @@ class RunRepository:
                 32,
                 33,
                 34,
+                35,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)
@@ -1496,6 +1499,12 @@ class RunRepository:
             yield
             self._validate_temporal_integrity()
             self._validate_run_identities()
+            if self.schema_version >= 36:
+                from run_attention import RunAttentionError, validate_run_attention_connection
+                try:
+                    validate_run_attention_connection(self.connection)
+                except RunAttentionError as exc:
+                    raise RunRepositoryValidationError("run.attention_invalid") from exc
             self._enforce_store_budget()
         except Exception:
             if nested:
@@ -7504,6 +7513,12 @@ class RunRepository:
             self._validate_run_identities()
         except RunRepositoryValidationError as exc:
             raise RunRepositoryError("run_repository.corrupt") from exc
+        if self.schema_version >= 36:
+            from run_attention import RunAttentionError, validate_run_attention_connection
+            try:
+                validate_run_attention_connection(self.connection)
+            except RunAttentionError as exc:
+                raise RunRepositoryError("run_repository.corrupt") from exc
         page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
         page_count = int(self.connection.execute("PRAGMA page_count").fetchone()[0])
         if page_size * page_count > RUN_STORE_DATABASE_BUDGET:
@@ -8079,7 +8094,9 @@ def ensure_run_sqlite_authority(data_dir: Path, history_path: Path) -> RunAuthor
                     "mentat_agent_events",
                     "mentat_dispatch_reservations",
                     "mentat_task_dispatch_heads",
-                ) + (("mentat_run_identities",) if repository.schema_version >= 35 else ())
+                ) + (("mentat_run_identities",) if repository.schema_version >= 35 else ()) + (
+                    ("mentat_run_attention",) if repository.schema_version >= 36 else ()
+                )
                 if any(
                     int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                     for table in empty_tables
