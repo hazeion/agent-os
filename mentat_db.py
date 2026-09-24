@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2312,6 +2312,35 @@ MIGRATIONS += ((33, """
         BEGIN SELECT RAISE(ABORT,'plan.retained'); END;
 """),)
 
+MIGRATIONS += ((34, """
+    CREATE TABLE mentat_inbox_items (
+        id TEXT PRIMARY KEY CHECK(length(id)=43 AND id GLOB 'inbox_item_[0-9a-f]*'),
+        kind TEXT NOT NULL CHECK(kind='result_review'),
+        source_id TEXT NOT NULL CHECK(length(source_id) BETWEEN 1 AND 80),
+        source_incarnation TEXT NOT NULL CHECK(length(source_incarnation)=32),
+        generation_digest TEXT NOT NULL CHECK(length(generation_digest)=64),
+        heads_json TEXT NOT NULL CHECK(length(heads_json) BETWEEN 2 AND 256),
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 16),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        updated_at REAL NOT NULL CHECK(updated_at>=created_at),
+        read_at REAL CHECK(read_at IS NULL OR read_at>=created_at),
+        acknowledged_at REAL CHECK(acknowledged_at IS NULL OR acknowledged_at>=created_at),
+        resolved_at REAL CHECK(resolved_at IS NULL OR resolved_at>=created_at),
+        last_action_digest TEXT CHECK(last_action_digest IS NULL OR length(last_action_digest)=64),
+        last_expected_revision INTEGER CHECK(last_expected_revision IS NULL OR last_expected_revision BETWEEN 1 AND 15),
+        UNIQUE(kind,source_id,source_incarnation,generation_digest)
+    );
+    CREATE INDEX mentat_inbox_created ON mentat_inbox_items(created_at DESC,id DESC);
+    CREATE INDEX mentat_inbox_source ON mentat_inbox_items(kind,source_id,source_incarnation,resolved_at);
+    CREATE TRIGGER mentat_inbox_source_immutable
+        BEFORE UPDATE OF id,kind,source_id,source_incarnation,generation_digest,heads_json,created_at ON mentat_inbox_items
+        BEGIN SELECT RAISE(ABORT,'inbox.source_immutable'); END;
+    CREATE TRIGGER mentat_inbox_project_retire AFTER DELETE ON mentat_projects
+        BEGIN UPDATE mentat_inbox_items SET resolved_at=MAX(updated_at,created_at,CAST(strftime('%s','now') AS REAL)),
+            updated_at=MAX(updated_at,created_at,CAST(strftime('%s','now') AS REAL)),revision=revision+1
+            WHERE source_id=OLD.id AND source_incarnation=OLD.deliverable_incarnation AND resolved_at IS NULL; END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2648,7 +2677,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2778,6 +2807,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 31 cannot be safely upgraded")
                 if version == 33 and schema_signature_state(connection, 32) != "expected":
                     raise MentatDatabaseError("Mentat schema 32 cannot be safely upgraded")
+                if version == 34 and schema_signature_state(connection, 33) != "expected":
+                    raise MentatDatabaseError("Mentat schema 33 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

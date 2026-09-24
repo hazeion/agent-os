@@ -146,6 +146,13 @@ draft after an uncertain save. It grants no approval or execution. See
 Agent-authored proposals, runtime qualification and coordinated handoffs remain
 separate gates.
 
+The [owner inbox contract](reviews/2026-09-24-owner-inbox.md) has two clean
+independent design reviews after lifecycle and capacity corrections. Its first
+implementation slice retains exact result-review attention generations and
+cross-device read/ack state in private SQLite. The owner Inbox screen, guarded
+review destination, existing Run failure/recovery producers and coordinated
+revision routing follow; issue #240 remains open until that scope is verified.
+
 ### Implemented baseline and retained boundaries
 
 Beta QA stabilization merged through
