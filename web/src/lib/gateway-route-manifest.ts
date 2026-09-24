@@ -105,6 +105,9 @@ export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze
   rule("GET", "/api/deliverables/history", "web/src/app/api/deliverables/history/route.ts"),
   rule("GET", "/api/deliverables/[versionId]", "web/src/app/api/deliverables/[versionId]/route.ts"),
   rule("GET", "/api/deliverables/[versionId]/preview", "web/src/app/api/deliverables/[versionId]/preview/route.ts"),
+  rule("GET", "/api/projects/[projectId]/deliverables/review", "web/src/app/api/projects/[projectId]/deliverables/review/route.ts"),
+  rule("POST", "/api/projects/[projectId]/deliverables/review/preview", "web/src/app/api/projects/[projectId]/deliverables/review/preview/route.ts"),
+  rule("POST", "/api/projects/[projectId]/deliverables/review/confirm", "web/src/app/api/projects/[projectId]/deliverables/review/confirm/route.ts"),
   ...staticRule("/sign-in", "web/src/app/sign-in/page.tsx"),
   ...([ ["POST", "/auth/google/start"], ["GET", "/auth/google/callback"] ] as const).map(([method, path]) => Object.freeze({
     method, path, exposure: "anonymous_auth" as const, csrf: "not_required" as const,

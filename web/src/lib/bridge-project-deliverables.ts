@@ -4,7 +4,7 @@ import { DELIVERABLE_PREVIEW_LIMIT, DELIVERABLE_READS, DeliverableContractError,
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type Environment = Readonly<Record<string, string | undefined>>;
-const FAILURES = new Set(["invalid", "revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable", "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable", "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid", "unavailable"]);
+const FAILURES = new Set(["invalid", "revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable", "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable", "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid", "incomplete", "stale", "confirmation_conflict", "unavailable"]);
 export class DeliverableBridgeError extends Error { constructor(readonly code = "unavailable", readonly status = 503) { super("deliverable_bridge_unavailable"); } }
 function configuration(environment: Environment) {
   const token = environment.MENTAT_BRIDGE_TOKEN ?? "";

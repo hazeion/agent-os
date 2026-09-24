@@ -279,6 +279,10 @@ def read_review_status(data_dir: Path, project_id: str) -> dict:
                 latest = None if row is None else {
                     "id": row[0], "revision": row[1], "action": row[2], "note": row[3],
                     "created_at": row[5], "current": hmac.compare_digest(row[4], _digest(heads)),
+                    "affected_slots": [item[0] for item in connection.execute(
+                        "SELECT slot FROM mentat_deliverable_review_versions "
+                        "WHERE review_id=? AND affected=1 ORDER BY slot", (row[0],),
+                    )],
                 }
                 complete = len(heads) == 3 and {head[0] for head in heads} == set(SLOTS)
                 return {"project_id": project_id, "project_name": project.document["name"],

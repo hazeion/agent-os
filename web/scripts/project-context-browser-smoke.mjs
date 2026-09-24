@@ -59,6 +59,21 @@ try {
   await click('Add step'); await page.type('section[aria-label="Project results"] .project-deliverable-row input', 'Measure the walls');
   await click('Save result version'); await waitText('Implementation order saved as a new version.');
   await click('Download implementation document');
+  await waitText('The current results need your review.');
+  await click('Accept saved results'); await click('Preview acceptance');
+  await waitText('Accept these exact saved versions?');
+  assert.equal(await page.$$eval('[aria-label="Confirm Project result review"] section[aria-label$="current review version"]', nodes => nodes.length), 3);
+  const reviewed = await page.$eval('[aria-label="Confirm Project result review"]', node => node.innerText);
+  assert(reviewed.includes('Workbench') && reviewed.includes('Wall shelf') && reviewed.includes('Measure the walls'));
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'review confirmation creates horizontal overflow');
+  await click('Confirm acceptance'); await waitText('Acceptance recorded.');
+  await click('Request changes', 'section[aria-label="Review Project results"]');
+  const reviewSlots = await page.$$('section[aria-label="Review Project results"] input[type="checkbox"]');
+  await reviewSlots[1].click();
+  await page.type('section[aria-label="Review Project results"] textarea', 'Confirm shelf capacity before buying.');
+  await click('Preview change request'); await waitText('Request changes to these exact saved versions?');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'change request creates horizontal overflow');
+  await click('Send change request'); await waitText('Change request recorded.');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
   assert.equal(overflow, false, 'context editor creates horizontal overflow');
   const output = resolve('../artifacts/project-context-editor'); await mkdir(output, { recursive: true });
@@ -76,7 +91,7 @@ try {
   await click('Review removal', history); await waitText('This cannot be undone.');
   await click('Confirm removal', history); await waitText('No retained history.');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ width, publish: true, exactGrant: true, revoke: true, retiredPrune: true, garageResults: true, overflow: false }));
+  console.log(JSON.stringify({ width, publish: true, exactGrant: true, revoke: true, retiredPrune: true, garageResults: true, ownerReview: true, overflow: false }));
 } catch (error) {
   if (page) {
     console.error(await page.evaluate(() => ({ text: document.body.innerText.slice(-5000), selects: Array.from(document.querySelectorAll('select')).map(node => ({ label: node.parentElement.textContent, value: node.value })) })));
