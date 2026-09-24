@@ -79,6 +79,11 @@ function staticRule(path: `/${string}`, source: GatewayRouteSource): GatewayRout
 
 /** Exactly one frozen row per API operation and per static method/surface pair. */
 export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze([
+  rule("GET", "/api/inbox", "web/src/app/api/inbox/route.ts"),
+  rule("GET", "/api/inbox/[itemId]", "web/src/app/api/inbox/[itemId]/route.ts"),
+  rule("POST", "/api/inbox/[itemId]/mark", "web/src/app/api/inbox/[itemId]/mark/route.ts"),
+  rule("POST", "/api/inbox/[itemId]/review/preview", "web/src/app/api/inbox/[itemId]/review/preview/route.ts"),
+  rule("POST", "/api/inbox/[itemId]/review/confirm", "web/src/app/api/inbox/[itemId]/review/confirm/route.ts"),
   rule("GET", "/api/task-inputs/history", "web/src/app/api/task-inputs/history/route.ts"),
   rule("GET", "/api/task-inputs/[inputId]", "web/src/app/api/task-inputs/[inputId]/route.ts"),
   rule("POST", "/api/task-inputs/[inputId]/prune/preview", "web/src/app/api/task-inputs/[inputId]/prune/preview/route.ts"),
@@ -217,6 +222,7 @@ export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze
   rule("GET", "/api/workspace-files", "web/src/app/api/workspace-files/route.ts"),
   ...staticRule("/", "web/src/app/page.tsx"),
   ...staticRule("/agents", "web/src/app/agents/page.tsx"),
+  ...staticRule("/inbox", "web/src/app/inbox/page.tsx"),
   ...staticRule("/tasks", "web/src/app/tasks/page.tsx"),
   ...staticRule("/runs", "web/src/app/runs/page.tsx"),
   ...staticRule("/icon.svg", "web/src/app/icon.svg"),
