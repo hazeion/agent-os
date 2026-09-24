@@ -107,6 +107,7 @@ RUN_INPUT_DATABASE_SCHEMA_VERSION = 30
 DELIVERABLE_DATABASE_SCHEMA_VERSION = 31
 DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION = 32
 PLAN_DATABASE_SCHEMA_VERSION = 33
+INBOX_DATABASE_SCHEMA_VERSION = 34
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -137,6 +138,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     DELIVERABLE_DATABASE_SCHEMA_VERSION,
     DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION,
     PLAN_DATABASE_SCHEMA_VERSION,
+    INBOX_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -1013,6 +1015,12 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 validate_project_context_connection(connection)
             except ProjectContextError as exc:
                 raise PrivateConsoleUnitError("private_project_context_invalid") from exc
+        if schema_version >= INBOX_DATABASE_SCHEMA_VERSION:
+            from owner_inbox import OwnerInboxError, validate_inbox_connection
+            try:
+                validate_inbox_connection(connection)
+            except OwnerInboxError as exc:
+                raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -1184,6 +1192,12 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 validate_project_context_connection(connection)
             except ProjectContextError as exc:
                 raise PrivateConsoleUnitError("private_project_context_invalid") from exc
+        if schema_version >= INBOX_DATABASE_SCHEMA_VERSION:
+            from owner_inbox import OwnerInboxError, validate_inbox_connection
+            try:
+                validate_inbox_connection(connection)
+            except OwnerInboxError as exc:
+                raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:

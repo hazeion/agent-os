@@ -17281,6 +17281,8 @@ def serve_dashboard() -> None:
         # The listener and runtime state are not published until this succeeds.
         ensure_task_authority()
         ensure_project_authority()
+        from owner_inbox import reconcile_inbox_at_startup
+        reconcile_inbox_at_startup(DATA_DIR)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
         load_agent_console_runs()

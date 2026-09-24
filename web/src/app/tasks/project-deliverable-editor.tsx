@@ -15,6 +15,7 @@ function initialContent(slot: DeliverableSlot): DeliverableContent {
   return { notes: "", steps: [] };
 }
 function errorMessage(error: unknown): string {
+  if (error instanceof PublicDeliverableError && error.code === "inbox_capacity") return "The Inbox is full. Your result draft is preserved; finish and acknowledge older review items before saving again.";
   if (error instanceof PublicDeliverableError && ["revision_conflict", "source_changed", "project_changed", "task_changed"].includes(error.code)) return "The Project or saved result changed. Your draft is preserved; refresh and review it before saving.";
   if (error instanceof PublicDeliverableError && ["content_invalid", "content_capacity", "link_invalid", "preview_capacity", "capacity"].includes(error.code)) return "This result needs a smaller or valid layout, link, or document. Your draft is preserved.";
   return "Mentat could not verify this result. Your draft is preserved; refresh before trying again.";

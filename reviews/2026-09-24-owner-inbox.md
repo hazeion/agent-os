@@ -1,8 +1,9 @@
 # Durable owner inbox and coordinated Project review
 
 Status: contract reviewed by two independent agents for issue
-[#240](https://github.com/hazeion/agent-os/issues/240); implementation has not
-started. This is the contract for a complete owner
+[#240](https://github.com/hazeion/agent-os/issues/240); the first private
+authority slice is implemented and reviewed. This is the
+contract for a complete owner
 attention surface, built in reviewed slices on the current Project, Task, Run,
 plan and deliverable authorities.
 
@@ -158,3 +159,33 @@ desktop/mobile keyboard focus on the review section. A completed first or
 second slice is not proof that every kind of requested work can already
 execute or appear. Keep issue #240 open until its full producer and
 coordinated-revision scope is verified.
+
+## First-slice implementation evidence
+
+Schema 34 stores one exact pending `result_review` generation per complete
+three-slot bundle. Owner result publication and review confirmation synchronize
+that item within their source transaction; confirmed deletion resolves its old
+Project incarnation. Startup also reconciles preexisting current pending
+bundles before listeners become ready. Read and Acknowledge use exact revisions
+and durable repeated-action receipts through fixed owner/CSRF-gated bridge
+paths. No inbox action calls a runtime, changes a Task, accepts results, or
+approves a plan. The validator binds stored heads to retained source versions,
+current pending/decision state, receipt action and materialized state, row
+budget and backup contents. A new version fails and rolls back when required
+attention cannot be retained. The owner website recognizes that capacity error
+and keeps the result draft.
+
+Two independent read-only code reviews found receipt and unavailable-database
+error handling gaps, then a startup/source-state gap. These were fixed and
+rechecked clean. Focused source/bridge, schema migration and private backup
+tests cover exact generations, repeated action, accept/change resolution,
+non-active and deleted Projects, ID reuse, restore, tampering and capacity
+rollback. The private Console backup suite passed 53 tests, the affected
+website suite passed 459 tests, TypeScript and ESLint passed, the production
+website build passed, and the built desktop/mobile garage walkthrough passed.
+The broader affected Python run passed 204 of 205 tests: the remaining Windows
+owner-only ACL test also fails unchanged on the parent branch in this managed
+sandbox with `SetNamedSecurityInfoW` access denied. Hosted CI and the separate
+package/lifecycle check remain publication gates.
+The item-bound owner review destination, Inbox page and other producers remain
+the next slices; this backend does not make issue #240 complete.
