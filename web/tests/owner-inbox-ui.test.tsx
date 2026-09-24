@@ -63,6 +63,115 @@ function fixture({ stale = false, loseConfirmOnce = false, loseAckOnce = false, 
   return state;
 }
 
+function runFixture({ uncertain = false, retired = false, changeAfterAck = false, loseDismissOnce = false } = {}) {
+  const runId = `inbox_item_${"c".repeat(32)}`;
+  const state = { read: false, acknowledged: false, resolved: false, changed: false, revision: 1,
+    calls: [] as Array<{ path: string; action?: unknown }> };
+  const item = () => ({ id: runId, kind: "run_outcome", revision: state.revision, created_at: 1790035200,
+    unread: !state.read, acknowledged: state.acknowledged,
+    state: state.resolved ? "resolved" : uncertain || state.changed ? "checking" : "failed",
+    title: uncertain || state.changed ? "Agent run needs checking" : "Agent run failed" });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), origin), path = url.pathname;
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+    state.calls.push({ path, action: body?.action });
+    if (path === "/api/inbox") return Response.json({ items: state.resolved && url.searchParams.get("view") === "needs_me" || state.read && url.searchParams.get("view") === "unread" ? [] : [item()],
+      next_cursor: null, counts: { needs_me: state.resolved ? 0 : 1, unread: state.read ? 0 : 1, all: 1 } });
+    if (path === `/api/inbox/${runId}`) return Response.json({ item: item(), run: {
+      source: "console", status: (uncertain && !retired) || state.changed ? "unknown" : "failed", partial: uncertain || state.changed,
+      terminal_finalized: !uncertain && !state.changed, retired, source_revision: state.changed ? 2 : 1,
+      work_title: retired ? null : "Garage research", created_at: "2026-09-24T12:00:00+00:00",
+    } });
+    if (path === `/api/inbox/${runId}/mark`) {
+      state.read = true;
+      if (body?.action === "acknowledge" || body?.action === "dismiss") state.acknowledged = true;
+      if (body?.action === "dismiss") state.resolved = true;
+      state.revision++;
+      const markedRevision = state.revision;
+      if (body?.action === "acknowledge" && changeAfterAck) {
+        state.changed = true; state.read = false; state.acknowledged = false; state.revision++;
+      }
+      if (body?.action === "dismiss" && loseDismissOnce) throw new Error("dismiss response lost");
+      return Response.json({ id: runId, revision: markedRevision, duplicate: false });
+    }
+    throw new Error(`Run notice must not call ${path}`);
+  };
+  return state;
+}
+
+test("verified Run failure is acknowledged and dismissed without Project review controls", async () => {
+  const state = runFixture(); render(<OwnerInboxWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: /Agent run failed/u }));
+  const detail = await screen.findByRole("region", { name: "Inbox item detail" });
+  await within(detail).findByRole("heading", { name: "Run outcome" });
+  assert.ok(within(detail).getByText(/Source:/u));
+  assert.ok(within(detail).getByText(/Garage research/u));
+  assert.ok(within(detail).getByText("c".repeat(32)));
+  assert.equal(within(detail).queryByRole("link", { name: "Open Runs" }), null);
+  assert.equal(within(detail).queryByRole("button", { name: "Accept saved results" }), null);
+  assert.equal(within(detail).queryByRole("button", { name: "Dismiss notice" }), null);
+  fireEvent.click(within(detail).getByRole("button", { name: "Acknowledge" }));
+  const dismiss = await within(detail).findByRole("button", { name: "Dismiss notice" });
+  fireEvent.click(dismiss);
+  await within(detail).findByText("Notice dismissed. The Run record remains saved.");
+  assert.ok(within(detail).getByText(/notice is resolved/u));
+  const outcome = within(detail).getByRole("region", { name: "Verified Run outcome" }).textContent ?? "";
+  assert.match(outcome, /Outcome: Failed/u);
+  assert.match(outcome, /Notice: Resolved/u);
+  assert.equal(state.calls.some((call) => call.path.includes("/review/")), false);
+  assert.equal(state.calls.filter((call) => call.action === "dismiss").length, 1);
+});
+
+test("uncertain Run remains visible after acknowledgment and cannot be dismissed", async () => {
+  const state = runFixture({ uncertain: true, retired: true }); render(<OwnerInboxWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: /Agent run needs checking/u }));
+  const detail = await screen.findByRole("region", { name: "Inbox item detail" });
+  await within(detail).findByText(/cannot yet verify the final outcome/u);
+  assert.ok(within(detail).getByText(/saved history/u));
+  assert.ok(within(detail).getByText("The related work title is no longer available."));
+  assert.equal(within(detail).queryByRole("link", { name: "Open Runs" }), null);
+  fireEvent.click(within(detail).getByRole("button", { name: "Acknowledge" }));
+  await within(detail).findByText("Seen. Mentat still needs to verify this Run.");
+  assert.equal(within(detail).queryByRole("button", { name: "Dismiss notice" }), null);
+  assert.equal(state.resolved, false);
+  assert.equal(state.calls.some((call) => call.path.includes("/review/")), false);
+});
+
+test("matching Run titles and times retain distinct full notice references", async () => {
+  const ids = ["d", "e"].map((digit) => `inbox_item_${digit.repeat(32)}`);
+  globalThis.fetch = async () => Response.json({ items: ids.map((id, index) => ({
+    id, kind: "run_outcome", revision: 1, created_at: 1790035200 - index,
+    unread: true, acknowledged: false, state: "failed", title: "Agent run failed · Garage research · Sep 24, 2026 12:00:00 +0000",
+  })), next_cursor: null, counts: { needs_me: 2, unread: 2, all: 2 } });
+  render(<OwnerInboxWorkspace />);
+  await screen.findByRole("button", { name: new RegExp(ids[0].slice(11), "u") });
+  assert.ok(screen.getByRole("button", { name: new RegExp(ids[1].slice(11), "u") }));
+});
+
+test("a newer Run outcome prevents a stale acknowledgment success claim", async () => {
+  const state = runFixture({ changeAfterAck: true }); render(<OwnerInboxWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: /Agent run failed/u }));
+  const detail = await screen.findByRole("region", { name: "Inbox item detail" });
+  await within(detail).findByText(/Garage research/u);
+  fireEvent.click(within(detail).getByRole("button", { name: "Acknowledge" }));
+  await within(detail).findByText(/This Run changed while acknowledgment was being checked/u);
+  assert.equal(state.acknowledged, false);
+  assert.equal(within(detail).queryByText("Acknowledged. The Run record remains available for review."), null);
+  assert.equal(state.calls.filter((call) => call.action === "acknowledge").length, 1);
+});
+
+test("a lost dismissal response reports current resolution without claiming its cause", async () => {
+  const state = runFixture({ loseDismissOnce: true }); render(<OwnerInboxWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: /Agent run failed/u }));
+  const detail = await screen.findByRole("region", { name: "Inbox item detail" });
+  await within(detail).findByText(/Garage research/u);
+  fireEvent.click(within(detail).getByRole("button", { name: "Acknowledge" }));
+  fireEvent.click(await within(detail).findByRole("button", { name: "Dismiss notice" }));
+  await within(detail).findByText("This notice is resolved. Review its current outcome.");
+  assert.equal(state.resolved, true);
+  assert.equal(state.calls.filter((call) => call.action === "dismiss").length, 1);
+});
+
 test("owner reviews the exact three saved results through item-bound routes only", async () => {
   const state = fixture(); render(<OwnerInboxWorkspace />);
   fireEvent.click(await screen.findByRole("button", { name: /Review Garage results/u }));

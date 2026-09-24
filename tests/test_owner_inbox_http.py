@@ -57,6 +57,25 @@ class OwnerInboxCapabilityTests(unittest.TestCase):
                      {"view": "anything", "after": None}, {"view": "unread", "after": "../private"}):
             self.assertEqual(dispatch_owner_inbox(self.fixture.root, "page", body)[1], 400)
 
+    def test_run_notice_open_and_owner_actions_expose_only_safe_outcome(self):
+        self.fixture.insert_run_outcome("run_http_failure")
+        page, status = dispatch_owner_inbox(self.fixture.root, "page", {"view": "needs_me", "after": None})
+        self.assertEqual(status, 200)
+        item = page["data"]["items"][0]
+        self.assertEqual(item["kind"], "run_outcome")
+        opened, status = dispatch_owner_inbox(self.fixture.root, "open", {"item_id": item["id"]})
+        self.assertEqual((status, opened["data"]["run"]["status"]), (200, "failed"))
+        self.assertNotIn("incarnation", json.dumps(opened))
+        self.assertNotIn("runtime_run_ref", json.dumps(opened))
+        acknowledged, status = dispatch_owner_inbox(self.fixture.root, "mark", {
+            "item_id": item["id"], "action": "acknowledge", "expected_revision": item["revision"],
+        })
+        self.assertEqual(status, 200)
+        dismissed, status = dispatch_owner_inbox(self.fixture.root, "mark", {
+            "item_id": item["id"], "action": "dismiss", "expected_revision": acknowledged["data"]["revision"],
+        })
+        self.assertEqual((status, dismissed["data"]["revision"]), (200, acknowledged["data"]["revision"] + 1))
+
     def test_item_bound_open_preview_and_confirm_never_select_a_project_id(self):
         self.fixture.complete()
         item = dispatch_owner_inbox(self.fixture.root, "page", {"view": "needs_me", "after": None})[0]["data"]["items"][0]

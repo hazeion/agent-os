@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import mentat_db
 import private_console_unit
-from owner_inbox import _digest
-from owner_inbox import OwnerInboxError, mark_item, read_inbox, read_inbox_page, read_result_review_item, preview_result_review_item, confirm_result_review_item, reconcile_inbox_at_startup, validate_inbox_connection
+from owner_inbox import _digest, _public_run_item, _run_context
+from owner_inbox import OwnerInboxError, mark_item, read_inbox, read_inbox_page, read_owner_inbox_item, read_result_review_item, preview_result_review_item, confirm_result_review_item, reconcile_inbox_at_startup, validate_inbox_connection
 from project_deliverable_review import confirm_review, preview_review
 from project_deliverables import DeliverableError, publish_owner_edit
 from planning_deletion import PlanningDeletionService
@@ -35,6 +35,82 @@ class OwnerInboxTests(unittest.TestCase):
             versions[slot] = publish_owner_edit(self.root, "project_mentat", slot, content,
                                                  expected_project_revision=1, expected_slot_revision=0)
         return versions
+
+    def insert_run_outcome(self, run_id: str, status: str = "failed", *, finalized: int = 1):
+        with closing(mentat_db.connect(self.root)) as connection:
+            connection.execute(
+                "INSERT INTO mentat_runs "
+                "(id,source,runtime_type,capabilities_json,status,dispatch_state,"
+                "terminal_finalized,created_at,updated_at,completed_at) "
+                "VALUES(?,'console','hermes','[]',?,'legacy',?,?,?,?)",
+                (run_id, status, finalized, "2026-09-24T12:00:00+00:00",
+                 "2026-09-24T12:00:01+00:00",
+                 "2026-09-24T12:00:01+00:00" if status != "unknown" else None),
+            )
+            connection.commit()
+
+    def test_run_failure_acknowledge_then_explicit_dismiss_is_attention_only(self):
+        self.insert_run_outcome("run_inbox_failure")
+        item = read_inbox_page(self.root)["items"][0]
+        self.assertEqual((item["kind"], item["state"], item["unread"]), ("run_outcome", "failed", True))
+        opened = read_owner_inbox_item(self.root, item["id"])
+        self.assertEqual(opened["run"], {"source": "console", "status": "failed", "partial": False,
+                                        "terminal_finalized": True, "retired": False, "source_revision": 1,
+                                        "work_title": None, "created_at": "2026-09-24T12:00:00.000000Z"})
+        self.assertEqual(opened["item"]["id"], item["id"])
+        marked = mark_item(self.root, item["id"], action="read", expected_revision=item["revision"])
+        acknowledged = mark_item(self.root, item["id"], action="acknowledge", expected_revision=marked["revision"])
+        self.assertEqual(read_inbox_page(self.root)["counts"], {"needs_me": 1, "unread": 0, "all": 1})
+        dismissed = mark_item(self.root, item["id"], action="dismiss", expected_revision=acknowledged["revision"])
+        self.assertEqual(read_inbox_page(self.root)["counts"], {"needs_me": 0, "unread": 0, "all": 1})
+        self.assertTrue(mark_item(self.root, item["id"], action="dismiss",
+                                  expected_revision=acknowledged["revision"])["duplicate"])
+        resolved_item = read_owner_inbox_item(self.root, item["id"])["item"]
+        self.assertEqual(resolved_item["state"], "resolved")
+        self.assertIn("failed", resolved_item["title"])
+
+    def test_unknown_run_stays_needs_me_after_acknowledge(self):
+        self.insert_run_outcome("run_inbox_unknown", "unknown", finalized=0)
+        item = read_inbox_page(self.root)["items"][0]
+        self.assertEqual(item["state"], "checking")
+        seen = mark_item(self.root, item["id"], action="acknowledge", expected_revision=item["revision"])
+        with self.assertRaisesRegex(OwnerInboxError, "stale"):
+            mark_item(self.root, item["id"], action="dismiss", expected_revision=seen["revision"])
+        self.assertEqual(read_inbox_page(self.root)["counts"], {"needs_me": 1, "unread": 0, "all": 1})
+
+    def test_result_and_run_items_share_exact_paging_and_counts(self):
+        self.complete()
+        self.insert_run_outcome("run_inbox_mixed")
+        first = read_inbox_page(self.root, view="all", limit=1)
+        second = read_inbox_page(self.root, view="all", after=first["next_cursor"], limit=1)
+        self.assertEqual({first["items"][0]["kind"], second["items"][0]["kind"]},
+                         {"result_review", "run_outcome"})
+        self.assertIsNone(second["next_cursor"])
+        self.assertEqual(first["counts"], {"needs_me": 2, "unread": 2, "all": 2})
+
+    def test_run_locator_uses_only_bounded_source_title_and_created_time(self):
+        title, when, canonical = _run_context("task_dispatch", "2026-09-24T12:00:00+00:00",
+                                   '{"title":"Garage shelving"}', None)
+        self.assertEqual(title, "Garage shelving")
+        self.assertIn("Sep 24, 2026", when)
+        self.assertIn("12:00:00", when)
+        self.assertEqual(canonical, "2026-09-24T12:00:00.000000Z")
+        self.assertIsNone(_run_context("task_dispatch", "2026-09-24T12:00:00+00:00",
+                                        '{"title":"unsafe\\ntext"}', None)[0])
+        self.assertIsNone(_run_context("console", "2026-09-24T12:00:00+00:00",
+                                        None, "\ud800")[0])
+        self.assertIsNone(_run_context("console", "2026-09-24T12:00:00+00:00",
+                                        None, "hidden\u202erun")[0])
+        multilingual, _, _ = _run_context("console", "2026-09-24T12:00:00+00:00",
+                                        None, "車" * 80)
+        self.assertTrue(multilingual.endswith("…"))
+        self.assertLessEqual(len(multilingual.encode("utf-8")), 160)
+        alternate = _run_context("console", "2026-09-24 12:00:00.1234567+05:30",
+                                 None, "車" * 80)
+        self.assertEqual(alternate[2], "2026-09-24T06:30:00.123456Z")
+        public = _public_run_item(("inbox_item_" + "a" * 32, 1, 1790035200, None, None,
+                                   None, "failed", 0, 1, "console", alternate[2], None, "車" * 80))
+        self.assertLessEqual(len(public["title"].encode("utf-8")), 500)
 
     def test_schema_33_upgrade_adds_empty_bounded_inbox_without_rewriting_sources(self):
         with TemporaryDirectory() as temporary:

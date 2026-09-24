@@ -9,18 +9,22 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import sqlite3
 import time
+import unicodedata
 import uuid
 
 from private_state import private_state_lock
+from run_attention import RunAttentionError, validate_run_attention_connection
 from task_repository import _guarded_transaction, _open_repository_database
 
 
 MAX_ITEMS = 2048
 MAX_RESULT_ITEMS = 256
+MAX_RUN_REVISION = 2_147_483_647
 ROW_CHARGE = 768
 METADATA_BUDGET = 2 * 1024 * 1024
 SLOTS = ("layout", "products", "steps")
@@ -156,6 +160,14 @@ def validate_inbox_connection(connection: sqlite3.Connection) -> None:
             _fail("budget")
 
 
+def _validate_all_connection(connection: sqlite3.Connection) -> None:
+    validate_inbox_connection(connection)
+    try:
+        validate_run_attention_connection(connection)
+    except RunAttentionError as exc:
+        raise OwnerInboxError("owner_inbox.source_invalid") from exc
+
+
 def _prune_resolved(connection: sqlite3.Connection) -> bool:
     row = connection.execute(
         "SELECT id FROM mentat_inbox_items WHERE resolved_at IS NOT NULL AND acknowledged_at IS NOT NULL "
@@ -238,6 +250,86 @@ def _public_item(row: tuple) -> dict:
             "title": f"Review {row[8]} results" if row[8] else "Retained Project results"}
 
 
+def _run_state(status: str, partial: int, finalized: int, resolved: object) -> str:
+    if resolved is not None:
+        return "resolved"
+    if status == "unknown" or status not in {"completed", "failed", "interrupted", "stopped", "cancelled"} or partial or not finalized:
+        return "checking"
+    return status
+
+
+def _run_item_row(connection: sqlite3.Connection, item_id: str) -> tuple | None:
+    return connection.execute(
+        "SELECT a.item_id,a.revision,a.created_at,a.read_at,a.acknowledged_at,a.resolved_at,"
+        "COALESCE(r.status,a.retired_status),COALESCE(r.partial,a.retired_partial),"
+        "COALESCE(r.terminal_finalized,a.retired_terminal_finalized),"
+        "COALESCE(r.source,a.retired_source),a.retired_at,a.updated_at,a.last_action_digest,"
+        "a.last_expected_revision,a.slot_id,COALESCE(r.state_revision,a.retired_state_revision),"
+        "COALESCE(r.created_at,a.retired_run_created_at),r.task_snapshot_json,c.title "
+        "FROM mentat_run_attention a "
+        "LEFT JOIN mentat_run_identities i ON i.run_id=a.run_id AND i.incarnation=a.incarnation "
+        "LEFT JOIN mentat_runs r ON r.id=i.run_id "
+        "LEFT JOIN mentat_conversations c ON c.id=r.conversation_id "
+        "WHERE a.item_id=?", (item_id,),
+    ).fetchone()
+
+
+def _run_context(source: str, created_at: object, task_snapshot: object,
+                 conversation_title: object) -> tuple[str | None, str, str]:
+    work_title = None
+    if source == "task_dispatch" and isinstance(task_snapshot, str):
+        try:
+            snapshot = json.loads(task_snapshot)
+        except (TypeError, ValueError):
+            snapshot = None
+        if isinstance(snapshot, dict):
+            work_title = snapshot.get("title")
+    elif source == "console":
+        work_title = conversation_title
+    if (not isinstance(work_title, str) or not work_title.strip()
+            or any(unicodedata.category(character).startswith("C") for character in work_title)):
+        work_title = None
+    if work_title is not None:
+        try:
+            encoded_title = work_title.encode("utf-8")
+        except UnicodeError:
+            work_title = None
+        else:
+            if len(encoded_title) > 160:
+                work_title = encoded_title[:157].decode("utf-8", "ignore").rstrip() + "…"
+    if not isinstance(created_at, str) or len(created_at) > 64:
+        _fail("source_invalid")
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            _fail("source_invalid")
+        utc = parsed.astimezone(timezone.utc)
+        date_label = utc.strftime("%b %d, %Y %H:%M:%S UTC")
+        canonical_time = utc.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    except ValueError:
+        _fail("source_invalid")
+    return work_title, date_label, canonical_time
+
+
+def _public_run_item(row: tuple) -> dict:
+    status, partial, finalized, source = str(row[6]), int(row[7]), int(row[8]), str(row[9])
+    state = _run_state(status, partial, finalized, row[5])
+    outcome = _run_state(status, partial, finalized, None)
+    subject = "Task run" if source == "task_dispatch" else "Agent run"
+    label = "needs checking" if outcome == "checking" else outcome
+    context_title, date_label, _canonical_time = _run_context(source, row[-3], row[-2], row[-1])
+    title = f"{subject} {label}"
+    if context_title:
+        title += f" · {context_title}"
+    title += f" · {date_label}"
+    if len(title.encode("utf-8")) > 500:
+        _fail("source_invalid")
+    return {"id": row[0], "kind": "run_outcome", "revision": int(row[1]),
+            "created_at": row[2], "unread": row[3] is None,
+            "acknowledged": row[4] is not None, "state": state,
+            "title": title}
+
+
 def read_inbox_page(data_dir: Path, *, view: str = "needs_me", after: str | None = None,
                     limit: int = 50) -> dict:
     if (view not in ("needs_me", "unread", "all")
@@ -249,35 +341,63 @@ def read_inbox_page(data_dir: Path, *, view: str = "needs_me", after: str | None
         with _open_repository_database(root) as (connection, guard):
             with _guarded_transaction(connection, guard, immediate=True):
                 _reconcile_connection(connection)
-                validate_inbox_connection(connection)
-                where = "i.resolved_at IS NULL" if view == "needs_me" else "i.read_at IS NULL" if view == "unread" else "1=1"
+                _validate_all_connection(connection)
+                result_where = "i.resolved_at IS NULL" if view == "needs_me" else "i.read_at IS NULL" if view == "unread" else "1=1"
+                run_where = "a.resolved_at IS NULL" if view == "needs_me" else "a.read_at IS NULL" if view == "unread" else "1=1"
                 params: list[object] = []
                 if after is not None:
-                    cursor = connection.execute(
+                    result_cursor = connection.execute(
                         "SELECT created_at,resolved_at,read_at FROM mentat_inbox_items WHERE id=?", (after,),
                     ).fetchone()
-                    if (cursor is None or view == "needs_me" and cursor[1] is not None
+                    run_cursor = connection.execute(
+                        "SELECT created_at,resolved_at,read_at FROM mentat_run_attention WHERE item_id=?", (after,),
+                    ).fetchone()
+                    if (int(result_cursor is not None) + int(run_cursor is not None) != 1):
+                        _fail("stale")
+                    cursor = result_cursor if result_cursor is not None else run_cursor
+                    if (view == "needs_me" and cursor[1] is not None
                             or view == "unread" and cursor[2] is not None):
                         _fail("stale")
-                    where += " AND (i.created_at<? OR (i.created_at=? AND i.id<?))"
+                    result_where += " AND (i.created_at<? OR (i.created_at=? AND i.id<?))"
+                    run_where += " AND (a.created_at<? OR (a.created_at=? AND a.item_id<?))"
                     params.extend((cursor[0], cursor[0], after))
-                rows = connection.execute(
+                result_rows = connection.execute(
                     "SELECT i.id,i.source_id,i.source_incarnation,i.revision,i.created_at,i.read_at,"
                     "i.acknowledged_at,i.resolved_at,p.name,p.status "
                     "FROM mentat_inbox_items i LEFT JOIN mentat_projects p "
                     "ON p.id=i.source_id AND p.deliverable_incarnation=i.source_incarnation "
-                    f"WHERE {where} ORDER BY i.created_at DESC,i.id DESC LIMIT ?", (*params, limit + 1),
+                    f"WHERE {result_where} ORDER BY i.created_at DESC,i.id DESC LIMIT ?", (*params, limit + 1),
                 ).fetchall()
-                shown = rows[:limit]
-                return {"items": [_public_item(row) for row in shown],
-                        "next_cursor": shown[-1][0] if len(rows) > limit else None,
-                        "counts": {"needs_me": connection.execute(
-                            "SELECT COUNT(*) FROM mentat_inbox_items WHERE resolved_at IS NULL"
-                        ).fetchone()[0], "unread": connection.execute(
-                            "SELECT COUNT(*) FROM mentat_inbox_items WHERE read_at IS NULL"
-                        ).fetchone()[0], "all": connection.execute(
-                            "SELECT COUNT(*) FROM mentat_inbox_items"
-                        ).fetchone()[0]}}
+                run_rows = connection.execute(
+                    "SELECT a.item_id,a.revision,a.created_at,a.read_at,a.acknowledged_at,a.resolved_at,"
+                    "COALESCE(r.status,a.retired_status),COALESCE(r.partial,a.retired_partial),"
+                    "COALESCE(r.terminal_finalized,a.retired_terminal_finalized),"
+                    "COALESCE(r.source,a.retired_source),"
+                    "COALESCE(r.created_at,a.retired_run_created_at),r.task_snapshot_json,c.title "
+                    "FROM mentat_run_attention a "
+                    "LEFT JOIN mentat_run_identities ident ON ident.run_id=a.run_id "
+                    "AND ident.incarnation=a.incarnation "
+                    "LEFT JOIN mentat_runs r ON r.id=ident.run_id "
+                    "LEFT JOIN mentat_conversations c ON c.id=r.conversation_id "
+                    f"WHERE a.item_id IS NOT NULL AND {run_where} "
+                    "ORDER BY a.created_at DESC,a.item_id DESC LIMIT ?", (*params, limit + 1),
+                ).fetchall()
+                combined = [_public_item(row) for row in result_rows] + [_public_run_item(row) for row in run_rows]
+                combined.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
+                shown = combined[:limit]
+                return {"items": shown,
+                        "next_cursor": shown[-1]["id"] if len(combined) > limit else None,
+                        "counts": {"needs_me": sum(connection.execute(
+                            f"SELECT COUNT(*) FROM {table} WHERE resolved_at IS NULL" + clause
+                        ).fetchone()[0] for table, clause in (
+                            ("mentat_inbox_items", ""), ("mentat_run_attention", " AND item_id IS NOT NULL"))),
+                            "unread": sum(connection.execute(
+                                f"SELECT COUNT(*) FROM {table} WHERE read_at IS NULL" + clause
+                            ).fetchone()[0] for table, clause in (
+                                ("mentat_inbox_items", ""), ("mentat_run_attention", " AND item_id IS NOT NULL"))),
+                            "all": (
+                                connection.execute("SELECT COUNT(*) FROM mentat_inbox_items").fetchone()[0]
+                                + connection.execute("SELECT COUNT(*) FROM mentat_run_attention WHERE item_id IS NOT NULL").fetchone()[0])}}
 
 
 def _reconcile_connection(connection: sqlite3.Connection) -> None:
@@ -335,7 +455,7 @@ def reconcile_inbox_at_startup(data_dir: Path) -> None:
         with _open_repository_database(root) as (connection, guard):
             with _guarded_transaction(connection, guard, immediate=True):
                 _reconcile_connection(connection)
-                validate_inbox_connection(connection)
+                _validate_all_connection(connection)
 
 
 def _item_snapshot(data_dir: Path, item_id: str) -> tuple[dict, str, list[str]]:
@@ -411,6 +531,41 @@ def read_result_review_item(data_dir: Path, item_id: str) -> dict:
     return {"item": verified, "project": project, "review": review, "versions": None}
 
 
+def read_run_outcome_item(data_dir: Path, item_id: str) -> dict:
+    if not isinstance(item_id, str) or _ITEM.fullmatch(item_id) is None:
+        _fail("invalid")
+    root = Path(data_dir)
+    with private_state_lock(root):
+        with _open_repository_database(root) as (connection, guard):
+            with _guarded_transaction(connection, guard):
+                _validate_all_connection(connection)
+                row = _run_item_row(connection, item_id)
+                if row is None:
+                    _fail("unavailable")
+                work_title, _date_label, canonical_time = _run_context(str(row[9]), row[16], row[17], row[18])
+                return {"item": _public_run_item(row),
+                        "run": {"source": row[9], "status": row[6],
+                                "partial": bool(row[7]), "terminal_finalized": bool(row[8]),
+                                "retired": row[10] is not None, "source_revision": int(row[15]),
+                                "work_title": work_title, "created_at": canonical_time}}
+
+
+def read_owner_inbox_item(data_dir: Path, item_id: str) -> dict:
+    if not isinstance(item_id, str) or _ITEM.fullmatch(item_id) is None:
+        _fail("invalid")
+    root = Path(data_dir)
+    with private_state_lock(root):
+        with _open_repository_database(root) as (connection, guard):
+            with _guarded_transaction(connection, guard):
+                _validate_all_connection(connection)
+                result = connection.execute("SELECT 1 FROM mentat_inbox_items WHERE id=?", (item_id,)).fetchone()
+                run = connection.execute("SELECT 1 FROM mentat_run_attention WHERE item_id=?", (item_id,)).fetchone()
+                if int(result is not None) + int(run is not None) != 1:
+                    _fail("unavailable")
+                is_run = run is not None
+    return read_run_outcome_item(data_dir, item_id) if is_run else read_result_review_item(data_dir, item_id)
+
+
 def preview_result_review_item(data_dir: Path, item_id: str, action: object,
                                note: object, affected_slots: object) -> dict:
     item, project_id, versions = _item_snapshot(data_dir, item_id)
@@ -436,22 +591,63 @@ def confirm_result_review_item(data_dir: Path, item_id: str, action: object,
                           confirmation_id, inbox_item_id=item_id)
 
 
+def _mark_run_item_connection(connection: sqlite3.Connection, row: tuple,
+                              *, action: str, expected_revision: int, digest: str) -> dict:
+    item_id = str(row[0])
+    if row[12] == digest and row[13] == expected_revision:
+        return {"id": item_id, "revision": int(row[1]), "duplicate": True}
+    if row[1] != expected_revision:
+        _fail("stale")
+    if action == "read" and row[3] is not None or action == "acknowledge" and row[4] is not None:
+        return {"id": item_id, "revision": int(row[1]), "duplicate": True}
+    if expected_revision >= MAX_RUN_REVISION:
+        _fail("capacity")
+    state = _run_state(str(row[6]), int(row[7]), int(row[8]), row[5])
+    if action == "dismiss" and (state not in {"failed", "interrupted"} or row[4] is None):
+        _fail("stale")
+    now = max(time.time(), row[2], row[11])
+    read_at = row[3] if row[3] is not None else now
+    acknowledged = row[4] if action == "read" or row[4] is not None else now
+    resolved = row[5]
+    if action == "dismiss" or action == "acknowledge" and state in {"completed", "stopped", "cancelled"}:
+        resolved = now
+    changed = connection.execute(
+        "UPDATE mentat_run_attention SET revision=revision+1,updated_at=?,read_at=?,"
+        "acknowledged_at=?,resolved_at=?,last_action_digest=?,last_expected_revision=? "
+        "WHERE slot_id=? AND revision=? AND item_id=?",
+        (now, read_at, acknowledged, resolved, digest, expected_revision, row[14], expected_revision, item_id),
+    ).rowcount
+    if changed != 1:
+        _fail("stale")
+    _validate_all_connection(connection)
+    return {"id": item_id, "revision": expected_revision + 1, "duplicate": False}
+
+
 def mark_item(data_dir: Path, item_id: str, *, action: str, expected_revision: int) -> dict:
     if (not isinstance(item_id, str) or _ITEM.fullmatch(item_id) is None
-            or action not in ("read", "acknowledge")
-            or type(expected_revision) is not int or not 1 <= expected_revision <= 16):
+            or action not in ("read", "acknowledge", "dismiss")
+            or type(expected_revision) is not int or not 1 <= expected_revision <= MAX_RUN_REVISION):
         _fail("invalid")
     digest = _digest([item_id, action, expected_revision])
     root = Path(data_dir)
     with private_state_lock(root):
         with _open_repository_database(root) as (connection, guard):
             with _guarded_transaction(connection, guard, immediate=True):
+                _validate_all_connection(connection)
                 row = connection.execute(
                     "SELECT revision,read_at,acknowledged_at,last_action_digest,last_expected_revision,created_at,updated_at "
                     "FROM mentat_inbox_items WHERE id=?", (item_id,),
                 ).fetchone()
+                run_row = _run_item_row(connection, item_id)
+                if row is not None and run_row is not None:
+                    _fail("source_invalid")
+                if run_row is not None:
+                    return _mark_run_item_connection(connection, run_row, action=action,
+                                                     expected_revision=expected_revision, digest=digest)
                 if row is None:
                     _fail("unavailable")
+                if action == "dismiss" or expected_revision > 16:
+                    _fail("invalid")
                 if row[3] == digest and row[4] == expected_revision:
                     return {"id": item_id, "revision": row[0], "duplicate": True}
                 if row[0] != expected_revision:
