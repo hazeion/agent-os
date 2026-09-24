@@ -1,7 +1,7 @@
 # Project plan authority
 
-Status: implementation reviewed; full PR pending. No execution capability is
-approved or advertised by this slice.
+Status: implementation reviewed and published in full PR #273; CI pending.
+No execution capability is approved or advertised by this slice.
 
 Scope: the immutable owner-editable plan preparation authority beneath
 [approved plans and scoped handoffs](https://github.com/hazeion/agent-os/issues/239).
