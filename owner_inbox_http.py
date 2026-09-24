@@ -6,9 +6,9 @@ from pathlib import Path
 import re
 import sqlite3
 
-from owner_inbox import (OwnerInboxError, confirm_result_review_item, mark_item,
+from owner_inbox import (MAX_RUN_REVISION, OwnerInboxError, confirm_result_review_item, mark_item,
                          preview_result_review_item, read_inbox,
-                         read_inbox_page, read_result_review_item)
+                         read_inbox_page, read_owner_inbox_item)
 from project_deliverable_review import DeliverableReviewError
 from task_repository import TaskRepositoryError
 
@@ -40,8 +40,8 @@ def dispatch_owner_inbox(data_dir: Path, operation: str, body: object) -> tuple[
     elif operation == "mark":
         if (not isinstance(body, dict) or set(body) != {"item_id", "action", "expected_revision"}
                 or not isinstance(body["item_id"], str) or _ITEM.fullmatch(body["item_id"]) is None
-                or body["action"] not in ("read", "acknowledge")
-                or type(body["expected_revision"]) is not int or not 1 <= body["expected_revision"] <= 16):
+                or body["action"] not in ("read", "acknowledge", "dismiss")
+                or type(body["expected_revision"]) is not int or not 1 <= body["expected_revision"] <= MAX_RUN_REVISION):
             return _failure("invalid", 400)
     elif operation in ("preview", "confirm"):
         expected = {"item_id", "action", "note", "affected_slots"}
@@ -58,7 +58,7 @@ def dispatch_owner_inbox(data_dir: Path, operation: str, body: object) -> tuple[
         elif operation == "page":
             result = read_inbox_page(data_dir, view=body["view"], after=body["after"])
         elif operation == "open":
-            result = read_result_review_item(data_dir, body["item_id"])
+            result = read_owner_inbox_item(data_dir, body["item_id"])
         elif operation == "preview":
             result = preview_result_review_item(data_dir, body["item_id"], body["action"],
                                                 body["note"], body["affected_slots"])
