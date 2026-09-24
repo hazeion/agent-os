@@ -20,6 +20,8 @@ const review = { project_id: projectId, project_name: "Garage", status: "pending
 test("Inbox contracts keep exact owner items and full current result content", () => {
   const page = inboxResult("page", envelope({ items: [item], next_cursor: null, counts: { needs_me: 1, unread: 1, all: 1 } }), { view: "needs_me", after: null });
   assert.equal(page.items[0].id, itemId);
+  assert.equal(inboxResult("page", envelope({ items: [{ ...item, state: "stale" }], next_cursor: null, counts: { needs_me: 1, unread: 1, all: 1 } }), { view: "needs_me", after: null }).items[0].state, "stale");
+  assert.throws(() => inboxResult("page", envelope({ items: [{ ...item, state: "resolved" }], next_cursor: null, counts: { needs_me: 1, unread: 1, all: 1 } }), { view: "needs_me", after: null }), OwnerInboxContractError);
   const opened = inboxResult("open", envelope({ item, project, review, versions: null }), { item_id: itemId });
   assert.equal(opened.project?.slots.length, 3);
   assert.deepEqual(inboxRequest("preview", { item_id: itemId, action: "accept", note: "", affected_slots: ["layout", "products", "steps"] }).affected_slots, ["layout", "products", "steps"]);
