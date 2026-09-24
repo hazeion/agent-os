@@ -937,6 +937,15 @@ button {
 .project-deliverable-review fieldset input[type="checkbox"] { width: auto; flex: 0 0 auto; }
 .project-deliverable-review .project-context-confirmation > section { min-width: 0; padding: 8px 0; border-top: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
 .project-deliverable-review .project-context-confirmation h5 { margin: 0 0 6px; }
+.project-plan-draft { display: grid; min-width: 0; gap: 12px; }
+.project-plan-draft input:not([type="checkbox"]) { width: 100%; min-width: 0; }
+.project-plan-draft ul li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 5px 0; overflow-wrap: anywhere; }
+.project-plan-draft ul li span { flex: 1 1 110px; }
+.project-plan-node { min-width: 0; padding: 10px 0; border-top: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
+.project-plan-node h4 { margin: 0 0 7px; }
+.project-plan-node fieldset label { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.project-plan-node fieldset input[type="checkbox"] { width: auto; flex: 0 0 auto; }
+.project-plan-limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; min-width: 0; }
 .project-context-brief { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
 .project-context-confirmation { display: grid; gap: 10px; margin: 10px 0; padding: 10px; border: 1px solid var(--border-subtle); }
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
