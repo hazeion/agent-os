@@ -145,14 +145,14 @@ class ConversationPlanningBridgeTests(unittest.TestCase):
             "schema_version": 1, "target_kind": "task", "target_id": "task_1",
             "confirmation_id": "a" * 64,
             "affected": {"projects": 0, "tasks": 2, "conversations": 1, "runs": 1, "artifacts": 3},
-            "has_active_runs": True, "retained_context_versions": 0, "retained_input_versions": 0, "retained_deliverable_versions": 0, "retained_deliverable_reviews": 0,
+            "has_active_runs": True, "retained_context_versions": 0, "retained_input_versions": 0, "retained_deliverable_versions": 0, "retained_deliverable_reviews": 0, "retained_plan_versions": 0,
         }
         with patch.object(server, "preview_mentat_planning_deletion", return_value=(preview, 200)) as call:
             payload, status = local_bridge.bridge_planning_deletion_preview_payload(
                 {"target_kind": "task", "target_id": "task_1"}
             )
         self.assertEqual(status, 200)
-        self.assertEqual(set(payload), {"schema_version", "service", "runtime", "status", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs", "retained_context_versions", "retained_input_versions", "retained_deliverable_versions", "retained_deliverable_reviews"})
+        self.assertEqual(set(payload), {"schema_version", "service", "runtime", "status", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs", "retained_context_versions", "retained_input_versions", "retained_deliverable_versions", "retained_deliverable_reviews", "retained_plan_versions"})
         self.assertNotIn("title", str(payload))
         call.assert_called_once_with({"target_kind": "task", "target_id": "task_1"})
 
