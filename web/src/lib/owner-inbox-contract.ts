@@ -62,7 +62,7 @@ export function inboxDataResult<K extends InboxOperation>(operation: K, value: u
     const items = value.items.map(item);
     if (new Set(items.map((entry) => entry.id)).size !== items.length || value.next_cursor !== null && value.next_cursor !== items.at(-1)?.id
         || items.some((entry, index) => index > 0 && (entry.created_at > items[index - 1].created_at || entry.created_at === items[index - 1].created_at && entry.id >= items[index - 1].id))
-        || request.view === "needs_me" && items.some((entry) => entry.state === "resolved" || entry.state === "stale")
+        || request.view === "needs_me" && items.some((entry) => entry.state === "resolved")
         || request.view === "unread" && items.some((entry) => !entry.unread)) throw new OwnerInboxContractError();
   } else if (operation === "open") {
     if (!record(value) || !keys(value, "item,project,review,versions")) throw new OwnerInboxContractError();
