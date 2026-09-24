@@ -96,3 +96,14 @@ mobile Inbox screenshots were visually checked for overflow, result legibility
 and compact controls. Existing Run failure/recovery producers, Home
 attention count and coordinated revision routing remain outside this slice;
 issue #240 stays open.
+
+Hosted package and Node quality gates found one browser-smoke expectation
+from the old four-item navigation: the sixth compact-height Tab now reaches
+Inbox, with Runs seventh. The full smoke also needed to include Inbox as a
+hydrated route. Both checks now cover the new route without removing prior
+assertions. A strict local `compact-height` focus mode and explicit managed
+browser no-sandbox opt-in allowed the exact 1024×320 keyboard/tooltip contract
+to pass against a disposable loopback preview; the full local smoke passed
+route inspection but stopped later in an unrelated planner fixture. Two
+independent read-only reviews found no remaining issue with this correction.
+Hosted full-smoke reruns remain required before merge.
