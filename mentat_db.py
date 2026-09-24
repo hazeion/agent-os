@@ -2677,7 +2677,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2807,6 +2807,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 31 cannot be safely upgraded")
                 if version == 33 and schema_signature_state(connection, 32) != "expected":
                     raise MentatDatabaseError("Mentat schema 32 cannot be safely upgraded")
+                if version == 34 and schema_signature_state(connection, 33) != "expected":
+                    raise MentatDatabaseError("Mentat schema 33 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

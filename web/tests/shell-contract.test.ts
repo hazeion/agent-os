@@ -18,6 +18,7 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
       { href: "/", label: "Home" },
       { href: "/agents", label: "Agents" },
       { href: "/tasks", label: "Projects & Tasks" },
+      { href: "/inbox", label: "Inbox" },
       { href: "/runs", label: "Runs" },
     ],
   );
@@ -26,6 +27,7 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
     ["/", source("src/app/page.tsx")],
     ["/agents", source("src/app/agents/page.tsx")],
     ["/tasks", source("src/app/tasks/page.tsx")],
+    ["/inbox", source("src/app/inbox/page.tsx")],
     ["/runs", source("src/app/runs/page.tsx")],
   ]);
   for (const [href, page] of routeSources) {

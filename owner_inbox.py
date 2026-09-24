@@ -225,27 +225,59 @@ def sync_result_review_connection(connection: sqlite3.Connection, project_id: st
 def read_inbox(data_dir: Path, *, limit: int = 50) -> list[dict]:
     if type(limit) is not int or not 1 <= limit <= 50:
         _fail("invalid")
+    return read_inbox_page(data_dir, view="all", after=None, limit=limit)["items"]
+
+
+def _public_item(row: tuple) -> dict:
+    return {"id": row[0], "kind": "result_review", "revision": row[3],
+            "created_at": row[4], "unread": row[5] is None,
+            "acknowledged": row[6] is not None,
+            "state": "resolved" if row[7] is not None else
+            "stale" if row[8] is None else
+            "activation_required" if row[9] != "active" else "needs_review",
+            "title": f"Review {row[8]} results" if row[8] else "Retained Project results"}
+
+
+def read_inbox_page(data_dir: Path, *, view: str = "needs_me", after: str | None = None,
+                    limit: int = 50) -> dict:
+    if (view not in ("needs_me", "unread", "all")
+            or after is not None and (not isinstance(after, str) or _ITEM.fullmatch(after) is None)
+            or type(limit) is not int or not 1 <= limit <= 50):
+        _fail("invalid")
     root = Path(data_dir)
     with private_state_lock(root):
         with _open_repository_database(root) as (connection, guard):
             with _guarded_transaction(connection, guard, immediate=True):
                 _reconcile_connection(connection)
                 validate_inbox_connection(connection)
+                where = "i.resolved_at IS NULL" if view == "needs_me" else "i.read_at IS NULL" if view == "unread" else "1=1"
+                params: list[object] = []
+                if after is not None:
+                    cursor = connection.execute(
+                        "SELECT created_at,resolved_at,read_at FROM mentat_inbox_items WHERE id=?", (after,),
+                    ).fetchone()
+                    if (cursor is None or view == "needs_me" and cursor[1] is not None
+                            or view == "unread" and cursor[2] is not None):
+                        _fail("stale")
+                    where += " AND (i.created_at<? OR (i.created_at=? AND i.id<?))"
+                    params.extend((cursor[0], cursor[0], after))
                 rows = connection.execute(
                     "SELECT i.id,i.source_id,i.source_incarnation,i.revision,i.created_at,i.read_at,"
                     "i.acknowledged_at,i.resolved_at,p.name,p.status "
                     "FROM mentat_inbox_items i LEFT JOIN mentat_projects p "
                     "ON p.id=i.source_id AND p.deliverable_incarnation=i.source_incarnation "
-                    "ORDER BY i.created_at DESC,i.id DESC LIMIT ?", (limit,),
+                    f"WHERE {where} ORDER BY i.created_at DESC,i.id DESC LIMIT ?", (*params, limit + 1),
                 ).fetchall()
-                return [{"id": row[0], "kind": "result_review", "revision": row[3],
-                         "created_at": row[4], "unread": row[5] is None,
-                         "acknowledged": row[6] is not None,
-                         "state": "resolved" if row[7] is not None else
-                         "stale" if row[8] is None else
-                         "activation_required" if row[9] != "active" else "needs_review",
-                         "title": f"Review {row[8]} results" if row[8] else "Retained Project results"}
-                        for row in rows]
+                shown = rows[:limit]
+                return {"items": [_public_item(row) for row in shown],
+                        "next_cursor": shown[-1][0] if len(rows) > limit else None,
+                        "counts": {"needs_me": connection.execute(
+                            "SELECT COUNT(*) FROM mentat_inbox_items WHERE resolved_at IS NULL"
+                        ).fetchone()[0], "unread": connection.execute(
+                            "SELECT COUNT(*) FROM mentat_inbox_items WHERE read_at IS NULL"
+                        ).fetchone()[0], "all": connection.execute(
+                            "SELECT COUNT(*) FROM mentat_inbox_items"
+                        ).fetchone()[0]}}
 
 
 def _reconcile_connection(connection: sqlite3.Connection) -> None:
@@ -255,6 +287,48 @@ def _reconcile_connection(connection: sqlite3.Connection) -> None:
         sync_result_review_connection(connection, project_id)
 
 
+def _item_heads_connection(connection: sqlite3.Connection, item_id: str) -> tuple[str, str, list[str], bool]:
+    if not isinstance(item_id, str) or _ITEM.fullmatch(item_id) is None:
+        _fail("invalid")
+    validate_inbox_connection(connection)
+    row = connection.execute(
+        "SELECT source_id,source_incarnation,heads_json,resolved_at "
+        "FROM mentat_inbox_items WHERE id=? AND kind='result_review'", (item_id,),
+    ).fetchone()
+    if row is None:
+        _fail("unavailable")
+    return row[0], row[1], json.loads(row[2]), row[3] is not None
+
+
+def require_pending_result_item_connection(connection: sqlite3.Connection, item_id: str,
+                                           project_id: str, incarnation: str, heads: list[list]) -> None:
+    """Bind an Inbox review to the source transaction's current exact heads."""
+    source_id, source_incarnation, versions, resolved = _item_heads_connection(connection, item_id)
+    if (resolved or source_id != project_id or source_incarnation != incarnation
+            or versions != [head[2] for head in heads]):
+        _fail("stale")
+
+
+def require_duplicate_result_item_connection(connection: sqlite3.Connection, item_id: str,
+                                             review_id: str, project_id: str) -> None:
+    """Permit replay of only a decision on this exact retained generation."""
+    source_id, source_incarnation, versions, _resolved = _item_heads_connection(connection, item_id)
+    review = connection.execute(
+        "SELECT project_id,project_incarnation FROM mentat_deliverable_reviews WHERE id=?",
+        (review_id,),
+    ).fetchone()
+    actual = [tuple(row) for row in connection.execute(
+        "SELECT slot,version_id FROM mentat_deliverable_review_versions "
+        "WHERE review_id=? ORDER BY slot", (review_id,),
+    )]
+    if any(slot not in SLOTS for slot, _version in actual):
+        _fail("source_invalid")
+    actual.sort(key=lambda row: SLOTS.index(row[0]))
+    if (review is None or source_id != project_id or review[0] != source_id
+            or review[1] != source_incarnation or actual != list(zip(SLOTS, versions))):
+        _fail("stale")
+
+
 def reconcile_inbox_at_startup(data_dir: Path) -> None:
     root = Path(data_dir)
     with private_state_lock(root):
@@ -262,6 +336,104 @@ def reconcile_inbox_at_startup(data_dir: Path) -> None:
             with _guarded_transaction(connection, guard, immediate=True):
                 _reconcile_connection(connection)
                 validate_inbox_connection(connection)
+
+
+def _item_snapshot(data_dir: Path, item_id: str) -> tuple[dict, str, list[str]]:
+    if not isinstance(item_id, str) or _ITEM.fullmatch(item_id) is None:
+        _fail("invalid")
+    root = Path(data_dir)
+    with private_state_lock(root):
+        with _open_repository_database(root) as (connection, guard):
+            with _guarded_transaction(connection, guard):
+                validate_inbox_connection(connection)
+                row = connection.execute(
+                    "SELECT i.id,i.source_id,i.source_incarnation,i.revision,i.created_at,i.read_at,"
+                    "i.acknowledged_at,i.resolved_at,p.name,p.status,i.heads_json "
+                    "FROM mentat_inbox_items i LEFT JOIN mentat_projects p "
+                    "ON p.id=i.source_id AND p.deliverable_incarnation=i.source_incarnation "
+                    "WHERE i.id=?", (item_id,),
+                ).fetchone()
+                if row is None:
+                    _fail("unavailable")
+                return _public_item(row), row[1], json.loads(row[10])
+
+
+def _retained_item_versions(data_dir: Path, item_id: str) -> list[dict]:
+    """Read only the three immutable versions named by this Inbox generation."""
+    root = Path(data_dir)
+    with private_state_lock(root):
+        with _open_repository_database(root) as (connection, guard):
+            with _guarded_transaction(connection, guard):
+                source_id, incarnation, versions, _resolved = _item_heads_connection(connection, item_id)
+                from project_context import validate_project_context_connection
+                validate_project_context_connection(connection, require_available=False)
+                result = []
+                for slot, version_id in zip(SLOTS, versions):
+                    row = connection.execute(
+                        "SELECT v.revision,v.origin,v.source_version_id,v.content_json,v.created_at "
+                        "FROM mentat_deliverable_versions v JOIN mentat_deliverable_slots s ON s.id=v.slot_id "
+                        "WHERE v.id=? AND s.project_id=? AND s.project_incarnation=? AND s.slot=?",
+                        (version_id, source_id, incarnation, slot),
+                    ).fetchone()
+                    if row is None:
+                        _fail("source_invalid")
+                    preview = connection.execute(
+                        "SELECT attachment_id FROM mentat_deliverable_files WHERE version_id=? AND role='preview'",
+                        (version_id,),
+                    ).fetchone()
+                    result.append({"id": version_id, "project_id": source_id, "slot": slot,
+                                   "revision": row[0], "origin": row[1],
+                                   "source_version_id": row[2], "content": json.loads(row[3]),
+                                   "created_at": row[4], "preview_attachment_id": preview[0] if preview else None})
+                return result
+
+
+def read_result_review_item(data_dir: Path, item_id: str) -> dict:
+    """Return exact current source content, or an inert stale/resolved item."""
+    item, project_id, versions = _item_snapshot(data_dir, item_id)
+    if item["state"] != "needs_review":
+        return {"item": item, "project": None, "review": None,
+                "versions": _retained_item_versions(data_dir, item_id)}
+    from project_deliverables import read_project_deliverables
+    from project_deliverable_review import read_review_status
+    try:
+        project = read_project_deliverables(data_dir, project_id)
+        review = read_review_status(data_dir, project_id)
+    except (RuntimeError, sqlite3.Error, OSError):
+        _fail("stale")
+    actual = {slot["slot"]: slot["versions"][0]["id"] for slot in project["slots"] if slot["versions"]}
+    if (project["project"]["status"] != "active" or review["status"] != "pending"
+            or [actual.get(slot) for slot in SLOTS] != versions):
+        _fail("stale")
+    verified, _, current_versions = _item_snapshot(data_dir, item_id)
+    if verified["state"] != "needs_review" or current_versions != versions:
+        _fail("stale")
+    return {"item": verified, "project": project, "review": review, "versions": None}
+
+
+def preview_result_review_item(data_dir: Path, item_id: str, action: object,
+                               note: object, affected_slots: object) -> dict:
+    item, project_id, versions = _item_snapshot(data_dir, item_id)
+    if item["state"] != "needs_review":
+        _fail("stale")
+    from project_deliverable_review import preview_review
+    result = preview_review(data_dir, project_id, action, note, affected_slots,
+                            inbox_item_id=item_id)
+    if [head["version_id"] for head in result["heads"]] != versions:
+        _fail("stale")
+    current, _, current_versions = _item_snapshot(data_dir, item_id)
+    if current["state"] != "needs_review" or current_versions != versions:
+        _fail("stale")
+    return result
+
+
+def confirm_result_review_item(data_dir: Path, item_id: str, action: object,
+                               note: object, affected_slots: object,
+                               confirmation_id: object) -> dict:
+    _, project_id, _versions = _item_snapshot(data_dir, item_id)
+    from project_deliverable_review import confirm_review
+    return confirm_review(data_dir, project_id, action, note, affected_slots,
+                          confirmation_id, inbox_item_id=item_id)
 
 
 def mark_item(data_dir: Path, item_id: str, *, action: str, expected_revision: int) -> dict:
