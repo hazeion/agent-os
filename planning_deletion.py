@@ -88,6 +88,7 @@ class DeletionPlan:
     retained_context_versions: int = 0
     retained_input_versions: int = 0
     retained_deliverable_versions: int = 0
+    retained_deliverable_reviews: int = 0
 
 
 def _canonical(value: object) -> bytes:
@@ -328,6 +329,19 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     deliverable_files = _rows(connection,
         'SELECT version_id,attachment_id,role,blob_sha256 FROM mentat_deliverable_files '
         f'WHERE version_id IN {deliverable_sql} ORDER BY version_id,role', deliverable_args) if has_deliverables else []
+    has_reviews = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mentat_deliverable_reviews'"
+    ).fetchone() is not None
+    review_rows = _rows(connection,
+        'SELECT r.id,r.project_id,r.project_incarnation,r.project_revision,r.revision,'
+        'r.action,r.note,r.heads_digest,r.request_digest,r.confirmation_digest '
+        'FROM mentat_deliverable_reviews r JOIN mentat_projects p '
+        'ON p.id=r.project_id AND p.deliverable_incarnation=r.project_incarnation '
+        f'WHERE r.project_id IN {project_sql} ORDER BY r.revision', project_args) if has_reviews else []
+    review_sql, review_args = _placeholders([str(row[0]) for row in review_rows])
+    reviewed_versions = _rows(connection,
+        'SELECT review_id,slot,version_id,affected FROM mentat_deliverable_review_versions '
+        f'WHERE review_id IN {review_sql} ORDER BY review_id,slot', review_args) if has_reviews else []
     snapshot = {
         "target": [target_kind, target_id],
         "projects": [(str(row["id"]), int(row["revision"])) for row in project_rows],
@@ -349,6 +363,8 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         "retained_task_inputs": [tuple(row) for row in input_rows],
         "retained_deliverables": [tuple(row) for row in deliverable_rows],
         "retained_deliverable_files": [tuple(row) for row in deliverable_files],
+        "retained_deliverable_reviews": [tuple(row) for row in review_rows],
+        "retained_deliverable_review_versions": [tuple(row) for row in reviewed_versions],
     }
     # A delegated artifact commonly has both its task mapping and a synthetic
     # run attachment. The public preview reports distinct affected items, not
@@ -358,7 +374,7 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     closure_digest = _digest(snapshot)
     confirmation_id = _digest(["mentat.planning.delete.v1", target_digest, closure_digest])
     retained_inputs = sum(row[5] is None for row in input_rows)
-    return DeletionPlan(target_kind, target_id, confirmation_id, target_digest, closure_digest, snapshot, counts, active_runs, run_ids, conversation_ids, task_ids, project_ids, artifact_binding_ids, attachment_ids, len(context_rows), retained_inputs, len(deliverable_rows))
+    return DeletionPlan(target_kind, target_id, confirmation_id, target_digest, closure_digest, snapshot, counts, active_runs, run_ids, conversation_ids, task_ids, project_ids, artifact_binding_ids, attachment_ids, len(context_rows), retained_inputs, len(deliverable_rows), len(review_rows))
 
 
 class PlanningDeletionService:

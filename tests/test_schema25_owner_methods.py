@@ -60,7 +60,7 @@ class Schema25ForwardTests(unittest.TestCase):
         ceremony_columns = [row[1] for row in connection.execute("PRAGMA table_info(mentat_owner_auth_ceremonies)")]
         owner_auth.validate_owner_auth_connection(connection)  # Historical backup remains readable.
         mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, 31), "expected")
+        self.assertEqual(mentat_db.schema_signature_state(connection, 32), "expected")
         self.assertEqual(connection.execute("SELECT " + ",".join(old_columns) + " FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall(), before_sessions)
         self.assertEqual(connection.execute("SELECT * FROM mentat_owner_auth_sse_reservations").fetchall(), before_sse)
         self.assertEqual(connection.execute("SELECT " + ",".join(ceremony_columns) + " FROM mentat_owner_auth_ceremonies").fetchall(), before_ceremony)
