@@ -8,6 +8,8 @@ const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const baseUrl = new URL(process.env.MENTAT_WEB_BASE_URL || "http://127.0.0.1:8890");
 const debugPort = Number(process.env.MENTAT_WEB_BROWSER_DEBUG_PORT || 9336);
 const clientNavigationMode = process.env.MENTAT_WEB_CLIENT_NAVIGATION === "1";
+const focusMode = process.env.MENTAT_WEB_SMOKE_FOCUS || "";
+if (focusMode && focusMode !== "compact-height") throw new Error("Unsupported browser smoke focus");
 const browserRuntimeRoot = resolve(
   process.env.MENTAT_WEB_BROWSER_RUNTIME_DIR
     || resolve(repoRoot, "data/runtime/web-foundation-smoke-runtime"),
@@ -54,6 +56,7 @@ const routes = [
   { path: "/", heading: "What can Mentat help with?", navLabel: "Home", title: "Mentat" },
   { path: "/agents", heading: "Agents", navLabel: "Agents", title: "Agents · Mentat" },
   { path: "/tasks", heading: "Projects & Tasks", navLabel: "Projects & Tasks", title: "Projects & Tasks · Mentat" },
+  { path: "/inbox", heading: "Inbox", navLabel: "Inbox", title: "Inbox · Mentat" },
   { path: "/runs", heading: "Runs", navLabel: "Runs", title: "Runs · Mentat" },
 ];
 const viewports = [
@@ -228,7 +231,7 @@ async function inspectRoutes(client) {
       })(),
       overflow: document.documentElement.scrollWidth - innerWidth,
     }))()`);
-    const staticRoute = route.path !== "/" && route.path !== "/tasks";
+    const staticRoute = route.path !== "/" && route.path !== "/tasks" && route.path !== "/inbox";
     const hasFrameworkScripts = result.scriptPaths.some((path) => path.startsWith("/_next/static/"));
     if (
       result.title !== route.title
@@ -1434,6 +1437,11 @@ async function inspectCompactShortHeight(client) {
   await client.eval("document.activeElement?.blur()");
   for (let index = 0; index < 6; index += 1) await dispatchKey(client, "Tab");
   await waitFor(
+    () => client.eval("document.activeElement?.getAttribute('href') === '/inbox'"),
+    "short compact Inbox keyboard navigation",
+  );
+  await dispatchKey(client, "Tab");
+  await waitFor(
     () => client.eval("document.activeElement?.getAttribute('href') === '/runs'"),
     "short compact keyboard navigation",
   );
@@ -1771,6 +1779,7 @@ async function main() {
       `--user-data-dir=${profileDirectory}`,
       "--disable-gpu",
       "--disable-dev-shm-usage",
+      ...(process.env.MENTAT_CONTEXT_TEST_NO_SANDBOX === "1" ? ["--no-sandbox"] : []),
       "--no-first-run",
       "--no-default-browser-check",
       "about:blank",
@@ -1806,6 +1815,14 @@ async function main() {
     await client.call("Runtime.enable");
     await client.call("Page.enable");
     await client.call("Log.enable");
+
+    if (focusMode === "compact-height") {
+      const compactHeight = await inspectCompactShortHeight(client);
+      if (client.eventErrors.length || consoleErrors.length) throw new Error("Focused browser smoke reported errors");
+      console.log(JSON.stringify({ ok: true, compactHeight }, null, 2));
+      client.ws.close();
+      return;
+    }
 
     if (clientNavigationMode) {
       const preHydration = await inspectPreHydrationCompactNavigation(client);
