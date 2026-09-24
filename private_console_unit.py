@@ -108,6 +108,7 @@ DELIVERABLE_DATABASE_SCHEMA_VERSION = 31
 DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION = 32
 PLAN_DATABASE_SCHEMA_VERSION = 33
 INBOX_DATABASE_SCHEMA_VERSION = 34
+RUN_IDENTITY_DATABASE_SCHEMA_VERSION = 35
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -139,6 +140,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION,
     PLAN_DATABASE_SCHEMA_VERSION,
     INBOX_DATABASE_SCHEMA_VERSION,
+    RUN_IDENTITY_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -711,14 +713,18 @@ def _sqlite_agent_authority_claimed(path: Path) -> bool:
 def _require_empty_unclaimed_run_store(path: Path) -> None:
     connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
     try:
+        version = int(connection.execute(
+            "SELECT COALESCE(MAX(version),0) FROM schema_migrations"
+        ).fetchone()[0])
+        tables = (
+            "mentat_runs",
+            "mentat_agent_events",
+            "mentat_dispatch_reservations",
+            "mentat_task_dispatch_heads",
+        ) + (("mentat_run_identities",) if version >= RUN_IDENTITY_DATABASE_SCHEMA_VERSION else ())
         total = sum(
             int(connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
-            for name in (
-                "mentat_runs",
-                "mentat_agent_events",
-                "mentat_dispatch_reservations",
-                "mentat_task_dispatch_heads",
-            )
+            for name in tables
         )
         if total:
             raise PrivateConsoleUnitError("private_run_repository_invalid")

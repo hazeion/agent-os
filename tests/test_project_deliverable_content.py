@@ -42,7 +42,7 @@ class DeliverableContentTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=30)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 34)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 35)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_deliverable_versions").fetchone()[0], 0)
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drifted-schema30.sqlite3"

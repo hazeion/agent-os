@@ -1,8 +1,11 @@
 # Durable Run outcomes in the owner Inbox
 
-Status: design under review for the existing-Run producer portion of
+Status: independently reviewed design for the existing-Run producer portion of
 [#240](https://github.com/hazeion/agent-os/issues/240). No Run-attention
 implementation or execution authority is approved by this document alone.
+Schema 35 first establishes the private Run incarnation. It does not yet
+reserve Inbox capacity or publish Run notices; those remain follow-up work
+under the admission and transition contract below.
 
 ## Source and identity
 
@@ -144,3 +147,20 @@ after each major slice before a full PR. This work does not qualify a runtime
 for Project execution and does not turn Conversation Turns into a Task
 scheduler. Approval/clarification requests and coordinated Project revision
 routing require their own source-bound capabilities before #240 can close.
+
+## Schema 35 review record
+
+Two independent read-only code reviews checked the first Run-identity slice.
+The first found no correctness defect. The second found that the original
+"attention slot" name overstated its guarantee, that a valid near-48-MiB
+database could exceed its old budget after migration, and that unclaimed
+backup validation omitted the new table. The implementation now names only
+Run identity, admits up to 56 MiB of SQLite within the 96-MiB private-unit
+bound, and checks the new table only in schema-35 unclaimed stores. Both
+reviewers rechecked the fixes and found no remaining blocker. Focused tests
+cover exact schema-34 upgrade/drift, 10,000 maximum-length Run IDs, a
+near-limit database, ID reuse, immutability, and orphaned unclaimed data.
+Later backup checks found that older schema validators must explicitly retain
+versions 33 and 34 after the current version advances. The allowlists now do
+so, and a schema-34 private-unit validation and restore test exercises the
+upgrade to schema 35.
