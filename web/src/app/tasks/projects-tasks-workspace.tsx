@@ -7,6 +7,7 @@ import { browserTimezone, inputTimestamp, localInputTimestamp, planningTimestamp
 import { ProjectContextEditor, RetiredProjectContextHistory, type ProjectContextDraft } from "./project-context-editor";
 import { ProjectDeliverableEditor, RetiredDeliverableHistory, type DeliverableDraft } from "./project-deliverable-editor";
 import { ProjectTaskInputEditor, RetiredTaskInputHistory, type TaskInputDraft } from "./project-task-input-editor";
+import { ProjectPlanEditor, type PlanDraft } from "./project-plan-editor";
 import type { DeliverableSlot } from "@/lib/project-deliverable-contract";
 
 import type { TaskDependencyMapProps } from "./task-dependency-map";
@@ -187,6 +188,7 @@ export function ProjectsTasksWorkspace() {
   const [contextDrafts, setContextDrafts] = useState<Record<string, ProjectContextDraft | null>>({});
   const [deliverableDrafts, setDeliverableDrafts] = useState<Record<string, Partial<Record<DeliverableSlot, DeliverableDraft | null>>>>({});
   const [taskInputDrafts, setTaskInputDrafts] = useState<Record<string, TaskInputDraft | null>>({});
+  const [planDrafts, setPlanDrafts] = useState<Record<string, PlanDraft | null>>({});
   const [agents, setAgents] = useState<PublicAgent[]>([]);
   const [agentsState, setAgentsState] = useState<"loading" | "ready" | "empty" | "unavailable">("loading");
   const [projectForm, setProjectForm] = useState(false);
@@ -1141,7 +1143,7 @@ export function ProjectsTasksWorkspace() {
       const task = { ...result.task, description_preview: "" };
       setTasks((current) => current.some((item) => item.id === task.id) ? current : [task, ...current]);
       selectTask(task);
-    } catch { if (taskSelectionGeneration.current === selectionGeneration) setNotice("That Task could not be opened. The verified map remains available."); }
+    } catch { if (taskSelectionGeneration.current === selectionGeneration) setNotice("That Task could not be opened. Your current view and draft remain available."); }
   }
   async function editSelected(changes: Record<string, unknown>, success: string): Promise<boolean> {
     if (!selectedTask || busy) return false;
@@ -1471,6 +1473,7 @@ export function ProjectsTasksWorkspace() {
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
       {selectedProject ? <ProjectContextEditor key={`context:${selectedProject.id}`} projectId={selectedProject.id} agents={agents} draft={contextDrafts[selectedProject.id]} onDraftChange={(update) => setContextDrafts((drafts) => ({ ...drafts, [selectedProject.id]: update(drafts[selectedProject.id] ?? null) }))} /> : null}
       {selectedProject ? <ProjectDeliverableEditor key={`deliverables:${selectedProject.id}`} projectId={selectedProject.id} drafts={deliverableDrafts[selectedProject.id]} onDraftChange={(slot, update) => setDeliverableDrafts((drafts) => ({ ...drafts, [selectedProject.id]: { ...drafts[selectedProject.id], [slot]: update(drafts[selectedProject.id]?.[slot] ?? null) } }))} /> : null}
+      {selectedProject ? <ProjectPlanEditor key={`plan:${selectedProject.id}`} projectId={selectedProject.id} agents={agents} draft={planDrafts[selectedProject.id]} onDraftChange={(update) => setPlanDrafts((drafts) => ({ ...drafts, [selectedProject.id]: update(drafts[selectedProject.id] ?? null) }))} onOpenTask={(taskId) => void selectMapTask(taskId)} /> : null}
       <section aria-label="Search Projects and Tasks" className="planning-navigation-search">
         <label><span>Search Projects and Tasks</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setPlanningSearchQuery(event.target.value); }} placeholder="Find a Project or Task" type="search" value={planningSearchQuery} /></label>
         {planningSearchState === "loading" ? <p aria-live="polite" role="status">Searching Projects and Tasks…</p> : null}

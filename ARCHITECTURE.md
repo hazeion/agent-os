@@ -1046,6 +1046,16 @@ runtime tool, conditional handoff or Agent proposal authority. Version-1 plans
 cannot be approved for execution; later immutable policy and qualified runtime
 gates are required by the reviewed plan-admission contract.
 
+The owner website's Project plan editor reads current and exact historical
+versions through fixed same-origin, owner-session-gated routes. Its local draft
+can select only exact prepared Task-input versions for the selected Project;
+it compares canonical Task dependencies before publication and sends exact
+expected revisions to Python for final revalidation. A changed graph or
+uncertain write preserves the draft for explicit owner reconciliation. Historical
+rows disclose changed or unavailable Task/Agent identity without substituting
+new content after ID reuse. Editing or saving a plan does not start work or
+make a version-1 plan eligible for approval.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains
