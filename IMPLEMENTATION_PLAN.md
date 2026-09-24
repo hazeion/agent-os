@@ -1,253 +1,142 @@
 # Mentat implementation roadmap
 
-Status: active
+Status: active · updated September 24, 2026
 
-This is the short resume map for Mentat. It records current direction and slice
-order; it does not authorize work. Every non-trivial slice needs an approved
-scope, test strategy, and active review log.
+This is the short resume map. It records sequence and evidence, not authority to
+implement a provisional slice. Use [AGENTS.md](AGENTS.md) and
+[ARCHITECTURE.md](ARCHITECTURE.md) for implemented contracts and safety
+boundaries, [CONTEXT.md](CONTEXT.md) for language, and
+[MENTAT_WEB_DESIGN.md](MENTAT_WEB_DESIGN.md) for website work. Read the active
+GitHub issue and its narrow review record before changing architecture.
+Historical detail belongs in issues, reviews, and pull requests.
 
-## Read before implementation
+## Destination
 
-1. `AGENTS.md` for repository operating rules.
-2. `ARCHITECTURE.md` for authority, capability, and safety boundaries.
-3. `CONTEXT.md` for domain language.
-4. `MENTAT_WEB_DESIGN.md` for Next.js interface work.
-5. The active GitHub Wayfinder ticket and review log for approved scope and
-   evidence.
+The [approved Wayfinder map](https://github.com/hazeion/agent-os/issues/234)
+targets one owner on an always-on Linux Mentat host, authenticated from ordinary
+browsers. Guided CLI setup attaches the owner's Google OIDC application and
+providers. The owner creates Projects and Tasks, assigns Agents manually or
+reviews a lead Agent's plan, approves bounded work between checkpoints, and
+reviews versioned results in one durable Inbox. The garage acceptance journey
+uses owner-supplied goals and floorplan measurements to produce a dimensioned
+layout, linked editable shopping document, and implementation order. It must
+ask for missing dimensions rather than invent them.
 
-Historical implementation detail belongs in GitHub issues and pull requests,
-not in a growing collection of repository narratives.
+Python owns Tasks, Runs, context, files, credentials, and adapter authority.
+The browser reaches only fixed, owner-authenticated Node capabilities. Existing
+local operation remains available; browser access never grants provider consent.
+No task, plan, Inbox item, or model prose silently approves execution, grants
+context, retries uncertainty, purchases anything, or sends an external message.
 
 ## Current position
 
-On September 21, 2026 the owner approved implementation of the
-[secure owner access and coordinated Project delivery map](https://github.com/hazeion/agent-os/issues/234).
-Its native child dependencies are the current work queue. The acceptance
-scenario is a garage-organization Project: approved research and layout work
-uses supplied goals and measurements to produce a dimensioned layout, editable
-linked shopping document and implementation sequence, followed by coordinated
-review and revision.
+The old Beta/MDA foundation is merged through
+[PR #231](https://github.com/hazeion/agent-os/pull/231) and
+[PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
+workflow is a stack of **full, open PRs** starting at
+[PR #243](https://github.com/hazeion/agent-os/pull/243) and currently ending
+at [PR #281](https://github.com/hazeion/agent-os/pull/281). The PRs being open
+is not merged-product or issue-close evidence. Hosted CI and ordinary review
+remain gates. [PR #276](https://github.com/hazeion/agent-os/pull/276) is a
+separate Windows CI-shard correction based on the results-review UI branch;
+integrate it deliberately when advancing that part of the stack.
 
-The target is one owner on an always-on Linux host, accessible from ordinary
-browsers. Google OIDC uses an operator-owned provider application, explicit
-owner enrollment, guided CLI setup and host-admin recovery. Login and
-integration consent remain separate. Persistent Agents have scoped Project
-roles/context; the owner can assign manually or approve a lead Agent's plan.
-Work proceeds within budgets between review checkpoints. The dashboard inbox
-holds questions, approvals, failures and results.
+- [Baseline and fresh-install readiness](https://github.com/hazeion/agent-os/issues/235):
+  PRs [#243](https://github.com/hazeion/agent-os/pull/243)–[#245](https://github.com/hazeion/agent-os/pull/245)
+  address readable next-Run objectives, Task/Run completion, navigation, and
+  responsive/transcript findings. The older
+  [fresh-install audit](https://github.com/hazeion/agent-os/issues/223) and
+  residual QA tickets remain open until current-main acceptance proves them.
+- [Google owner access](https://github.com/hazeion/agent-os/issues/241):
+  the [OIDC contract](https://github.com/hazeion/agent-os/issues/236) is
+  resolved. Full PRs [#247](https://github.com/hazeion/agent-os/pull/247),
+  [#249](https://github.com/hazeion/agent-os/pull/249),
+  [#252](https://github.com/hazeion/agent-os/pull/252),
+  [#254](https://github.com/hazeion/agent-os/pull/254),
+  [#255](https://github.com/hazeion/agent-os/pull/255),
+  [#258](https://github.com/hazeion/agent-os/pull/258), and
+  [#259](https://github.com/hazeion/agent-os/pull/259) contain the verifier,
+  one-use login, owner-session, host-admin setup, and
+  website sign-in slices. Operator-owned Google configuration, live
+  cross-device login, Linux/Caddy activation, recovery, and revocation need
+  real-host acceptance. The independent
+  [non-loopback security gate](https://github.com/hazeion/agent-os/issues/10)
+  also requires a human security review before activation. Do not claim
+  remote readiness from fixture tests.
+- [Project context and deliverables](https://github.com/hazeion/agent-os/issues/238):
+  PRs [#264](https://github.com/hazeion/agent-os/pull/264)–[#272](https://github.com/hazeion/agent-os/pull/272)
+  cover owner context grants, exact Task inputs, retained Run-input evidence,
+  editable garage results, and exact three-result owner review. Trusted
+  generated-output promotion and qualified Project execution remain missing.
+  Child [input admission](https://github.com/hazeion/agent-os/issues/262)
+  and [generated deliverables](https://github.com/hazeion/agent-os/issues/263)
+  are not complete.
+- [Approved plans and handoffs](https://github.com/hazeion/agent-os/issues/239):
+  [PR #273](https://github.com/hazeion/agent-os/pull/273) stores owner-edited
+  immutable plan versions and [PR #274](https://github.com/hazeion/agent-os/pull/274)
+  provides the owner editor. Version-1 plans lack immutable allowed-operation
+  policy and cannot receive execution approval. Agent-authored proposals,
+  qualified adapter enforcement, exact approval, budget debit, checkpoint
+  admission, and scoped handoffs are still absent. The
+  [runtime candidate research](https://github.com/hazeion/agent-os/issues/237)
+  is resolved; real Linux runtime qualification is not.
+- [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):
+  PRs [#275](https://github.com/hazeion/agent-os/pull/275) and
+  [#277](https://github.com/hazeion/agent-os/pull/277)–[#281](https://github.com/hazeion/agent-os/pull/281)
+  retain exact Project review items and Run outcomes, then show them in a
+  unified owner Inbox and Home attention card. Run notices cannot retry work.
+  Trusted plan-approval requests, Agent questions, checkpoint decisions, and
+  coordinated revision routing still need canonical sources and exact guards.
+  See the [Run Inbox review](reviews/2026-09-24-run-attention-contract.md).
+- [Complete garage journey](https://github.com/hazeion/agent-os/issues/242):
+  built synthetic desktop/mobile paths prove preparation and owner review
+  surfaces, but not approved Agent execution, real provider qualification,
+  operator-supplied garage inputs, or integrated cross-device acceptance.
 
-### Sequence and resume point
+## Next frontier
 
-1. [Reconcile and verify the baseline](https://github.com/hazeion/agent-os/issues/235):
-   close only evidenced historical fixes; complete next-Run objective previews,
-   live completion/navigation and transcript-refresh work; repeat focused
-   responsive and fresh-install acceptance.
-2. Resolve [Google OIDC authority](https://github.com/hazeion/agent-os/issues/236)
-   and [runtime qualification](https://github.com/hazeion/agent-os/issues/237)
-   through independent primary-source research.
-3. Implement [authorized Project context and deliverables](https://github.com/hazeion/agent-os/issues/238).
-4. Implement [approved plans and scoped handoffs](https://github.com/hazeion/agent-os/issues/239).
-5. Implement [Project review and owner inbox](https://github.com/hazeion/agent-os/issues/240).
-6. Implement [owner login and Linux activation gates](https://github.com/hazeion/agent-os/issues/241)
-   after its baseline/auth prerequisites; this track is independent of later
-   Project UI work.
-7. Verify the [complete garage journey](https://github.com/hazeion/agent-os/issues/242)
-   on the integrated product and reconcile remaining tracker state.
-
-Active evidence: [owner workflow review](reviews/2026-09-21-owner-workflow.md).
-The readable next-Run objective/review-feedback preview is reviewed and published
-in [PR 243](https://github.com/hazeion/agent-os/pull/243), pending CI/merge.
-Task/Run completion and navigation is reviewed in
-[PR 244](https://github.com/hazeion/agent-os/pull/244); responsive header correction
-and the Stop/cancel investigation are reviewed in
-[PR 245](https://github.com/hazeion/agent-os/pull/245). All remain subject to CI and
-merge; integrated baseline acceptance is not yet closed.
-Google OIDC and runtime-candidate research are resolved; their implementation
-and real-provider qualification remain in the dependent work above.
-The independent [Google verifier component](https://github.com/hazeion/agent-os/issues/246)
-is implemented and reviewed without network, route, session or enrollment
-authority. Its evidence is in [the verifier log](reviews/2026-09-21-google-identity-verifier.md).
-The fixed-host exchange is reviewed in
-[PR 249](https://github.com/hazeion/agent-os/pull/249), with no browser route or
-enrollment authority. The [owner-session migration](https://github.com/hazeion/agent-os/issues/250)
-adds schema-25 method and generation bindings, preserves historical passkey
-authority, and covers private restore/export. Its evidence is in
-[the session-method review](reviews/2026-09-21-owner-session-methods.md).
-[Durable one-use callback transactions](https://github.com/hazeion/agent-os/issues/251)
-are reviewed and published in [PR 254](https://github.com/hazeion/agent-os/pull/254).
-[One-use Google session issuance](https://github.com/hazeion/agent-os/issues/253)
-is reviewed and published in [PR 255](https://github.com/hazeion/agent-os/pull/255).
-[Host-admin enrollment, conversion and recovery](https://github.com/hazeion/agent-os/issues/256)
-is reviewed in [PR 258](https://github.com/hazeion/agent-os/pull/258), including
-the setup-only browser gateway, host confirmation, recovery and HTTPS lifecycle.
-[Website Google sign-in and authenticated access](https://github.com/hazeion/agent-os/issues/257)
-is reviewed and published in [PR 259](https://github.com/hazeion/agent-os/pull/259).
-It implements **Continue with Google**, bounded error states,
-browser/session sign-out and authenticated data/stream admission. See the
-[website review](reviews/2026-09-22-google-website-signin.md). Ordinary start
-remains local; the explicit owner website profile needs real host/provider
-acceptance. Published slices remain subject to CI and merge. No live deployment
-or real-operator Google acceptance is claimed.
-
-The [Project context contract](reviews/2026-09-22-project-context.md) has passed
-two independent reviews after corrections. Its implementation sequence is now
-four native children: [storage and backup](https://github.com/hazeion/agent-os/issues/260),
-[owner editor and grants](https://github.com/hazeion/agent-os/issues/261),
-[approved Task inputs](https://github.com/hazeion/agent-os/issues/262), and
-[versioned deliverables](https://github.com/hazeion/agent-os/issues/263).
-The storage child is implemented in [PR 265](https://github.com/hazeion/agent-os/pull/265);
-its verification and subsequent CI corrections are recorded in the context
-review. Final cross-platform checks and merge remain separate gates.
-The owner editor and grants are implemented with two clean reviews and built
-desktop/mobile acceptance in [the editor review](reviews/2026-09-22-project-context-editor.md).
-Published in [PR 266](https://github.com/hazeion/agent-os/pull/266), pending CI
-and merge.
-The [Task-input and plan-admission contract](reviews/2026-09-22-project-task-inputs.md)
-has two clean reviews, including explicit bounded conditional transfers so
-approved Agents can coordinate between owner checkpoints. Runtime feasibility
-must be checked early; no local Hermes command was discovered on the current
-development machine's Windows/Ubuntu WSL PATHs. This is not live qualification.
-Project execution remains
-unavailable until exact admission and runtime qualification are implemented;
-the contract is not completion evidence.
-The owner Task-input editor and retained versions are published in
-[PR 267](https://github.com/hazeion/agent-os/pull/267). Its final guard blocks
-ordinary Run once and legacy Hermes delegation from omitting saved inputs.
-The immutable Run-input evidence foundation is published in
-[PR 268](https://github.com/hazeion/agent-os/pull/268); it adds no executable
-Project route. Typed garage content and retained owner preview versions are
-published in [PR 269](https://github.com/hazeion/agent-os/pull/269). The
-Project results website editor follows. Generated-output promotion and
-grouped owner review remain necessary before issue 263 is complete.
-The owner results editor is reviewed and published in
-[PR 270](https://github.com/hazeion/agent-os/pull/270). Schema-32 immutable
-bundle decisions and deletion disclosure are published in
-[PR 271](https://github.com/hazeion/agent-os/pull/271), pending CI and merge.
-The fixed browser review workflow is reviewed and published in
-[PR 272](https://github.com/hazeion/agent-os/pull/272), pending CI and merge.
-Trusted generated promotion is still separate work; no Project Agent
-execution is enabled by owner review alone.
-The [plan preparation authority](reviews/2026-09-23-project-plan-authority.md)
-is reviewed and published in [PR 273](https://github.com/hazeion/agent-os/pull/273),
-pending CI and merge. It records exact owner-edited Task/Agent/input/checkpoint
-graphs and requested limits without approval or dispatch.
-The next Project-execution step is exact owner approval and atomic Run/receipt
-reservation against the retained evidence. The current Kanban adapter has no
-qualified operation binding
-prepared files, allowed tools and enforced limits; no Project execution route
-may be advertised until the actual host/runtime combination proves those
-properties. See the qualification inventory in the Task-input review.
-
-The owner Project plan editor is being implemented as the next preparation
-slice. It lets the owner assemble, compare and save immutable plan versions
-from exact prepared Task inputs, inspect old versions and keep an unresolved
-draft after an uncertain save. It grants no approval or execution. See
-[the editor review](reviews/2026-09-24-project-plan-editor.md). Owner approval,
-Agent-authored proposals, runtime qualification and coordinated handoffs remain
-separate gates.
-
-The [owner inbox contract](reviews/2026-09-24-owner-inbox.md) has two clean
-independent design reviews after lifecycle and capacity corrections. Its first
-implementation slice retains exact result-review attention generations and
-cross-device read/ack state in private SQLite. The owner Inbox screen, guarded
-review destination, existing Run failure/recovery producers and coordinated
-revision routing follow; issue #240 remains open until that scope is verified.
-The fixed item-bound website review path and Inbox page are reviewed on the
-schema-34 authority in
-[the Inbox UI review](reviews/2026-09-24-owner-inbox-ui.md). They preserve exact
-three-result review and stale/retained history without granting execution.
-Home's [Inbox attention card](reviews/2026-09-24-home-inbox-attention.md)
-adds a bounded count and exact navigation links. Existing Run failure,
-unknown-submission and recovery attention remains the next owner-inbox
-authority slice; the Home card does not make issue #240 complete.
-
-### Implemented baseline and retained boundaries
-
-Beta QA stabilization merged through
-[PR 231](https://github.com/hazeion/agent-os/pull/231); it is no longer awaiting
-publication. The original batch review logs remain historical evidence.
-The [fresh-install audit](https://github.com/hazeion/agent-os/issues/223) remains
-open: merged code is not proof that every acceptance finding is resolved.
-
-Agent Console slices 1-10 and the Projects & Tasks workspace are implemented.
-MDA-4A, MDA-4B and MDA-4C merged through PRs 207, 232 and 233. Owner-auth
-authority, central gateway policy and the disabled Caddy profile are retained;
-remote serving remains disabled until the new authentication and activation
-gates pass. Do not repeat completed MDA work.
-
-The approved OIDC direction revises the earlier passkey-only product choice,
-but does not change live authority until a reviewed migration implements it.
-Project context and runtime-neutral coordination likewise require explicit
-capability contracts: current Conversation planning links are navigation-only,
-and Conversation Turns must never be repurposed as a durable Task scheduler.
-Python retains private data/runtime authority; Node exposes fixed capabilities.
-
-Teams, multi-master sync, a distributed personal-computer fleet, autonomous
-capability grants, purchases, external messaging integrations, guaranteed
-closed-browser notifications and photorealistic rendering are deferred.
-Calendar integration is optional. Hermes cron queueing remains an explicitly
-tracked upstream dependency, not a substitute implementation opportunity.
-
-## Completed slices
-
-| Slice | Purpose |
-| --- | --- |
-| 0 | Safe Hermes webhook hints and readbacks. |
-| 1A | Runtime-neutral Agent, Task, Run, event, and runtime contracts. |
-| 1B | Durable Mentat Agents and private runtime bindings. |
-| 1C-A to 1C-D | SQLite authority for Tasks, Runs, and events. |
-| 2A-A | Node gateway, private bridge, Next.js shell, and three desktop and three mobile Lighthouse runs. |
-| 2A-B | Emerald Operations shell, navigation, route frames, and shared UI. |
-| 2B-A | Read-only Agents route through the fixed bridge. |
-| 2B-B | Read-only Tasks route through canonical SQLite Tasks. |
-| 2B-C | Read-only Runs route through normalized Run APIs. |
-| 2C-A to 2C-D | Run timeline, controls, and supported operator responses. |
-| 2D | Production packaging, launch, rollback, and legacy interface cutover. |
-| 3A to 3C | Codex runtime, coexistence, and Agent registry convergence. |
-| 4A | Optional Vercel Gateway, Sandbox, and Connect adapters. |
-| Console 1 | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
-| Console 2 | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
-| Console 3 | Live transcript, active composer, durable queued turns, steering, and adapter-scoped concurrency. |
-| Console 4 | Operator control, recovery, and durable continuation. |
-| Console 5 | Composer Agent configuration. |
-| Console 6 | Polished transcript and reasoning summaries. |
-| Console 7 | Safe rich-link previews. |
-| Console 8 | Attachments, Context Packs, images, and artifacts. |
-| Console 9 | History depth and command ergonomics. |
-| Console 10 | Project and planning context. |
-| MDA 4A | Durable owner-auth authority behind disabled remote mode. |
-| MDA 4B | Central manifest-backed Gateway Authority with local parity. |
-| MDA 4C | Disabled, version-pinned Caddy profile and disposable Linux lifecycle gates. |
+1. Clear the open PR stack's CI/review findings, preserve the full PRs, and
+   advance merge decisions through the normal repository review flow. Recheck
+   the old QA tickets against merged main; close only a finding with direct
+   current-main or integrated-browser evidence.
+2. For Project execution, first record the policy-bearing immutable plan
+   format, exact owner approval, budget/checkpoint receipts, and a real
+   capability-qualified runtime operation. Prove prepared-file containment,
+   allowed tools, time/work ceilings, interruption, and no-follow cleanup on
+   the actual Linux host before advertising dispatch. Agent proposals must
+   come from a trusted producing Run, never arbitrary model prose. Preserve
+   manual assignment.
+3. Extend the canonical Project/Run sources for generated deliverable
+   promotion, missing-dimension questions, checkpoint approvals, and
+   coordinated change requests. The Inbox may index only those exact source
+   generations. Keep unknown external outcomes visible and unretried.
+4. Qualify operator-configured Google sign-in, recovery, session revocation,
+   CLI onboarding, and the disabled-until-proven Linux/Caddy profile from
+   ordinary desktop/mobile browsers. Do not invent domains, credentials,
+   garage measurements, or provider readiness.
+5. Repeat the complete garage journey on an integrated supported host, record
+   actual fixtures/devices/provider evidence, then reconcile child issues and
+   the [current Wayfinder map](https://github.com/hazeion/agent-os/issues/234).
+   The [older access map](https://github.com/hazeion/agent-os/issues/171) is
+   closed as superseded tracking, not proof that remote access shipped. Issue closure
+   requires evidence, not a published PR.
 
 ## Working rules
 
-- Work on one approved slice at a time from a focused `codex/` branch.
-- Build on the existing `web/` app. Do not create another frontend project.
-- Keep Python authoritative for local data, SQLite, credentials, Hermes, and
-  runtime adapters. Node exposes only named, bounded capabilities.
-- Keep Mentat Agent, Conversation, Task, Run, and event identities separate
-  from runtime-owned profiles, sessions, threads, and references.
-- Keep browser projections safe, bounded, and free of credentials, private
-  paths, raw provider payloads, and adapter-owned runtime references.
-- Preserve the Python compatibility interface as the explicit rollback path
-  until matching workflows, packaging, and rollback tests exist.
-- The legacy interface may be retired only after required workflows have parity,
-  offline packaging works, lifecycle and recovery checks pass, and rollback is
-  tested.
-- Reconcile the tracker during slice close-out. Add the child ticket's
-  resolution, close it, update the parent Wayfinder decisions and checklist,
-  and advance this resume map before calling the slice complete.
-- Update this roadmap only when slice status or sequence changes. Keep detailed
-  evidence in the active review log and merged pull request.
-
-## Resume checklist
-
-1. Confirm the working tree and branch before editing. Preserve unrelated user
-   changes.
-2. Read the documents above and inspect the active review log.
-3. Verify the slice has explicit approval before implementation.
-4. Run focused tests first, then the proportionate full verification suite.
-5. Use two independent read-only adversarial reviews for non-trivial slices.
-6. Fix independent subagent findings and repeat review until both reviews have
-   no remaining actionable concerns, then push the slice's PR as authorized by
-   the owner. CI failures still require diagnosis and correction before merge.
+- Work from a focused `codex/` branch. Keep Python authoritative and Node
+  capabilities named and bounded.
+- Keep runtime identities private beneath canonical Mentat Agent and Run IDs;
+  never turn Conversation Turns into a Task scheduler or bypass Hermes Kanban
+  confirmation.
+- For each nontrivial slice, write its scope and test strategy in a narrow
+  review record, run proportionate tests and built acceptance, obtain two
+  independent read-only reviews, fix findings, then push a full PR.
+- Preserve unrelated local state and the explicit legacy UI rollback path.
+  Leave a blocked capability visibly unavailable instead of substituting an
+  unverified execution path.
+- [Hermes cron queueing](https://github.com/hazeion/agent-os/issues/14)
+  remains an upstream-dependent, read-only capability. Do not approximate its
+  missing atomic operation with a direct store write or trigger sequence.
+- On slice close-out, update the relevant GitHub child and this resume point.
+  Close a ticket only after its accepted behavior is verified on the required
+  branch/host.
