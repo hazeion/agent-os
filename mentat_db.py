@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import threading
@@ -24,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2500,7 +2501,36 @@ MIGRATIONS += ((36, """
         END;
 """),)
 
-MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
+MIGRATIONS += ((37, """
+    CREATE TABLE mentat_plan_versions_next (
+        id TEXT NOT NULL PRIMARY KEY CHECK(length(id)=45),
+        scope_id TEXT NOT NULL REFERENCES mentat_plan_scopes(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 32),
+        project_revision INTEGER NOT NULL CHECK(typeof(project_revision)='integer' AND project_revision>0),
+        format INTEGER NOT NULL CHECK(format IN (1,2)),
+        content_json TEXT NOT NULL CHECK(
+            (format=1 AND length(content_json) BETWEEN 2 AND 16384) OR
+            (format=2 AND length(CAST(content_json AS BLOB)) BETWEEN 2 AND 24576)
+        ),
+        content_digest TEXT NOT NULL CHECK(length(content_digest)=64),
+        origin TEXT NOT NULL CHECK(origin='owner_edit'),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        UNIQUE(scope_id,revision)
+    );
+    INSERT INTO mentat_plan_versions_next
+        SELECT id,scope_id,revision,project_revision,format,content_json,
+               content_digest,origin,created_at FROM mentat_plan_versions;
+    DROP TRIGGER mentat_plan_version_immutable;
+    DROP TRIGGER mentat_plan_version_no_delete;
+    DROP TABLE mentat_plan_versions;
+    ALTER TABLE mentat_plan_versions_next RENAME TO mentat_plan_versions;
+    CREATE TRIGGER mentat_plan_version_immutable BEFORE UPDATE ON mentat_plan_versions
+        BEGIN SELECT RAISE(ABORT,'plan.immutable'); END;
+    CREATE TRIGGER mentat_plan_version_no_delete BEFORE DELETE ON mentat_plan_versions
+        BEGIN SELECT RAISE(ABORT,'plan.retained'); END;
+"""),)
+
+MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
     {
@@ -2805,6 +2835,48 @@ def _execute_script_in_active_transaction(
         raise MentatDatabaseError("Mentat database migration script is incomplete")
 
 
+def _plan_version_migration_snapshot(connection: sqlite3.Connection) -> tuple[list[tuple], list[tuple]]:
+    """Pin all retained plan evidence before the format-2 table rebuild."""
+    versions = [tuple(row) for row in connection.execute(
+        "SELECT id,scope_id,revision,project_revision,format,content_json,"
+        "content_digest,origin,created_at FROM mentat_plan_versions ORDER BY id"
+    )]
+    refs = [tuple(row) for row in connection.execute(
+        "SELECT version_id,input_id FROM mentat_plan_input_refs ORDER BY version_id,input_id"
+    )]
+    if len(versions) > 256 or len(refs) > 256 * 32:
+        raise MentatDatabaseError("Mentat plan migration exceeds retained authority bounds")
+    return versions, refs
+
+
+def _preflight_plan_version_migration(connection: sqlite3.Connection) -> None:
+    """Require room for transient shadow rows and their rollback journal."""
+    database = connection.execute("PRAGMA database_list").fetchone()
+    if database is None or not database[2]:  # The signature builder uses memory.
+        return
+    database_path = Path(str(database[2]))
+    content_bytes = connection.execute(
+        "SELECT COALESCE(SUM(length(CAST(content_json AS BLOB))),0) "
+        "FROM mentat_plan_versions"
+    ).fetchone()[0]
+    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+    page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    free_pages = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    # Include row/index overhead even when there are no saved versions. A
+    # checkpointed source must stay inside the same private SQLite limit.
+    shadow_bytes = max(1024 * 1024, 2 * int(content_bytes))
+    projected_pages = page_count + max(0, (shadow_bytes + page_size - 1) // page_size - free_pages)
+    if projected_pages * page_size > MAX_READONLY_DATABASE_BYTES:
+        raise MentatDatabaseError("Mentat plan migration exceeds database headroom")
+    required = max(32 * 1024 * 1024, 4 * int(content_bytes))
+    try:
+        available = shutil.disk_usage(database_path.parent).free
+    except OSError as exc:
+        raise MentatDatabaseError("Mentat plan migration cannot verify disk headroom") from exc
+    if available < required:
+        raise MentatDatabaseError("Mentat plan migration needs temporary disk headroom")
+
+
 def migrate(
     connection: sqlite3.Connection,
     *,
@@ -2836,7 +2908,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2972,7 +3044,14 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 34 cannot be safely upgraded")
                 if version == 36 and schema_signature_state(connection, 35) != "expected":
                     raise MentatDatabaseError("Mentat schema 35 cannot be safely upgraded")
+                if version == 37 and schema_signature_state(connection, 36) != "expected":
+                    raise MentatDatabaseError("Mentat schema 36 cannot be safely upgraded")
+                if version == 37:
+                    _preflight_plan_version_migration(connection)
+                    plan_snapshot = _plan_version_migration_snapshot(connection)
                 _execute_script_in_active_transaction(connection, script)
+                if version == 37 and _plan_version_migration_snapshot(connection) != plan_snapshot:
+                    raise MentatDatabaseError("Mentat plan migration changed retained evidence")
             else:
                 # executescript otherwise commits before running its statements.
                 # Open the transaction inside the script and leave it active so
