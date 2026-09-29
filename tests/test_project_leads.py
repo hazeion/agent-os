@@ -219,7 +219,7 @@ class ProjectLeadMigrationTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=37)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"

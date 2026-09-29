@@ -242,26 +242,47 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                 )
 
     def test_populated_schema39_upgrade_backfills_explicit_legacy_receipt(self):
-        identifier = self.insert_version()
-        with closing(sqlite3.connect(mentat_db.database_path(self.root))) as connection:
-            connection.execute("PRAGMA foreign_keys=OFF")
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute("DROP TABLE mentat_project_planning_input_actions")
-            connection.execute("DROP TABLE mentat_project_planning_input_legacy")
-            connection.execute("DELETE FROM schema_migrations WHERE version=40")
-            connection.commit()
-            self.assertEqual(mentat_db.schema_signature_state(connection, 39), "expected")
-            mentat_db.migrate(connection)
-            self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
-            row = connection.execute(
-                "SELECT action_id,input_id,request_digest,source_kind "
-                "FROM mentat_project_planning_input_actions"
-            ).fetchone()
-            self.assertEqual(row, (
-                "project_input_action_" + identifier[14:], identifier,
-                connection.execute("SELECT files_digest FROM mentat_project_planning_input_versions").fetchone()[0],
-                "legacy",
-            ))
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "schema39.sqlite3"
+            private_console_unit._initialize_database(path, schema_version=39)
+            identifier = "project_input_" + "d" * 32
+            digest = _digest([])
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute(
+                    "INSERT INTO mentat_project_context_scopes VALUES(?,?,?,?,?)",
+                    ("project_scope_" + "a" * 32, "project_garage", 1, 1.0, 5.0),
+                )
+                connection.execute(
+                    "INSERT INTO mentat_project_context_versions VALUES(?,?,?,?,?,?)",
+                    ("project_context_" + "b" * 32,
+                     "project_scope_" + "a" * 32, 1, "Old garage", digest, 2.0),
+                )
+                connection.execute(
+                    "INSERT INTO mentat_project_lead_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("lead_role_" + "c" * 32, "project_garage", "e" * 32, 1,
+                     "select", "agent_research", "f" * 32, 1, "1" * 64,
+                     "project_context_" + "b" * 32, 1, 3.0),
+                )
+                connection.execute(
+                    "INSERT INTO mentat_project_planning_input_versions "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (identifier, "project_garage", "e" * 32, 1, 1,
+                     "lead_role_" + "c" * 32, 1, "agent_research", "f" * 32,
+                     1, "1" * 64, "project_context_" + "b" * 32, 1,
+                     "Plan the old garage", digest, 4.0),
+                )
+                connection.commit()
+                self.assertEqual(mentat_db.schema_signature_state(connection, 39), "expected")
+                mentat_db.migrate(connection)
+                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                row = connection.execute(
+                    "SELECT action_id,input_id,request_digest,source_kind "
+                    "FROM mentat_project_planning_input_actions"
+                ).fetchone()
+                self.assertEqual(row, (
+                    "project_input_action_" + identifier[14:], identifier,
+                    digest, "legacy",
+                ))
 
 
 class ProjectPlanningInputMigrationTests(unittest.TestCase):
@@ -275,7 +296,7 @@ class ProjectPlanningInputMigrationTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=39)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"
@@ -294,7 +315,7 @@ class ProjectPlanningInputMigrationTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=38)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"
