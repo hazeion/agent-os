@@ -186,7 +186,9 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(namespace["SHARD_GROUP_COUNT"], 12)
         self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 4)
         self.assertEqual(namespace["PROCESS_STOP_TIMEOUT_SECONDS"], 5)
-        self.assertEqual(namespace["GROUP_UNIT_TIMEOUT_SECONDS"], 30 * 60)
+        self.assertEqual(namespace["GROUP_UNIT_TIMEOUT_SECONDS"], 40 * 60)
+        self.assertIn("tests.test_task_repository", namespace["SPLITTABLE_MODULES"])
+        self.assertNotIn("module:tests.test_task_repository", flattened)
         self.assertEqual(
             namespace["ISOLATED_PROCESS_GROUP_FLAGS"],
             getattr(namespace["subprocess"], "CREATE_NEW_PROCESS_GROUP", 0),
