@@ -1096,6 +1096,17 @@ names and readiness reasons. Lead selection never grants context, starts a
 Run, assigns Tasks, or approves a plan. Agent-authored proposals and owner
 Apply require their separate reviewed capabilities.
 
+Schema 39 adds immutable Project planning-input history for a later proposal-
+only Run. Each version freezes the existing Project incarnation, exact lead
+role and Agent identity/binding, current Project context and grant, a bounded
+owner instruction brief, and up to eight selected context files with immutable
+blob identities, digests, types and sizes. The shared private backup validator
+checks the retained graph, while the retained-attachment view and context
+prune guard keep referenced files and context versions available. A restored
+grant is revoked, so retained inputs do not silently become executable.
+There is no public save route or proposal Run source in this slice; generated
+output selection, runtime qualification and owner Apply remain separate gates.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

@@ -36,6 +36,7 @@ test("safe projections reject private fields, mismatched targets, duplicates and
   ];
   for (const value of badValues) assert.throws(() => contextResult("project", value, request));
   assert.throws(() => contextResult("version", version, { context_id: `project_context_${"c".repeat(32)}` }));
+  assert.equal(contextResult("version", { ...version, current: false, prune_blocked: "project_input" }, { context_id: contextId }).prune_blocked, "project_input");
 });
 
 test("full-size upload validates within the existing image limit", () => {
