@@ -135,6 +135,12 @@ have clear independent reviews; hosted timing gains remain unverified.
    the actual Linux host before advertising dispatch. Agent proposals must
    come from a trusted producing Run, never arbitrary model prose. Preserve
    manual assignment.
+   The [worker admission prerequisite](reviews/2026-09-29-project-worker-admission.md)
+   records verified gaps in the installed original Hermes and pinned current
+   upstream. Whole-worker isolation, atomic prepared-input/policy admission,
+   broker-owned credentials/call reconciliation and verified Stop are still
+   missing. Extending the original Hermes repository or changing the runtime
+   path needs an explicit scope/architecture decision; keep execution guarded.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
