@@ -1088,8 +1088,11 @@ the Project's existing private incarnation. The selected canonical Agent is
 frozen with its current identity, registry revision and private binding digest.
 When current Project context and an exact active Agent grant exist, the version
 also freezes that context and grant revision. A contextless selection is
-unready; a changed Project, Agent, binding, context or grant leaves it stale
-until the owner explicitly reselects. A Project ID reused after deletion
+unready; Project retirement or ID reuse, or a changed Agent, binding, context
+or grant leaves it stale until the owner explicitly reselects. An ordinary
+active Project metadata edit does not revoke the lead; later proposal input
+and Run admission must bind the exact current Project revision. A Project ID
+reused after deletion
 cannot inherit the previous lead. Exact Project/role revisions and a private
 selection token guard writes; browser readback includes only safe Agent IDs,
 names and readiness reasons. Lead selection never grants context, starts a
