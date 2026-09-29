@@ -92,6 +92,12 @@ serial whole-module HTTP, auth, delegation, and upgrade checks. The command
 was `python scripts/run_unittest_shards.py --run-group 11`. Python compilation
 and `git diff --check` also pass.
 
+The optimization is published against the independent reviewed CI base
+PR #276 rather than the product stack. The scheduler/test baseline matches;
+all 11 contracts also pass after cherry-picking onto that base. The subset
+measurements and complete group above use the schema-42 Project tree, as
+stated, and do not claim a hosted timing result for the earlier base.
+
 ## Deferred investigation
 
 The POSIX matrix still runs its complete suite sequentially. Parallelizing it
