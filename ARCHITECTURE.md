@@ -1083,6 +1083,19 @@ Format-1 plans remain permanently ineligible for execution approval. Format-2
 publication is still preparation: no saved policy, output slot or handoff
 dispatches work, grants runtime tools, or approves a checkpoint.
 
+Schema 38 stores bounded immutable owner-selected Project lead versions under
+the Project's existing private incarnation. The selected canonical Agent is
+frozen with its current identity, registry revision and private binding digest.
+When current Project context and an exact active Agent grant exist, the version
+also freezes that context and grant revision. A contextless selection is
+unready; a changed Project, Agent, binding, context or grant leaves it stale
+until the owner explicitly reselects. A Project ID reused after deletion
+cannot inherit the previous lead. Exact Project/role revisions and a private
+selection token guard writes; browser readback includes only safe Agent IDs,
+names and readiness reasons. Lead selection never grants context, starts a
+Run, assigns Tasks, or approves a plan. Agent-authored proposals and owner
+Apply require their separate reviewed capabilities.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

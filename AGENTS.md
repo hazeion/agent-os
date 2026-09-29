@@ -410,6 +410,14 @@ delegation, provider tool, or automatic execution authority. Approved-plan
 admission, durable Run-input receipts and adapter qualification remain separate
 capabilities; never reinterpret a saved input version as execution approval.
 
+Schema 38 stores immutable owner-selected Project lead versions beneath the
+existing private Project incarnation. A lead may be selected before context,
+but remains unready until the owner explicitly reselects against current
+context and an exact active Agent grant. Changed Agent identity or binding,
+Project context or grant, deletion/ID reuse, and restore leave the role stale.
+Selecting a lead does not grant access, assign Tasks, start a Run, produce a
+proposal, or approve a plan.
+
 Home planning selectors stage locally until explicit Apply or Clear and remain
 blocked by active/finalizing Runs or queue-active Turns. Planning suggestions
 may fill an empty draft but never Send. The right rail shows only a capped safe

@@ -114,6 +114,8 @@ export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze
   rule("POST", "/api/projects/[projectId]/deliverables/review/preview", "web/src/app/api/projects/[projectId]/deliverables/review/preview/route.ts"),
   rule("POST", "/api/projects/[projectId]/deliverables/review/confirm", "web/src/app/api/projects/[projectId]/deliverables/review/confirm/route.ts"),
   rule("GET", "/api/projects/[projectId]/plan", "web/src/app/api/projects/[projectId]/plan/route.ts"),
+  rule("GET", "/api/projects/[projectId]/lead", "web/src/app/api/projects/[projectId]/lead/route.ts"),
+  rule("POST", "/api/projects/[projectId]/lead", "web/src/app/api/projects/[projectId]/lead/route.ts"),
   rule("POST", "/api/projects/[projectId]/plan", "web/src/app/api/projects/[projectId]/plan/route.ts"),
   rule("GET", "/api/projects/[projectId]/plan/[versionId]", "web/src/app/api/projects/[projectId]/plan/[versionId]/route.ts"),
   ...staticRule("/sign-in", "web/src/app/sign-in/page.tsx"),
