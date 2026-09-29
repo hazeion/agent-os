@@ -3,6 +3,7 @@ import { afterEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { useState } from "react";
 import type { PlanDraft } from "../src/app/tasks/project-plan-editor.tsx";
+import type { PlanPolicy } from "../src/lib/project-plan-contract.ts";
 
 const origin = "http://127.0.0.1:8890", projectId = "project_garage", agentId = "agent_research";
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: `${origin}/tasks`, pretendToBeVisual: true });
@@ -17,14 +18,22 @@ const project = { id: projectId, name: "Garage", revision: 1, status: "active" }
 const contextId = `project_context_${"a".repeat(32)}`;
 const agents = [{ id: agentId, name: "Research Agent", runtime_type: "codex", runtime_config_id: "config_research", capabilities: ["run.start"] }];
 const emptyComparison = { missing_from_plan: [], additional_in_plan: [], missing_count: 0, additional_count: 0, truncated: false };
+function storageOrder(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(storageOrder);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, part]) => [key, storageOrder(part)]));
+  return value;
+}
 function task(id: string, title: string) { return { id, title, project_id: projectId, project_name: "Garage", status: "todo", priority: "medium", due_date: null,
   planned_for_today: false, planning_state: null, needs_attention: false, review_required: false, attention_reasons: [], updated_at: "2026-09-24T10:00:00Z",
   workflow_stage: "planned", deferred: false, blocked: false, revision: 1, description_preview: "" }; }
 const research = task("task_research", "Research storage"), layout = task("task_layout", "Draw garage layout");
-function inputEditor(id: string, title: string, grantRevision = 1) {
+function inputEditor(id: string, title: string, grantRevision = 1, publicResearchBrief = false) {
   const inputId = `task_input_${id === research.id ? "b".repeat(32) : "c".repeat(32)}`;
   const version = { id: inputId, revision: 1, task_revision: 1, agent_id: agentId, context_id: contextId, context_revision: 1,
-    project_brief: "Garage goals", grant_revision: 1, instructions: "", created_at: 1790035200, files: [] };
+    project_brief: "Garage goals", grant_revision: 1,
+    instructions: publicResearchBrief && id === research.id ? "Research public garage shelving methods." : "",
+    created_at: 1790035200, files: [] };
   return { task: { id, title, revision: 1, project_id: projectId, project_status: "active", assigned_agent_id: agentId }, input_revision: 1,
     expected_task_token: "f".repeat(64), version, versions: [{ id: inputId, revision: 1, context_id: contextId, created_at: 1790035200 }],
     eligible_contexts: [{ context: { id: contextId, revision: 1, brief: "Garage goals", created_at: 1790035200, project_id: projectId,
@@ -35,7 +44,8 @@ function fixture() {
   const state = { calls, pageTwo: false, lostResponse: false, failBeforeSave: false, failReadback: false,
     holdPublish: false, releasePublish: null as null | (() => void),
     canonicalLayoutAfterResearch: false, historicalTaskChanged: false, grantRevision: 1,
-    saved: null as null | { id: string; revision: number; title: string; nodes: Array<Record<string, unknown>> }, opened: [] as string[] };
+    publicResearchBrief: false,
+    saved: null as null | { id: string; revision: number; title: string; nodes: Array<Record<string, unknown>>; policy?: PlanPolicy }, opened: [] as string[] };
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input), origin), path = url.pathname;
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
@@ -45,13 +55,14 @@ function fixture() {
       if (state.failBeforeSave) return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 });
       const revision = (state.saved?.revision ?? 0) + 1, id = `plan_version_${String(revision).repeat(32)}`;
       const nodes = (body!.nodes as Array<Record<string, unknown>>).map(({ expected_task_revision, ...node }) => ({ ...node, task_revision: expected_task_revision }));
-      state.saved = { id, revision, title: body!.title as string, nodes };
+      state.saved = { id, revision, title: body!.title as string, nodes, policy: body!.policy as PlanPolicy | undefined };
       if (state.lostResponse) return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 });
       return Response.json({ id, revision, project_id: projectId, status: "unapproved" });
     }
     if (path === `/api/projects/${projectId}/plan`) return state.failReadback && state.saved
       ? Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 }) : Response.json({ project, plan_revision: state.saved?.revision ?? 0,
-      current: state.saved ? { title: state.saved.title, nodes: state.saved.nodes } : null,
+      current: state.saved ? { title: state.saved.title, nodes: state.saved.nodes,
+        ...(state.saved.policy ? { policy: storageOrder(state.saved.policy) } : {}) } : null,
       versions: state.saved ? [{ id: state.saved.id, revision: state.saved.revision, title: state.saved.title, node_count: state.saved.nodes.length, created_at: 1790035200 }] : [],
       stale_reasons: [], dependency_comparison: emptyComparison, execution_available: false });
     if (path.startsWith(`/api/projects/${projectId}/plan/`)) {
@@ -61,6 +72,7 @@ function fixture() {
           task_state: state.historicalTaskChanged ? "changed" : "current",
           task_title: state.historicalTaskChanged ? null : node.task_id === research.id ? research.title : layout.title,
           agent_state: "current", agent_name: "Research Agent" })),
+        ...(state.saved.policy ? { policy: storageOrder(state.saved.policy) } : {}),
         created_at: 1790035200, current: true, status: "unapproved" });
     }
     if (path === "/api/agent-console/planning-tasks") {
@@ -69,7 +81,8 @@ function fixture() {
     }
     if (path.startsWith("/api/planning/tasks/") && path.endsWith("/inputs")) {
       const id = path.split("/")[4];
-      return Response.json(inputEditor(id, id === research.id ? research.title : layout.title, state.grantRevision));
+      return Response.json(inputEditor(id, id === research.id ? research.title : layout.title,
+        state.grantRevision, state.publicResearchBrief));
     }
     if (path === "/api/agent-console/planning-task-dependencies") {
       const id = url.searchParams.get("task_id")!;
@@ -159,6 +172,47 @@ test("two-Task plan shows checkpoint and canonical dependency differences before
   await screen.findByText("Plan version saved. It remains unapproved and cannot start Agent work.");
   assert.equal(state.saved?.nodes.length, 2);
   assert.equal(state.saved?.nodes[1].segment, 1);
+});
+
+test("garage policy separates public research from private synthesis with an exact handoff", async () => {
+  const state = fixture(); state.pageTwo = true; state.canonicalLayoutAfterResearch = true;
+  state.publicResearchBrief = true; await open(state);
+  fireEvent.click(screen.getByRole("button", { name: "Create plan" }));
+  fireEvent.change(screen.getByLabelText("Plan title"), { target: { value: "Garage research and products" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add Research storage" }));
+  await screen.findByText("Current Task inputs match this plan.");
+  fireEvent.click(screen.getByRole("button", { name: "Load more Project Tasks" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Add Draw garage layout" }));
+  await waitFor(() => assert.equal(screen.getByLabelText("Planned Tasks").querySelectorAll("li.project-plan-node").length, 2));
+  fireEvent.click(screen.getByLabelText("Research storage", { selector: "input" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Add checkpoint before" })[1]);
+  fireEvent.click(await screen.findByRole("button", { name: "Apply plan edit" }));
+  const policy = screen.getByLabelText("Plan policy");
+  const researchPolicy = policy.querySelector("ol > li")!;
+  // Select the public-web operation by its exact label within the first Task.
+  const webLabel = [...researchPolicy.querySelectorAll("label")].find((item) => item.textContent === "Research the public web")!;
+  if (!(webLabel.querySelector("input") as HTMLInputElement).checked) fireEvent.click(webLabel.querySelector("input")!);
+  fireEvent.click(screen.getByRole("button", { name: "Add output slot" }));
+  fireEvent.change(screen.getByLabelText("Output kind"), { target: { value: "intermediate" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add output slot" }));
+  fireEvent.change(screen.getByLabelText("Final result"), { target: { value: "products" } });
+  fireEvent.change(screen.getAllByLabelText("Producing Task")[1], { target: { value: "1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add planned handoff" }));
+  const policyTasks = policy.querySelectorAll("ol > li");
+  const inputAccess = [...policyTasks[1].querySelectorAll("label")].find((item) => item.textContent === "Read selected Project inputs")!;
+  assert.equal((inputAccess.querySelector("input") as HTMLInputElement).disabled, true);
+  assert.equal((webLabel.querySelector("input") as HTMLInputElement).disabled, true);
+  assert.equal((screen.getByLabelText(/Research storage · remove handoff first/u, { selector: "input" }) as HTMLInputElement).disabled, true);
+  fireEvent.click(screen.getAllByRole("button", { name: "Merge checkpoint" })[1]);
+  await screen.findByText(/checkpoint protects a planned handoff/u);
+  fireEvent.click(screen.getByRole("button", { name: "Review Task dependencies" }));
+  await screen.findByText("Plan and canonical Task prerequisites match.");
+  fireEvent.click(screen.getByRole("button", { name: "Save plan version" }));
+  await screen.findByText("Plan version saved. It remains unapproved and cannot start Agent work.");
+  assert.deepEqual(state.saved?.policy?.operations[0], ["read_public_web", "write_registered_artifacts"]);
+  assert.deepEqual(state.saved?.policy?.outputs.map((item) => [item.slot, item.producer]), [["research_1", 0], ["products", 1]]);
+  assert.deepEqual(state.saved?.policy?.transfers[0].slots, ["research_1"]);
+  assert.equal(state.calls.some((call) => /run|dispatch|kanban|approve/u.test(call.path)), false);
 });
 
 test("removing a prerequisite previews link repair before changing the draft", async () => {
