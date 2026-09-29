@@ -36,3 +36,11 @@ question-only clarification, malformed JSON, nonfinite values, Unicode
 normalization expansion/line separators, stable canonical digest, and wheel/
 sdist inclusion. Obtain two independent read-only code reviews and fix
 findings before a full PR.
+
+Verification: all 11 focused tests pass. Independent reviews found and cleared
+canonical NFC expansion, Unicode line-separator and package-inventory gaps.
+Both re-reviews report no remaining findings. The real wheel and source archive
+pass exact-content verification, and an isolated wheel installation imports
+both proposal modules, validates the schema-42 private graph and parses/digests
+a question-only proposal. The website runtime reused for packaging came from
+an existing build after verifying identical tracked `web/` source.
