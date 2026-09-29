@@ -49,6 +49,10 @@ PROJECT_INPUT_MAX_METADATA_BYTES = LEAD_MAX_METADATA_BYTES + 6 * 1024 * 1024
 # Schema 40 adds at most one immutable action receipt per retained Project
 # planning-input version for exact lost-response reconciliation.
 PROJECT_INPUT_ACTION_MAX_METADATA_BYTES = PROJECT_INPUT_MAX_METADATA_BYTES + 256 * 1024
+
+# Schema 42 reserves bounded historical evidence for 128 proposal Run-input
+# receipts with at most eight exact file records each. Dispatch stays closed.
+PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES + 512 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -185,6 +189,19 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             _fail('project_inputs_invalid')
     if schema_version >= 40:
         budget = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES
+    if schema_version >= 42:
+        budget = PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES
+        from project_proposal_input_receipts import (
+            ProjectProposalInputReceiptError,
+            validate_project_proposal_input_connection,
+        )
+        try:
+            metadata.extend(validate_project_proposal_input_connection(
+                connection, require_available=require_available))
+        except ProjectProposalInputReceiptError as exc:
+            if str(exc) == 'project_proposal_input.capacity':
+                _fail('capacity')
+            _fail('proposal_inputs_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

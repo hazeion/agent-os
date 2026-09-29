@@ -103,7 +103,7 @@ class ProjectContextTests(unittest.TestCase):
             self.publish(brief='é' * 8193)
         self.publish(brief='é' * 8192)
         attachment = self.upload()
-        with patch.object(context, 'PLAN_MAX_METADATA_BYTES', 100), patch.object(context, 'LEAD_MAX_METADATA_BYTES', 100), patch.object(context, 'PROJECT_INPUT_MAX_METADATA_BYTES', 100), patch.object(context, 'PROJECT_INPUT_ACTION_MAX_METADATA_BYTES', 100):
+        with patch.object(context, 'PLAN_MAX_METADATA_BYTES', 100), patch.object(context, 'LEAD_MAX_METADATA_BYTES', 100), patch.object(context, 'PROJECT_INPUT_MAX_METADATA_BYTES', 100), patch.object(context, 'PROJECT_INPUT_ACTION_MAX_METADATA_BYTES', 100), patch.object(context, 'PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES', 100):
             with self.assertRaisesRegex(context.ProjectContextError, 'capacity'):
                 self.publish(attachment, expected=1)
         self.assertEqual(files.get_attachment(self.root, attachment)['state'], 'staged')
@@ -346,7 +346,7 @@ class ProjectContextMigrationTests(unittest.TestCase):
         connection = self.schema26()
         before = tuple(connection.execute('SELECT * FROM mentat_owner_auth_state').fetchone())
         mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, 41), 'expected')
+        self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
         self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_owner_auth_state').fetchone()), before)
         self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_project_context_scopes').fetchone()[0], 0)
         self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
@@ -401,7 +401,7 @@ class ProjectContextMigrationTests(unittest.TestCase):
                 repository = RunRepository(connection)
                 self.assertIsNotNone(repository.authority_receipt(required=True))
                 self.assertEqual(connection.execute('SELECT id FROM mentat_runs').fetchone()[0], 'run_historical')
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), 'expected')
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
 
 
 if __name__ == '__main__':

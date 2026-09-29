@@ -62,6 +62,13 @@ def _schema40_with_runs(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _prior_run_evidence(connection: sqlite3.Connection, before: tuple) -> tuple:
+    """Schema 42 adds empty Run references without changing older evidence."""
+    previous_names = {row[0] for row in before}
+    return tuple(row for row in mentat_db._run_source_migration_snapshot(connection)
+                 if row[0] in previous_names)
+
+
 class ProjectProposalSourceMigrationTests(unittest.TestCase):
     def test_populated_exact_upgrade_preserves_run_and_dependent_evidence(self):
         with TemporaryDirectory() as temporary:
@@ -69,8 +76,8 @@ class ProjectProposalSourceMigrationTests(unittest.TestCase):
                 before = mentat_db._run_source_migration_snapshot(connection)
                 self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
-                self.assertEqual(mentat_db._run_source_migration_snapshot(connection), before)
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
+                self.assertEqual(_prior_run_evidence(connection, before), before)
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(connection.execute(
                     "SELECT id,source,retry_of_run_id,resume_of_run_id "
@@ -125,7 +132,7 @@ class ProjectProposalSourceMigrationTests(unittest.TestCase):
                 )
                 connection.execute(trigger)
                 connection.commit()
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 with self.assertRaises(run_attention.RunAttentionError):
                     run_attention.validate_run_attention_connection(connection)
                 with self.assertRaises(owner_inbox.OwnerInboxError):
@@ -146,7 +153,7 @@ class ProjectProposalSourceMigrationTests(unittest.TestCase):
                     with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "changed retained evidence"):
                         mentat_db.migrate(connection)
                 self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
-                self.assertEqual(mentat_db._run_source_migration_snapshot(connection), before)
+                self.assertEqual(_prior_run_evidence(connection, before), before)
                 self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
                 self.assertEqual(connection.execute("PRAGMA legacy_alter_table").fetchone()[0], 0)
 
@@ -214,8 +221,8 @@ class ProjectProposalSourceMigrationTests(unittest.TestCase):
                 self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
                 before = mentat_db._run_source_migration_snapshot(connection)
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
-                self.assertEqual(mentat_db._run_source_migration_snapshot(connection), before)
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
+                self.assertEqual(_prior_run_evidence(connection, before), before)
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_multibyte_run_row_is_charged_by_bytes_before_shadow_copy(self):
@@ -239,8 +246,8 @@ class ProjectProposalSourceMigrationTests(unittest.TestCase):
                         mentat_db.migrate(connection)
                 self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
-                self.assertEqual(mentat_db._run_source_migration_snapshot(connection), before)
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
+                self.assertEqual(_prior_run_evidence(connection, before), before)
 
     def test_schema41_virtual_backup_and_schema5_export_remain_supported(self):
         from task_repository import _schema5_private_unit
@@ -316,7 +323,7 @@ class ProjectProposalSourceMigrationTests(unittest.TestCase):
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) FROM mentat_agent_events WHERE run_id='run_event_backup'"
                 ).fetchone()[0], 1)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
             compatible = _schema5_private_unit(unit)
             with closing(sqlite3.connect(":memory:")) as connection:
                 connection.deserialize(compatible.database_raw)
