@@ -149,6 +149,11 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(loader.errors, [])
         expected_ids = Counter(suite_ids(discovered))
         self.assertEqual(
+            {identifier: count for identifier, count in expected_ids.items() if count != 1},
+            {},
+            "Ordinary discovery must collect each canonical test only once",
+        )
+        self.assertEqual(
             Counter(flattened),
             Counter(unit for unit, _weight in weighted),
         )
