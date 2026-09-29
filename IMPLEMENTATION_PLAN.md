@@ -95,9 +95,11 @@ PRs #285–#290; hosted reruns remain the timeout acceptance gate.
   publication and lost-response receipts; neither grants a proposal Run or
   Apply. [PR #290](https://github.com/hazeion/agent-os/pull/290) reserves a
   distinct proposal Run source behind a no-dispatch database guard. A separate
-  Project proposal Run-input receipt is in the next schema slice; generated-
-  output provenance, atomic admission and a qualified Linux adapter still gate
-  actual lead proposal execution. The schema-41 no-dispatch guard remains.
+  [PR #291](https://github.com/hazeion/agent-os/pull/291) adds the guarded
+  schema-42 Project proposal Run-input receipt and file-evidence graph.
+  Generated-output provenance, atomic admission and a qualified Linux adapter
+  still gate actual lead proposal execution. The schema-41 no-dispatch guard
+  remains.
 - [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):
   PRs [#275](https://github.com/hazeion/agent-os/pull/275) and
   [#277](https://github.com/hazeion/agent-os/pull/277)–[#281](https://github.com/hazeion/agent-os/pull/281)
