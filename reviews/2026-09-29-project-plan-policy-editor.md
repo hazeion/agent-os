@@ -1,7 +1,7 @@
 # Policy-bearing Project plan editor
 
-Status: implemented in an isolated branch, reviewed; publication and hosted CI
-remain pending. Scope: the format-2 preparation portion of [approved plans and
+Status: implemented and reviewed in [full PR #285](https://github.com/hazeion/agent-os/pull/285);
+hosted CI and merge remain pending. Scope: the format-2 preparation portion of [approved plans and
 scoped handoffs](https://github.com/hazeion/agent-os/issues/239) and exact Task
 admission preparation in [issue 262](https://github.com/hazeion/agent-os/issues/262).
 
