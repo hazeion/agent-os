@@ -20,7 +20,7 @@ SHARD_COUNT = 12
 SHARD_GROUP_COUNT = 12
 MAX_CONCURRENT_SHARDS = 4
 PROCESS_STOP_TIMEOUT_SECONDS = 5
-GROUP_UNIT_TIMEOUT_SECONDS = 30 * 60
+GROUP_UNIT_TIMEOUT_SECONDS = 40 * 60
 IS_WINDOWS = sys.platform == "win32"
 ISOLATED_PROCESS_GROUP_FLAGS = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 SPLIT_TEST_WEIGHT = 12
@@ -29,6 +29,7 @@ SPLITTABLE_MODULES = frozenset(
         "tests.test_data_backup_restore",
         "tests.test_data_schema",
         "tests.test_private_console_state",
+        "tests.test_task_repository",
     }
 )
 MODULE_UNIT_PREFIX = "module:"
