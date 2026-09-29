@@ -10,9 +10,9 @@ repository change, a replacement dispatcher or model work.
 
 The selected candidate remains local original Hermes co-located with the Linux
 Mentat host, as resolved in issue #237. The temporary WSL installation reports
-Hermes v0.19.0, upstream
-[`1ce05d8fb1ae16c3d694d1f06003445edb632046`](https://github.com/NousResearch/hermes-agent/tree/1ce05d8fb1ae16c3d694d1f06003445edb632046).
-The inspected public source files match that commit. Its Kanban CLI exposes separate create and
+Hermes v0.19.0 and is a clean checkout of the owner's fork at
+`1ce05d8fb1ae16c3d694d1f06003445edb632046`; that is not an official upstream
+commit pin. The inspected source files match that local commit. Its Kanban CLI exposes separate create and
 attach operations, per-task runtime and retry limits. The current Mentat adapter
 passes neither an immutable input set nor per-Task permitted operations or work
 limits to creation. These are unsupported, rather than qualified capabilities.
@@ -178,3 +178,12 @@ provider secrets, change Hermes configuration/storage, update the runtime or
 run a model. This record remains a proposed scope prerequisite while the
 operator chooses whether to extend the original Hermes repository or approve
 a different runtime architecture.
+
+After this review, the owner selected migration to the updated official Hermes
+agent instead of developing the fork. Official stable `v2026.9.24` (0.21.5,
+`f97608f178d1ffeca59860195ab7da295f7c8e5f`) and current main were audited
+separately. Shipped Subagent Lifecycle, `ctx.llm`, provider-plugin, run-API and
+egress-proxy seams are integration opportunities, so they must not be described
+as absent. Their current scope does not alone qualify the exact Project worker
+contract above. First verify stock compatibility and activate the stable
+upstream agent; reassess those supported seams before proposing any extension.
