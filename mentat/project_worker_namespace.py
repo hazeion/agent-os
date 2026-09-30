@@ -121,6 +121,7 @@ class PreparedNamespace:
             raise WorkerScopeError("worker_namespace.image")
         self._paths = tuple(str(value) for value in (roots.source, roots.venv, roots.python))
         self._model, self._vision, self._extension = model, vision, image_extension
+        self._image_digest = image_digest
         self._fds = []
         self._closed = False
         try:
@@ -163,7 +164,8 @@ class PreparedNamespace:
                 or time.monotonic() >= deadline):
             raise WorkerScopeError("worker_namespace.handoff")
         config = {"model": self._model, "vision": self._vision, "venv": self._paths[1],
-                  "image_extension": self._extension, "wall_seconds": wall_seconds}
+                  "image_extension": self._extension, "image_digest": self._image_digest,
+                  "wall_seconds": wall_seconds}
         config_fd = _sealed(_encoded(config), "mentat-config")
         try:
             descriptors = (*self._fds, config_fd, broker.fileno(), lifecycle.fileno())

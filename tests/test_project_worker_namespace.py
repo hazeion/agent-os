@@ -104,6 +104,50 @@ class FrontendContractTests(unittest.TestCase):
             broker_thread.join(timeout=2)
             self.assertFalse(server_thread.is_alive() or broker_thread.is_alive())
 
+    def test_missing_substituted_or_unprepared_images_never_reach_broker(self):
+        host, worker = socket.socketpair()
+        expected = b"exact prepared image bytes"
+        service = front.CompletionServer(worker, "test", time.monotonic() + 10,
+                                        hashlib.sha256(expected).hexdigest(), ".png")
+        thread = threading.Thread(target=service.serve_forever)
+        thread.start()
+        try:
+            baseline = {"model": "test", "stream": True, "messages": [{"role": "user", "content": []}]}
+            image = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(b"changed").decode()}}
+            for content in ([], [image], [image, image],
+                            [{"type": "image_url", "image_url": {"url": "https://invalid.test/image.png"}}],
+                            {"image_url": image["image_url"]},
+                            [{"type": "input_image", "image_url": image["image_url"]}],
+                            [{"type": "text", "text": "caption", "image_url": image["image_url"]}],
+                            [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(expected).decode()}}]):
+                service.attempts = 0
+                client = http.client.HTTPConnection(*service.server_address, timeout=2)
+                client.request("POST", "/v1/chat/completions", json.dumps({**baseline,
+                               "messages": [{"role": "user", "content": content}]}))
+                reply = client.getresponse()
+                self.assertEqual(reply.status, 400)
+                reply.read()
+                client.close()
+            service.image_digest = None
+            service.image_mime = None
+            service.attempts = 0
+            client = http.client.HTTPConnection(*service.server_address, timeout=2)
+            client.request("POST", "/v1/chat/completions", json.dumps({**baseline,
+                           "messages": [{"role": "user", "content": [image]}]}))
+            reply = client.getresponse()
+            self.assertEqual(reply.status, 400)
+            reply.read()
+            client.close()
+            host.setblocking(False)
+            with self.assertRaises(BlockingIOError):
+                host.recv(1)
+        finally:
+            service.shutdown()
+            service.server_close()
+            thread.join(timeout=2)
+            host.close()
+            worker.close()
+
     def test_unsupported_namespace_fails_before_any_snapshot_or_runtime_open(self):
         with patch.object(namespaces, "IS_LINUX", False), patch.object(namespaces, "_open_directory") as opened:
             with self.assertRaises(scopes.WorkerScopeError):

@@ -38,8 +38,11 @@ must be qualified before a host supplies that state; it is not inferred here.
 
 The namespace-local HTTP listener accepts only bounded streamed completions
 for the frozen model with no declared tools. It denies metadata and alternate
-paths, transfer encoding and duplicate Content-Length. It forwards exact
-body bytes over one inherited AF_UNIX stream, never credentials, headers or
+paths, transfer encoding and duplicate Content-Length.
+Native image blocks must decode to the exact prepared image digest; missing,
+substituted, duplicate, externally linked or unprepared images fail before
+the broker. This also rejects silent text/caption fallback at the wire boundary.
+It forwards exact body bytes over one inherited AF_UNIX stream, never credentials, headers or
 an upstream URL. Only a bounded normalized text or fixed unknown/failure
 reply crosses back, and the frontend constructs its own bounded SSE envelope.
 The future host broker must independently validate the complete request,
@@ -64,10 +67,10 @@ reply/terminal rejection and post-exit export readback. No live provider,
 credential, owner configuration, Kanban mutation or execution guard change.
 Obtain two independent reviews, repair findings, then publish a full PR.
 
-Final actual Linux namespace/scope group: all 31 tests pass, with no skips.
+Final actual Linux namespace/scope group: all 32 tests pass, with no skips.
 This includes unchanged official 0.21.5, one fake inference completion,
 zero declared tools, exactly matching native image bytes and terminal/export
-readback. Windows executes ten portable contracts and skips 21 Linux-only
+readback. Windows executes eleven portable contracts and skips 21 Linux-only
 checks. Independent reviewers found the deadline acceptance race, missing
 handoff limit re-read and ancillary ordering leak; all were repaired with
 controlled clock, changed-limit and transferred-FD regression checks. Both
@@ -79,3 +82,12 @@ the installed wheel imports the namespace, frontend and scope handoff. The
 slice also carries the separately twice-reviewed Caddy queued-heartbeat
 fixture repair; all 13 portable Caddy fixture tests pass without changing its
 original drain deadline or weakening exact close/EOF acceptance.
+The final image-request admission correction requires exact text/list message
+shapes and exact native-image parts, MIME and byte digest. Nine denial cases
+cover hidden/alternate image fields, missing, changed, duplicate, external and
+unprepared images. A recognized caption or dropped-image request cannot pass
+this wire check; the qualified host broker must still validate independently.
+The first image-delta review caught alternate image-bearing part shapes; the
+fixed allowlist and exact MIME correction passed both independent final
+re-reviews. Final artifacts were rebuilt after that correction and the
+installed frontend bytes match the reviewed source exactly.

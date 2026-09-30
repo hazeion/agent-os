@@ -172,7 +172,7 @@ have clear independent reviews; hosted timing gains remain unverified.
    current migration/attention/journal checks pass. It grants no provider
    submission or producing-Run authority. The [fixed namespace handoff](reviews/2026-09-30-project-worker-namespace.md)
    now runs unchanged official Hermes through a credential-free frontend,
-   sealed inputs and isolated bounded writable roots. All 31 actual Linux tests
+   sealed inputs and isolated bounded writable roots. All 32 actual Linux tests
    pass, including native image-byte equality through a fake broker, detached
    Stop and post-exit export readback; both independent reviews are clear.
    These component tests grant no live provider or Run authority. Next implement

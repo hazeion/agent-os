@@ -7,7 +7,9 @@ admission, exact inputs, policy, call identity, journal and revocation.
 from __future__ import annotations
 
 import array
+import base64
 import ctypes
+import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
@@ -101,8 +103,11 @@ def _completion(text, model):
 class CompletionServer(HTTPServer):
     allow_reuse_address = False
 
-    def __init__(self, broker, model, deadline):
+    def __init__(self, broker, model, deadline, image_digest=None, image_extension=""):
         self.broker, self.model, self.deadline = broker, model, deadline
+        self.image_digest = image_digest
+        self.image_mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                           ".webp": "image/webp"}.get(image_extension)
         self.attempts = 0
         self.accepted_text = None
         super().__init__(("127.0.0.1", 0), CompletionHandler)
@@ -142,6 +147,46 @@ class CompletionHandler(BaseHTTPRequestHandler):
             if (not isinstance(parsed, dict) or parsed.get("model") != self.server.model
                     or parsed.get("stream") is not True or parsed.get("tools") not in (None, [])):
                 raise FrontendError("request")
+            images = []
+            messages = parsed.get("messages")
+            if not isinstance(messages, list) or len(messages) > 64:
+                raise FrontendError("request")
+            for message in messages:
+                if (not isinstance(message, dict) or set(message) != {"role", "content"}
+                        or not isinstance(message.get("role"), str)
+                        or message["role"] not in {"system", "user", "assistant"}):
+                    raise FrontendError("request")
+                content = message.get("content")
+                if isinstance(content, str):
+                    continue
+                if not isinstance(content, list) or len(content) > 16:
+                    raise FrontendError("request")
+                for part in content:
+                    if not isinstance(part, dict):
+                        raise FrontendError("request")
+                    if set(part) == {"type", "text"} and part["type"] == "text" and isinstance(part["text"], str):
+                        continue
+                    if set(part) == {"type", "image_url"} and part["type"] == "image_url":
+                        image = part.get("image_url")
+                        url = image.get("url") if isinstance(image, dict) else None
+                        if (not isinstance(image, dict) or not {"url"} <= set(image) <= {"url", "detail"}
+                                or not isinstance(image.get("detail", "auto"), str)
+                                or image.get("detail", "auto") not in {"auto", "low", "high"}
+                                or self.server.image_mime is None or not isinstance(url, str)
+                                or not url.startswith("data:" + self.server.image_mime + ";base64,")):
+                            raise FrontendError("image")
+                        encoded = url.split(",", 1)[1]
+                        if len(encoded) > 4 * ((8 * 1024 * 1024 + 2) // 3):
+                            raise FrontendError("image")
+                        decoded = base64.b64decode(encoded, validate=True)
+                        if not 0 < len(decoded) <= 8 * 1024 * 1024:
+                            raise FrontendError("image")
+                        images.append(hashlib.sha256(decoded).hexdigest())
+                    else:
+                        raise FrontendError("request")
+            expected = [] if self.server.image_digest is None else [self.server.image_digest]
+            if images != expected:
+                raise FrontendError("image")
             # Raw bytes, never headers or a caller-chosen upstream destination.
             reply = exchange(self.server.broker, body, self.server.deadline)
             if reply["state"] != "succeeded":
@@ -243,7 +288,7 @@ def main():
         library = ctypes.CDLL(None, use_errno=True)
         if library.prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
             raise FrontendError("boundary")
-        server = CompletionServer(broker, spec["model"], deadline)
+        server = CompletionServer(broker, spec["model"], deadline, spec["image_digest"], spec["image_extension"])
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         exports = os.open("/exports", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
