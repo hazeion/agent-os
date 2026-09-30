@@ -213,6 +213,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'worker_journal.capacity':
                 _fail('capacity')
             _fail('worker_journal_invalid')
+    if schema_version >= 44:
+        from project_scope_journal import validate_scope_journal_connection
+        from project_worker_journal import WorkerJournalError
+        try:
+            metadata.extend(validate_scope_journal_connection(connection))
+        except WorkerJournalError as exc:
+            if str(exc) == 'scope_journal.capacity':
+                _fail('capacity')
+            _fail('scope_journal_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

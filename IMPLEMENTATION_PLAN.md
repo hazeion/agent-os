@@ -84,6 +84,7 @@ residual QA based on a fixture or an unmerged change alone.
    [worker scope](reviews/2026-09-30-project-worker-scope.md),
    [namespace handoff](reviews/2026-09-30-project-worker-namespace.md),
    [durable journal](reviews/2026-09-30-project-worker-journal.md),
+   [durable scope bookkeeping](reviews/2026-09-30-project-scope-journal.md),
    [synthetic inference broker](reviews/2026-09-30-project-inference-broker.md),
    [immutable image](reviews/2026-09-30-project-runtime-image.md),
    [sealed libraries](reviews/2026-09-30-project-runtime-libraries.md),

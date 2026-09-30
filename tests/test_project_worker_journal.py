@@ -294,7 +294,7 @@ class ProjectWorkerJournalTests(unittest.TestCase):
             private_console_unit.materialize_private_console_unit(
                 target, private_console_unit.sanitize_owner_auth_restore_unit(unit), target / "private" / "console")
             with closing(mentat_db.connect(target)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, 43), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(journal.validate_worker_journal_connection(connection), [[], []])
             compatible = _schema5_private_unit(unit)
             with closing(sqlite3.connect(":memory:")) as connection:
@@ -382,7 +382,7 @@ class ProjectWorkerJournalTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 43), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(journal.validate_worker_journal_connection(connection), [[], []])
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "proposal_unqualified"):
@@ -428,7 +428,7 @@ class ProjectWorkerJournalTests(unittest.TestCase):
                 self.assertEqual(mentat_db.schema_signature_state(connection, 42), "expected")
                 self.assertFalse(connection.in_transaction)
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 43), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
 
     def test_real_leased_journal_refuses_archive_without_modifying_source(self):
         run_id = self._prepare()
