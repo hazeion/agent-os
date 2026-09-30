@@ -36,8 +36,9 @@ workflow remains a stack of full, open PRs starting at
 private [prelaunch output reservations](reviews/2026-09-30-proposal-output-reservations.md).
 Open PRs, passing local
 checks and clean mergeability are not merged-product or issue-close evidence.
-Hosted CI, normal review and integrated acceptance remain gates. No blanket
-GitHub PR merge authorization is recorded.
+Hosted CI, normal review and integrated acceptance remain gates. The owner
+authorizes merging reviewed PRs with successful current CI in dependency order;
+failed, queued or unreviewed heads remain open.
 
 | Required outcome | Evidence on the open stack | Acceptance still missing |
 | --- | --- | --- |
