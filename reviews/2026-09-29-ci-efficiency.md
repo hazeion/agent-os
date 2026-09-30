@@ -1,5 +1,15 @@
 # CI execution efficiency
 
+## PR #285 compatible replay
+
+This branch replays the reviewed PR #273 scheduler/private fixtures. Its original
+40-minute group watchdog and workflow limits are unchanged; the only conflict
+resolution retained its existing40-minute CI assertion. All other split-module
+sources are unchanged; TaskRepository differs only expected schema number.
+Fourteen compatibility/CI methods and two actual overlapping private split
+children pass here, with zero lock-audit vulnerabilities. Historical PR #273/276
+measurements below are not new branch or hosted speed evidence.
+
 ## Older-base compatibility backport
 
 This PR #273 backport starts at `2fd7e7d` and preserves its original 30-minute
