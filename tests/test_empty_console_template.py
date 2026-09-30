@@ -250,10 +250,11 @@ class EmptyConsoleTemplateTests(unittest.TestCase):
         with self.isolated_cache(), TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
             units.capture_private_console_unit(root, harden_source=False)
-            (root / "private" / "console").mkdir(parents=True, mode=0o700)
-            (root / "private").chmod(0o755)
+            connection = mentat_db.connect(root)
+            connection.close()
+            units.database_path(root).chmod(0o644)
             before = self.snapshot(root)
-            with self.assertRaises(OSError):
+            with self.assertRaises(units.PrivateConsoleUnitError):
                 units.capture_private_console_unit(root, harden_source=False)
             self.assertEqual(before, self.snapshot(root))
 
