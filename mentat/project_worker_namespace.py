@@ -168,6 +168,8 @@ class PreparedNamespace:
             self._fds.append(_sealed(frontend, "mentat-frontend"))
             if image is not None:
                 self._fds.append(_sealed(image, "mentat-image"))
+            self._handoff_context = (query_digest, image_digest,
+                runtime_image._image_sha256 if runtime_image is not None else None, sealed_libraries)
         except BaseException:
             self.close()
             raise
@@ -320,13 +322,19 @@ def receive_ready(endpoint, deadline):
 
 class NamespaceWorker:
     """Private output evidence, never canonical Run completion authority."""
-    def __init__(self, scope, lifecycle, exports, runtime_image=None):
+    def __init__(self, scope, lifecycle, exports, runtime_image=None, *, handoff_context=None):
         self._scope, self._lifecycle, self.exports_descriptor = scope, lifecycle, exports
         self._consumed = False
         self._runtime_image = runtime_image
+        self._handoff_context = handoff_context
+        self._verified_result = None
+        self._completion_witness = None
 
     def wait(self):
         from mentat.project_worker_frontend import MAX_OUTPUT, MAX_REPLY, _json, _text
+        from mentat.project_worker_scope import LinuxWorkerScope
+        if type(self._scope) is LinuxWorkerScope and getattr(self._scope, '_namespace_worker', None) is not self:
+            raise WorkerScopeError("worker_namespace.terminal")
         if self._consumed or self._scope._deadline is None:
             raise WorkerScopeError("worker_namespace.terminal")
         self._consumed = True  # Lost/malformed outcomes never trigger a new worker.
@@ -349,7 +357,7 @@ class NamespaceWorker:
         try:
             result = _json(data)
             if (not isinstance(result, dict) or set(result) != {"version", "kind", "exit_code", "text", "output_bytes"}
-                    or result["version"] != 1 or result["kind"] != "terminal"
+                    or type(result["version"]) is not int or result["version"] != 1 or result["kind"] != "terminal"
                     or type(result["exit_code"]) is not int or result["exit_code"] != 0
                     or type(result["output_bytes"]) is not int or not 0 <= result["output_bytes"] <= MAX_OUTPUT):
                 raise WorkerScopeError("worker_namespace.terminal")
@@ -368,4 +376,24 @@ class NamespaceWorker:
         if self._runtime_image is not None:
             self._runtime_image.verify()
         _remaining(deadline)
+        self._verified_result = (result["text"], result["output_bytes"])
         return result
+
+    def completion_witness(self):
+        """Local evidence after original verified close; grants no Run status."""
+        from mentat.project_namespace_evidence import _issue, completion_metadata
+        from mentat.project_worker_scope import LinuxWorkerScope
+        if type(self._scope) is not LinuxWorkerScope:
+            raise WorkerScopeError('worker_namespace.completion_unavailable')
+        with self._scope._lock:
+            if (self._verified_result is None or getattr(self._scope, '_namespace_worker', None) is not self
+                    or self._handoff_context is None or self._scope.deadline_hit):
+                raise WorkerScopeError('worker_namespace.completion_unavailable')
+            try:
+                if self._completion_witness is None:
+                    closed = self._scope.journal_closed_identity()
+                    self._completion_witness = _issue(self, self._handoff_context, self._verified_result, closed)
+                completion_metadata(self._completion_witness)
+                return self._completion_witness
+            except (ValueError, RuntimeError) as error:
+                raise WorkerScopeError('worker_namespace.completion_unavailable') from error

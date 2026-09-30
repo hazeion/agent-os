@@ -303,13 +303,22 @@ class LinuxRuntimeImageTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkerScopeError, "busy"):
                 lease.close()
             self.assertEqual(handle.wait()["text"], "PROBE_OK")
+            scope.close_verified()
+            from mentat.project_namespace_evidence import completion_metadata
+            captured = completion_metadata(handle.completion_witness())
+            self.assertEqual(captured['query_digest'], hashlib.sha256(inputs.query).hexdigest())
+            self.assertEqual(captured['image_digest'], inputs.image_digest)
+            self.assertEqual(captured['runtime_image_digest'], values[4])
+            self.assertEqual(captured['sealed_libraries'], sealed_libraries)
+            self.assertEqual(captured['result']['text'], 'PROBE_OK')
             self.assertEqual(fixture.backend.calls, 1)
             self.assertEqual(tuple(fixture._call_state()[:3]), ("succeeded", 1, "PROBE_OK"))
             lease.verify()
         finally:
             if actual_broker is not None:
                 actual_broker.stop()
-            scope.close_verified()
+            if not scope._closed:
+                scope.close_verified()
             host.close()
             worker.close()
             if thread is not None:
