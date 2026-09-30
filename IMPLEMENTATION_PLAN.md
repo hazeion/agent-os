@@ -143,6 +143,10 @@ have clear independent reviews; hosted timing gains remain unverified.
    fork; stock compatibility and activation are now the next runtime work.
    Shipped lifecycle/inference/provider/egress seams must be reassessed before
    proposing an extension. Keep Project execution guarded pending qualification.
+   [Official-release compatibility](reviews/2026-09-29-official-hermes-compatibility.md)
+   verifies stable 0.21.5, the stock model-writer owner and local control
+   startup/session/shutdown with no model submission. The owner requested no
+   old-writer fallback. Runtime activation still needs backup/lifecycle checks.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
