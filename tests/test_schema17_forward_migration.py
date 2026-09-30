@@ -75,7 +75,7 @@ class Schema17ForwardMigrationTests(unittest.TestCase):
             self._schema16(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 43)
+                self.assertEqual(SCHEMA_VERSION, 44)
                 self.assertEqual(schema_signature_state(connection, SCHEMA_VERSION), "expected")
                 self.assertIsNone(connection.execute("PRAGMA foreign_key_check").fetchone())
                 connection.execute(
