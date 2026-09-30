@@ -340,16 +340,33 @@ class OwnerAuthAuthorityTests(unittest.TestCase):
         self.assertNotIsInstance(outcome[0], Exception)
 
     def test_recovery_flood_is_rejected_before_argon2_work(self) -> None:
-        _bootstrap, session = self.bootstrap()
-        with patch("owner_auth._verify_recovery", return_value=False) as verify:
-            for _ in range(5):
+        # This checks a single fixed-minute budget, not host wall-clock speed.
+        with patch.object(self.authority, "_clock", return_value=120.0):
+            _bootstrap, session = self.bootstrap()
+            with patch("owner_auth._verify_recovery", return_value=False) as verify:
+                for _ in range(5):
+                    with self.assertRaises(OwnerAuthError):
+                        self.authority.start_recovery_registration(session.recovery_codes[0], "replacement")
+                admitted_work = verify.call_count
                 with self.assertRaises(OwnerAuthError):
                     self.authority.start_recovery_registration(session.recovery_codes[0], "replacement")
-            admitted_work = verify.call_count
-            with self.assertRaises(OwnerAuthError):
-                self.authority.start_recovery_registration(session.recovery_codes[0], "replacement")
         self.assertEqual(admitted_work, 50)
         self.assertEqual(verify.call_count, admitted_work)
+
+    def test_recovery_budget_rolls_over_only_at_the_next_fixed_minute(self) -> None:
+        with patch.object(self.authority, "_clock", return_value=119.999) as clock:
+            _bootstrap, session = self.bootstrap()
+            with patch("owner_auth._verify_recovery", return_value=False) as verify:
+                for minute, expected_work in ((119.999, 50), (120.0, 100)):
+                    with self.subTest(minute=minute):
+                        clock.return_value = minute
+                        for _ in range(5):
+                            with self.assertRaisesRegex(OwnerAuthError, "^invalid$"):
+                                self.authority.start_recovery_registration(session.recovery_codes[0], "replacement")
+                        self.assertEqual(verify.call_count, expected_work)
+                        with self.assertRaisesRegex(OwnerAuthError, "^limited$"):
+                            self.authority.start_recovery_registration(session.recovery_codes[0], "replacement")
+                        self.assertEqual(verify.call_count, expected_work)
 
     def test_failed_recovery_keeps_its_reserved_code_until_success_or_restart_reconciliation(self) -> None:
         _bootstrap, session = self.bootstrap()
