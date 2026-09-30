@@ -1,5 +1,14 @@
 # CI execution efficiency
 
+## PR #277 compatible replay
+
+This replay starts at `d33f52d` and preserves its original 30-minute watchdog.
+The scheduler and CI-contract baseline are identical to PR #273; the split
+Task repository source differs only in its expected schema number (34 versus
+33), with identical methods and fixture ownership. The record below describes
+the already reviewed PR #273/276 changes and measurements, not a new hosted
+or local PR #277 speed measurement. Exact inventory contracts are rerun here.
+
 ## Older-base compatibility backport
 
 This PR #273 backport starts at `2fd7e7d` and preserves its original 30-minute
