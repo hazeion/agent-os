@@ -1047,8 +1047,9 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
         if schema_version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION:
             from run_attention import RunAttentionError, validate_run_attention_connection
+            from project_context import ProjectContextError
+            from project_worker_journal import WorkerJournalError, archival_proposal_ids
             try:
-                from project_worker_journal import archival_proposal_ids
                 # sqlite.Row is needed only while validating the exact dormant
                 # Run shape; retain the surrounding validator's factory.
                 original_factory = connection.row_factory
@@ -1058,7 +1059,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 finally:
                     connection.row_factory = original_factory
                 validate_run_attention_connection(connection, archival_proposals=archived)
-            except RunAttentionError as exc:
+            except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
                 raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
@@ -1239,8 +1240,9 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
         if schema_version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION:
             from run_attention import RunAttentionError, validate_run_attention_connection
+            from project_context import ProjectContextError
+            from project_worker_journal import WorkerJournalError, archival_proposal_ids
             try:
-                from project_worker_journal import archival_proposal_ids
                 original_factory = connection.row_factory
                 connection.row_factory = sqlite3.Row
                 try:
@@ -1248,7 +1250,7 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 finally:
                     connection.row_factory = original_factory
                 validate_run_attention_connection(connection, archival_proposals=archived)
-            except RunAttentionError as exc:
+            except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
                 raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
