@@ -4,6 +4,7 @@ import re
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,15 @@ CHANGELOG = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 class CiWorkflowContractTests(unittest.TestCase):
+    def runner_namespace(self):
+        namespace = {"__name__": "ci_shard_contract", "__file__": str(SHARD_RUNNER)}
+        exec(SHARD_RUNNER.read_text(encoding="utf-8"), namespace)
+        return namespace
+
+    def independent_units(self):
+        prefix = "test:tests.test_task_repository.TaskRepositoryTests."
+        return tuple(f"{prefix}test_sample_{index}" for index in range(4))
+
     def workflow(self) -> str:
         self.assertTrue(WORKFLOW.exists(), "The early CI workflow must exist")
         return WORKFLOW.read_text(encoding="utf-8")
@@ -185,6 +195,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(namespace["SHARD_COUNT"], 12)
         self.assertEqual(namespace["SHARD_GROUP_COUNT"], 12)
         self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 4)
+        self.assertEqual(namespace["MAX_CONCURRENT_SPLIT_UNITS"], 2)
         self.assertEqual(namespace["PROCESS_STOP_TIMEOUT_SECONDS"], 5)
         self.assertEqual(namespace["GROUP_UNIT_TIMEOUT_SECONDS"], 40 * 60)
         self.assertIn("tests.test_task_repository", namespace["SPLITTABLE_MODULES"])
@@ -578,6 +589,110 @@ class CiWorkflowContractTests(unittest.TestCase):
         for process in spawned:
             process.terminate()
         self.assertEqual(FakeProcess.active, 0)
+
+    def test_group_overlaps_only_independent_tests_and_preserves_module_barriers(self):
+        namespace = self.runner_namespace()
+        split = self.independent_units()
+        units = ("module:tests.before", *split, "module:tests.after")
+        active = []
+        observed = []
+        maximum = 0
+
+        def spawn(selected):
+            nonlocal maximum
+            unit, = selected
+            if unit.startswith("module:"):
+                self.assertEqual(active, [])
+            elif active:
+                self.assertTrue(all(value.startswith("test:") for value in active))
+            active.append(unit)
+            maximum = max(maximum, len(active))
+            observed.append(unit)
+            process = Mock()
+            process.poll.side_effect = (None, 1 if unit == split[1] else 0)
+
+            def wait(timeout):
+                self.assertGreater(timeout, 0)
+                active.remove(unit)
+                return 0
+
+            process.wait.side_effect = wait
+            return process
+
+        namespace["_spawn_shard"] = spawn
+        with patch.object(namespace["time"], "sleep"):
+            self.assertEqual(namespace["run_group"]((units,)), 1)
+        self.assertEqual(observed, list(units))
+        self.assertEqual(maximum, 2)
+        self.assertEqual(active, [])
+
+    def test_split_watchdog_stops_every_active_tree_without_starting_more_tests(self):
+        for clock_values, expected in (((0, 0, 0, 10), 2), ((0, 0, 10), 1)):
+            with self.subTest(clock_values=clock_values):
+                namespace = self.runner_namespace()
+                spawned = []
+                stopped = []
+
+                def spawn(selected):
+                    process = Mock()
+                    process.poll.return_value = None
+                    spawned.append((selected, process))
+                    return process
+
+                namespace["_spawn_shard"] = spawn
+                namespace["_stop_process_tree"] = stopped.append
+                with (
+                    patch.object(namespace["time"], "monotonic", side_effect=clock_values),
+                    patch.object(namespace["time"], "sleep"),
+                ):
+                    self.assertEqual(namespace["_run_split_batch"](self.independent_units(), 10), 1)
+                self.assertEqual(len(spawned), expected)
+                self.assertEqual(stopped, [process for _units, process in spawned])
+
+    def test_split_runner_errors_stop_all_owned_trees_and_preserve_the_error(self):
+        for operation in ("spawn", "poll", "wait", "sleep"):
+            with self.subTest(operation=operation):
+                namespace = self.runner_namespace()
+                spawned = []
+                stopped = []
+
+                def spawn(_selected):
+                    if operation == "spawn" and len(spawned) == 1:
+                        raise RuntimeError("runner failure")
+                    process = Mock()
+                    process.poll.return_value = 0 if operation == "wait" else None
+                    if operation == "poll":
+                        process.poll.side_effect = RuntimeError("runner failure")
+                    if operation == "wait":
+                        process.wait.side_effect = RuntimeError("runner failure")
+                    spawned.append(process)
+                    return process
+
+                def stop(process):
+                    stopped.append(process)
+                    if len(stopped) == 1:
+                        raise RuntimeError("cleanup failure")
+
+                namespace["_spawn_shard"] = spawn
+                namespace["_stop_process_tree"] = stop
+                with patch.object(namespace["time"], "sleep", side_effect=KeyboardInterrupt()):
+                    with self.assertRaisesRegex(
+                        KeyboardInterrupt if operation == "sleep" else RuntimeError,
+                        "" if operation == "sleep" else "runner failure",
+                    ):
+                        namespace["_run_split_batch"](
+                            self.independent_units(), namespace["time"].monotonic() + 60,
+                        )
+                self.assertEqual(stopped, spawned)
+
+    def test_split_batch_rejects_non_allowlisted_units_before_spawning(self):
+        namespace = self.runner_namespace()
+        spawn = Mock()
+        namespace["_spawn_shard"] = spawn
+        for units in ((), ("module:tests.test_task_repository",), ("test:tests.unknown.Case.test",)):
+            with self.subTest(units=units), self.assertRaises((ValueError, RuntimeError)):
+                namespace["_run_split_batch"](units, namespace["time"].monotonic() + 60)
+        spawn.assert_not_called()
 
     def test_workflow_is_read_only_and_secret_free(self):
         workflow = self.workflow()
