@@ -270,17 +270,98 @@ class GoogleTransportTests(unittest.TestCase):
             for thread in threads:
                 thread.start()
             self.assertTrue(both_started.wait(3))
+            # Spawn acknowledgement precedes ownership registration. Exercise
+            # close() only once both exact workers are owned, so call timeouts
+            # cannot substitute for verified immediate termination.
+            for _ in range(100):
+                with runner._lock:
+                    registered = len(runner._workers) == 2 and runner._starting == 0
+                if registered:
+                    break
+                time.sleep(0.05)
+            self.assertTrue(registered)
             with self.assertRaisesRegex(transport.GoogleOidcTransportError, "capacity_unavailable"):
                 transport.GoogleWorkerRunner(_spawn=spawn)({"operation": "keys"}, time.monotonic() + 5)
         finally:
-            runner.close()
-            for thread in threads:
-                thread.join(4)
-            self.assertTrue(runner.close())
+            first_close = None
+            try:
+                first_close = runner.close()
+            finally:
+                # Do not let a failed close assertion abandon this fixture's
+                # exact children/callers. Keep the first result for the contract
+                # assertion after every cleanup path has been attempted.
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=2)
+                for thread in threads:
+                    if thread.ident is not None:
+                        thread.join(10)
+                self.assertTrue(runner.close())
+            self.assertTrue(first_close)
         self.assertEqual(len(processes), 2)
         self.assertTrue(all(process.poll() is not None for process in processes))
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(len(failures), 2)
+
+    def test_close_fixture_failure_reaps_owned_children_before_asserting(self):
+        runners = []
+        processes = []
+        callers = []
+        original_runner = transport.GoogleWorkerRunner
+        original_thread = threading.Thread
+
+        def tracked_runner(**kwargs):
+            spawn = kwargs["_spawn"]
+
+            def tracked_spawn(*args, **options):
+                process = spawn(*args, **options)
+                processes.append(process)
+                return process
+
+            runner = original_runner(_spawn=tracked_spawn)
+            actual_close = runner.close
+            calls = 0
+
+            def failed_first_close():
+                nonlocal calls
+                calls += 1
+                return False if calls == 1 else actual_close()
+
+            runner.close = failed_first_close
+            runners.append((runner, actual_close))
+            return runner
+
+        def tracked_thread(*args, **kwargs):
+            thread = original_thread(*args, **kwargs)
+            if getattr(kwargs.get("target"), "__name__", "") == "run":
+                callers.append(thread)
+            return thread
+
+        inner = GoogleTransportTests("test_capacity_is_shared_and_close_drains_active_workers")
+        result = unittest.TestResult()
+        try:
+            with patch.object(transport, "GoogleWorkerRunner", side_effect=tracked_runner), patch.object(
+                threading, "Thread", side_effect=tracked_thread
+            ):
+                inner.run(result)
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(result.errors, [])
+            self.assertEqual(len(processes), 2)
+            self.assertEqual(len(callers), 2)
+            self.assertTrue(all(process.poll() is not None for process in processes))
+            self.assertTrue(all(not thread.is_alive() for thread in callers))
+        finally:
+            # If the fixture regresses, fail above before a safety drain, then
+            # reap only these captured children and callers to avoid a leak.
+            for _runner, actual_close in runners:
+                actual_close()
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=2)
+            for thread in callers:
+                thread.join(10)
 
 
 if __name__ == "__main__":
