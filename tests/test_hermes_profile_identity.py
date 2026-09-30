@@ -185,18 +185,21 @@ class ProfileIdentityServerTests(unittest.TestCase):
         after_discovery = discovery("New role")
         before = inspected()
         after = synced()
+        fixture_python = "/fixture/hermes/python"
         with patch.object(
             server, "hermes_profiles_payload", side_effect=[before_discovery, after_discovery]
         ), patch.object(
             server, "inspect_profile_identity", side_effect=[before, after]
-        ), patch.object(server, "apply_profile_identity", return_value=after) as apply:
+        ), patch.object(server, "apply_profile_identity", return_value=after) as apply, patch.object(
+            server, "hermes_python_path", return_value=fixture_python
+        ):
             payload, status = server.update_confirmed_hermes_profile_identity("builder", request)
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["identity"]["status"], "synced")
         apply.assert_called_once_with(
-            server.hermes_python_path(),
+            fixture_python,
             server.HERMES_HOME,
             "builder",
             "New role",
