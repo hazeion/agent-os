@@ -7495,8 +7495,12 @@ class RunRepository:
     def validate(self, *, private_archival_proposals: bool = False) -> tuple[int, int, int]:
         archival_ids = frozenset()
         if private_archival_proposals:
-            from project_worker_journal import archival_proposal_ids
-            archival_ids = archival_proposal_ids(self.connection)
+            from project_context import ProjectContextError
+            from project_worker_journal import WorkerJournalError, archival_proposal_ids
+            try:
+                archival_ids = archival_proposal_ids(self.connection)
+            except (ProjectContextError, WorkerJournalError) as exc:
+                raise RunRepositoryError("run_repository.corrupt") from exc
         self.authority_receipt(required=True)
         task_authority = self.connection.execute(
             "SELECT authority FROM mentat_task_store_state WHERE singleton = 1"
