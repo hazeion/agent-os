@@ -175,9 +175,16 @@ have clear independent reviews; hosted timing gains remain unverified.
    sealed inputs and isolated bounded writable roots. All 32 actual Linux tests
    pass, including native image-byte equality through a fake broker, detached
    Stop and post-exit export readback; both independent reviews are clear.
-   These component tests grant no live provider or Run authority. Next implement
-   the qualified host broker and complete immutable release/model qualification,
-   then exact Project execution admission and generated-output provenance.
+   These component tests grant no live provider or Run authority. The
+   [durable inference core](reviews/2026-09-30-project-inference-broker.md)
+   now derives exact accepted inputs, constructs a host-owned bounded request,
+   commits unknown before one synthetic response, and fences duplicates, faults,
+   Stop, invalid authority and changed policy/deadlines. The combined 78-test
+   Linux group includes the unchanged stock CLI and accepted image through the
+   durable journal; both independent reviews are clear. Its only backend is an
+   explicit fake responder. Next implement supported host credential custody,
+   immutable release/model qualification and durable scope admission, then
+   exact Project execution admission and generated-output provenance.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
