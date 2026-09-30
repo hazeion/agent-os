@@ -7510,13 +7510,18 @@ class RunRepository:
             changed.append(run_id)
         return tuple(changed)
 
-    def validate(self, *, private_archival_proposals: bool = False) -> tuple[int, int, int]:
+    def validate(self, *, private_archival_proposals: bool = False,
+                 private_qualification_proposals: bool = False) -> tuple[int, int, int]:
+        if (type(private_archival_proposals) is not bool or type(private_qualification_proposals) is not bool
+                or private_archival_proposals and private_qualification_proposals):
+            raise RunRepositoryError("run_repository.corrupt")
         archival_ids = frozenset()
-        if private_archival_proposals:
+        if private_archival_proposals or private_qualification_proposals:
             from project_context import ProjectContextError
-            from project_worker_journal import WorkerJournalError, archival_proposal_ids
+            from project_worker_journal import WorkerJournalError, archival_proposal_ids, qualification_proposal_ids
             try:
-                archival_ids = archival_proposal_ids(self.connection)
+                validator = qualification_proposal_ids if private_qualification_proposals else archival_proposal_ids
+                archival_ids = validator(self.connection)
             except (ProjectContextError, WorkerJournalError) as exc:
                 raise RunRepositoryError("run_repository.corrupt") from exc
         self.authority_receipt(required=True)

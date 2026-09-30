@@ -294,8 +294,10 @@ class ProjectInferenceBrokerTests(unittest.TestCase):
         host, worker = socket.socketpair()
         thread = None
         actual_broker = None
+        scope_receipt = None
         try:
-            scope.start_inert()
+            from tests.qualification_scope_support import start_recorded_scope, close_recorded_scope
+            scope_receipt = start_recorded_scope(self.root, self.run, fixtures.GENERATION, scope)
             actual_broker = broker.QualificationInferenceBroker(self.root, self.run, fixtures.GENERATION,
                                                                self.backend, scope)
             thread = threading.Thread(target=actual_broker.serve, args=(host,))
@@ -335,6 +337,8 @@ class ProjectInferenceBrokerTests(unittest.TestCase):
                 actual_broker.stop()
             if not scope._closed:
                 scope.close_verified()
+            if scope_receipt is not None:
+                close_recorded_scope(self.root, self.run, fixtures.GENERATION, scope, scope_receipt)
             for endpoint in (host, worker):
                 try:
                     endpoint.shutdown(socket.SHUT_RDWR)

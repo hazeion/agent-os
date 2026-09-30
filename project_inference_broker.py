@@ -78,7 +78,7 @@ class ProposalInputs:
 
 
 def _derive_inputs(root, connection, run_id, generation):
-    RunRepository(connection).validate(private_archival_proposals=True)
+    RunRepository(connection).validate(private_qualification_proposals=True)
     claim = journal._live_generation(connection, run_id, generation)
     receipt = connection.execute("SELECT context_id,input_id,manifest_digest,runtime_type FROM "
                                  "mentat_project_proposal_input_receipts WHERE run_id=?", (run_id,)).fetchone()
@@ -275,13 +275,15 @@ class QualificationInferenceBroker:
                 or not math.isfinite(self.deadline) or time.monotonic() >= self.deadline):
             _fail("fenced")
         self._check_limits()
-        # A retained graph is not a claimed canonical store. Use the existing
-        # strict private archival validator, including its authority receipt.
-        RunRepository(connection).validate(private_archival_proposals=True)
+        # Qualification consistency is separate from archival eligibility:
+        # an owned scope remains ineligible for private backup capture.
+        RunRepository(connection).validate(private_qualification_proposals=True)
         journal._live_generation(connection, self._run, self._generation)
-        if self._run not in journal.archival_proposal_ids(connection):
+        if self._run not in journal.qualification_proposal_ids(connection):
             _fail("synthetic")
         if type(self._scope) is SyntheticScope:
+            if connection.execute('SELECT 1 FROM mentat_project_worker_scopes WHERE run_id=?', (self._run,)).fetchone():
+                _fail("fenced")
             if not self._scope.alive:
                 _fail("fenced")
         else:
@@ -296,6 +298,17 @@ class QualificationInferenceBroker:
                         or state["ActiveState"] != "active"):
                     _fail("fenced")
                 _effective_limits(scope._descriptor, self._policy_limits)
+                row = connection.execute('SELECT * FROM mentat_project_worker_scopes WHERE run_id=?', (self._run,)).fetchone()
+                if row is None or row[1] != self._generation or row[10] != 'owned' or row[9] != 3:
+                    _fail("fenced")
+                from mentat.project_scope_evidence import witness_metadata
+                owned = witness_metadata(scope.journal_owned_identity(), 'owned')
+                if json.loads(row[11]) != owned:
+                    _fail("fenced")
+                frozen = getattr(self, '_scope_receipt', None)
+                if frozen is not None and frozen != tuple(row):
+                    _fail("fenced")
+                self._scope_receipt = tuple(row)
 
     def stop(self):
         """Fence new synthetic submissions; owned local Stop remains separate."""
