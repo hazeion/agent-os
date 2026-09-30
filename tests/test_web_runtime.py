@@ -280,7 +280,7 @@ class WebRuntimeTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             standalone = Path(temporary)
             (standalone / "server.js").write_text("// fixed test entry\n", encoding="utf-8")
-            with patch.object(web_runtime, "find_node_24", return_value="/fixed/node"), patch.object(
+            with patch.object(web_runtime, "mark_native_startup_phase", side_effect=lambda phase: events.append("phase:" + phase)), patch.object(web_runtime, "find_node_24", return_value="/fixed/node"), patch.object(
                 web_runtime, "require_node_24"
             ), patch.object(web_runtime, "gateway_port_is_available", return_value=True), patch.object(
                 web_runtime, "find_free_bridge_port", return_value=49152
@@ -322,6 +322,17 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertNotIn("required_process", readiness_calls[0])
         self.assertNotIn("required_process", readiness_calls[1])
         self.assertIs(readiness_calls[2]["required_process"], bridge)
+        for phase, action in (
+            ("authority", "reserve"), ("startup-cleanup", "owner_auth_cleanup"),
+            ("task-authority", "task_authority"), ("project-authority", "project_authority"),
+            ("run-authority", "run_authority"), ("private-bridge", "bridge"), ("node-launch", "node"),
+        ):
+            self.assertLess(events.index("phase:" + phase), events.index(action))
+        self.assertLess(events.index("/bridge/v1/health"), events.index("phase:private-bridge-ready"))
+        self.assertLess(events.index("/api/gateway/health"), events.index("phase:node-gateway-ready"))
+        self.assertLess(events.index("/api/bridge/health"), events.index("phase:node-bridge-ready"))
+        self.assertEqual(web_runtime.STARTUP_TIMEOUT_SECONDS, 15.0)
+        self.assertTrue(all("timeout" not in call for call in readiness_calls))
 
     def test_node_environment_excludes_bridge_runtime_settings_and_parent_secrets(self):
         with patch.dict(

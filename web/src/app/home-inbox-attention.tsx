@@ -1,10 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { type InboxPage } from "@/lib/owner-inbox-contract";
+import { type InboxItem, type InboxPage } from "@/lib/owner-inbox-contract";
 import { ownerInbox } from "@/lib/public-owner-inbox";
 
 const REFRESH_INTERVAL_MS = 30_000;
+function attentionLabel(item: InboxItem): string {
+  if (item.kind === "run_outcome") {
+    if (item.state === "checking") return "Run needs checking";
+    if (item.state === "failed" || item.state === "interrupted") return "Run ended · inspect in Inbox";
+    return "Run outcome · inspect in Inbox";
+  }
+  return item.state === "needs_review" ? "Review saved results" : item.state === "activation_required" ? "Project needs activation" : "Source changed · inspect in Inbox";
+}
 
 export function HomeInboxAttention() {
   const [page, setPage] = useState<InboxPage | null>(null);
@@ -58,7 +66,7 @@ export function HomeInboxAttention() {
     <div className="planning-attention-heading"><div><p className="console-kicker">Owner Inbox</p><h3>{state === "unavailable" && page ? "Last checked Inbox" : "Needs your review"}{page ? ` · ${page.counts.needs_me}` : ""}</h3></div><button aria-label="Refresh Inbox attention" disabled={refreshing} onClick={() => refreshRef.current()} type="button">Refresh</button></div>
     {refreshing && page ? <span className="home-inbox-refreshing">Checking…</span> : null}
     <p aria-live="polite">{state === "loading" ? "Checking Inbox…" : state === "unavailable" ? page ? "Inbox could not refresh. Last checked items are shown." : "Inbox attention is temporarily unavailable." : state === "empty" ? "No Inbox review items right now." : ""}</p>
-    {(state === "ready" || state === "unavailable") && page ? <ul>{items.map((item) => <li key={item.id}><a href={`/inbox?item=${encodeURIComponent(item.id)}`}><strong>{item.title}</strong><span>{item.state === "needs_review" ? "Review saved results" : item.state === "activation_required" ? "Project needs activation" : "Source changed · inspect in Inbox"}</span></a></li>)}</ul> : null}
+    {(state === "ready" || state === "unavailable") && page ? <ul>{items.map((item) => <li key={item.id}><a href={`/inbox?item=${encodeURIComponent(item.id)}`}><strong>{item.title}</strong><span>{attentionLabel(item)}</span></a></li>)}</ul> : null}
     <a className="planning-view-all" href="/inbox">Open Inbox</a>
   </section>;
 }

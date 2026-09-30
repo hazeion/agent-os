@@ -216,3 +216,26 @@ source/item lookups needed indexes at the 10,000-Run bound. Those gaps were
 fixed and both reviewers found no remaining blocker on re-review. Tests cover
 capacity backpressure and pruning, maximum-length IDs, schema-35 upgrade,
 Run retention, Project deletion, backup/restore, and legacy empty-store checks.
+
+## Unified Inbox review record
+
+The next slice merges Project reviews and Run notices in one guarded page,
+count, cursor and exact item action boundary. The website shows Run evidence
+without Project-review controls or adapter actions. Two independent read-only
+reviews found a generic Runs link that could select the wrong attempt,
+acknowledgment and lost-dismissal wording races, indistinguishable matching
+Runs, and Python/Node differences in Unicode-title and timestamp limits.
+The link was removed, every Run item now shows its full opaque notice
+reference and seconds, follow-up reads verify the action revision, and Python
+normalizes bounded work titles and UTC timestamps before the Node contract.
+Retired notices say when the original work title is no longer available.
+Both reviewers found no remaining blocker after the fixes. Exact source
+navigation remains deferred until a destination can recheck the private Run
+incarnation; the Inbox deep link itself remains exact and usable.
+The final contract audit also aligned Unicode-category-C rejection and
+UTF-8 title limits on both sides of the bridge, normalized every safe Run
+timestamp to UTC RFC3339, and kept the underlying failure visible after a
+notice is resolved. A disposable built-browser test exercised Home to Inbox,
+acknowledgment and dismissal at 1280-pixel desktop and 390-pixel mobile widths
+without using the owner's running server. The full website suite passed 489
+tests, and 48 focused Python Inbox/Run tests passed.
