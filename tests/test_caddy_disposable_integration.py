@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import io
 import os
 import tempfile
 import unittest
@@ -10,6 +11,8 @@ from unittest.mock import Mock, patch
 from deploy.caddy.disposable_integration import (
     DisposableIntegrationError,
     _caddyfile_path,
+    _SseClient,
+    _expect_sse_drain,
     _free_port,
     _start_backend,
     _stop_backend,
@@ -21,6 +24,81 @@ from deploy.caddy.disposable_integration import (
 
 
 class DisposableCaddyIntegrationTests(unittest.TestCase):
+    def sse_client(self, body):
+        return _SseClient(Mock(), io.BytesIO(body))
+
+    def test_drain_consumes_only_exact_queued_keepalives_before_close_and_eof(self):
+        body = b': keepalive\n\n' * 5 + b'event: close\ndata: {"reason":"drain"}\n\n'
+        client = self.sse_client(body)
+        with patch("deploy.caddy.disposable_integration.time.monotonic", return_value=10):
+            _expect_sse_drain(client, 45)
+        self.assertEqual(client.response.tell(), len(body))
+        self.assertTrue(all(call.args[0] <= 3 for call in client.connection.settimeout.call_args_list))
+
+    def test_drain_rejects_early_eof_unknown_blocks_and_malformed_close(self):
+        for body in (
+            b"", b": keepalive\n\n", b": other\n\n",
+            b'event: refresh\ndata: {}\n\n',
+            b'event: close\ndata: {"reason":"expiry"}\n\n',
+            b'event: close\ndata: {"reason":"drain"}\n',
+        ):
+            with self.subTest(body=body), patch(
+                "deploy.caddy.disposable_integration.time.monotonic", return_value=10
+            ), self.assertRaisesRegex(DisposableIntegrationError, "drain closure"):
+                _expect_sse_drain(self.sse_client(body), 45)
+
+    def test_drain_requires_eof_immediately_after_exact_close(self):
+        close = b'event: close\ndata: {"reason":"drain"}\n\n'
+        for trailing in (b": keepalive\n\n", close, b"incomplete"):
+            with self.subTest(trailing=trailing), patch(
+                "deploy.caddy.disposable_integration.time.monotonic", return_value=10
+            ), self.assertRaisesRegex(DisposableIntegrationError, "did not close exactly"):
+                _expect_sse_drain(self.sse_client(close + trailing), 45)
+
+    def test_drain_keepalives_cannot_extend_the_absolute_deadline(self):
+        clock = [10.0]
+        client = self.sse_client(b": keepalive\n\n" * 100)
+        original_read = client.response.read
+
+        def trickle(size):
+            clock[0] += 0.01
+            return original_read(size)
+
+        with patch("deploy.caddy.disposable_integration.time.monotonic", side_effect=lambda: clock[0]), patch.object(
+            client.response, "read", side_effect=trickle
+        ), self.assertRaisesRegex(DisposableIntegrationError, "deadline"):
+            _expect_sse_drain(client, 10.5)
+        self.assertLess(client.response.tell(), 100)
+        self.assertLessEqual(clock[0], 10.51)
+
+    def test_sse_trickling_line_and_late_eof_share_one_bounded_read_budget(self):
+        for body in (b"not a completed line" * 100, b""):
+            with self.subTest(body=body):
+                clock = [10.0]
+                client = self.sse_client(body)
+                original_read = client.response.read
+
+                def trickle(size):
+                    clock[0] += 0.2
+                    return original_read(size)
+
+                with patch("deploy.caddy.disposable_integration.time.monotonic", side_effect=lambda: clock[0]), patch.object(
+                    client.response, "read", side_effect=trickle
+                ), self.assertRaisesRegex(DisposableIntegrationError, "deadline"):
+                    client.read_block(deadline_at=10.5 if body else 10.1)
+                timeouts = [call.args[0] for call in client.connection.settimeout.call_args_list]
+                self.assertEqual(timeouts, sorted(timeouts, reverse=True))
+                self.assertLessEqual(timeouts[0], 0.5)
+
+    def test_expired_drain_budget_does_not_read(self):
+        client = self.sse_client(b": keepalive\n\n")
+        with patch("deploy.caddy.disposable_integration.time.monotonic", return_value=45), patch.object(
+            client.response, "read"
+        ) as read, self.assertRaisesRegex(DisposableIntegrationError, "deadline"):
+            _expect_sse_drain(client, 45)
+        read.assert_not_called()
+        client.connection.settimeout.assert_not_called()
+
     def test_non_stream_capture_responses_close_before_backend_shutdown(self):
         backend = _start_backend(_free_port())
         try:
