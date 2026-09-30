@@ -1,12 +1,3 @@
-# Compatible correctness carry to PR #304
-
-Exact publication base: `4fe6626d39c3ed8e63eac5ecb6b4fc1785e8bc35`.
-Only the reviewed schema-43 gate, archival refusal translations, their four
-regressions and this record are carried. Runtime origin/library/image/broker
-modules, authority, provider defaults, lockfile and workflow remain unchanged.
-The original PR #302 validation below is historical; per-PR compatibility
-validation and two independent reviews are required before publishing.
-
 # Schema-43 exact migration gate and archival refusal
 
 Base: PR #302, `d92ef35125940e09401931d952deadd44e9995d1`.
