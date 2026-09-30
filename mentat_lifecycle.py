@@ -107,6 +107,7 @@ def posix_listeners() -> list[Listener]:
         ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
         ["ss", "-ltnp"],
     ]
+    listeners: dict[tuple[int, int, str], Listener] = {}
     for command in commands:
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
@@ -115,9 +116,17 @@ def posix_listeners() -> list[Listener]:
         if result.returncode != 0 and not result.stdout:
             continue
         if command[0] == "lsof":
-            return parse_lsof_listeners(result.stdout)
-        return parse_ss_listeners(result.stdout)
-    return []
+            discovered = parse_lsof_listeners(result.stdout)
+        else:
+            discovered = parse_ss_listeners(result.stdout)
+        # A successful tool can still omit processes in constrained POSIX/WSL
+        # environments. Combine observations; ownership verification stays in
+        # identify_listener and the existing cleanup guards.
+        for listener in discovered:
+            key = (listener.pid, listener.port,
+                   normalized_listener_host(listener.local_address, listener.port))
+            listeners.setdefault(key, listener)
+    return list(listeners.values())
 
 
 def parse_ss_listeners(output: str) -> list[Listener]:
@@ -493,17 +502,17 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     probe_cache: dict[tuple[str, int], bool] = {}
     command_cache: dict[int, str] = {}
 
-    # Some constrained POSIX environments expose listening sockets without
-    # their owning PID. Recover only the exact recorded Node gateway: either
+    # Some constrained POSIX environments omit recorded Node listeners. Use
+    # the same recorded-generation checks when another tool finds them: either
     # its fixed command path or its exact live Linux working directory and
     # recorded process-start identity must agree with Mentat's live gateway
     # marker before a signal is allowed.
-    recorded_gateway_without_listener = (
+    recorded_gateway_requires_reconciliation = (
         state_pid is not None
         and state_gateway_path is not None
-        and not listeners
+        and (not listeners or IS_LINUX or "process_start_ticks" in state)
     )
-    if recorded_gateway_without_listener and state_start_ticks_invalid:
+    if recorded_gateway_requires_reconciliation and state_start_ticks_invalid:
         blocked = True
         actions.append(
             {
@@ -513,7 +522,7 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                 "reasons": ["matches_runtime_state", "invalid_process_identity"],
             }
         )
-    elif recorded_gateway_without_listener:
+    elif recorded_gateway_requires_reconciliation:
         probe_host = normalized_listener_host(config.host, config.port)
         if probe_host == "localhost":
             probe_host = "127.0.0.1"
@@ -591,7 +600,9 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                     killed_pids.add(state_pid)
                 else:
                     blocked = True
-            elif ownership_matches or gateway_matches:
+            elif ownership_matches or gateway_matches or any(
+                listener.pid == state_pid for listener in listeners
+            ):
                 blocked = True
                 actions.append(
                     {
@@ -603,6 +614,10 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                 )
 
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
+        if recorded_gateway_requires_reconciliation and listener.pid == state_pid:
+            # Never let an additional inventory source bypass the recorded
+            # generation checks or turn a failed pidfd stop into raw-PID retry.
+            continue
         is_mentat, reasons, _commandline = identify_listener(
             listener, state_pid, probe_cache, command_cache, state_gateway_path
         )
