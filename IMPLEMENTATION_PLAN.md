@@ -32,8 +32,8 @@ The older foundation is merged through [PR #231](https://github.com/hazeion/agen
 and [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow remains a stack of full, open PRs starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243), most recently
-[PR #318](https://github.com/hazeion/agent-os/pull/318), with the subsequent
-private [scoped synthetic broker qualification](reviews/2026-09-30-scoped-broker-qualification.md).
+[PR #319](https://github.com/hazeion/agent-os/pull/319), with the subsequent
+private [prelaunch output reservations](reviews/2026-09-30-proposal-output-reservations.md).
 Open PRs, passing local
 checks and clean mergeability are not merged-product or issue-close evidence.
 Hosted CI, normal review and integrated acceptance remain gates. No blanket
@@ -91,6 +91,7 @@ residual QA based on a fixture or an unmerged change alone.
    [private restart scope readback](reviews/2026-09-30-project-scope-readback.md),
    [synthetic inference broker](reviews/2026-09-30-project-inference-broker.md),
    [scoped synthetic broker qualification](reviews/2026-09-30-scoped-broker-qualification.md),
+   [prelaunch output reservations](reviews/2026-09-30-proposal-output-reservations.md),
    [immutable image](reviews/2026-09-30-project-runtime-image.md),
    [sealed libraries](reviews/2026-09-30-project-runtime-libraries.md),
    [public artifact origin](reviews/2026-09-30-project-runtime-origin.md),
@@ -104,6 +105,9 @@ residual QA based on a fixture or an unmerged change alone.
    Qualification now requires a committed prelaunch scope receipt and the
    exact original owned scope witness; active receipts remain ineligible for
    archival backup. This synthetic consistency gate grants no production Run.
+   New scope/call bookkeeping now requires an immutable output hold charged
+   across shared retained writers. It reserves storage capacity and future
+   bounded receipt representation, not producing-Run or output authority.
    Implement reviewed atomic admission with shared
    cross-source capacity, exact inputs and durable scope/work receipts; then
    registered proposal output and owner Apply. The existing Task/Console gate
