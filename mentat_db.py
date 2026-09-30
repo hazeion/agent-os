@@ -3373,7 +3373,7 @@ def migrate(
             int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
             if version == 41 else None
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3521,6 +3521,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 40 cannot be safely upgraded")
                 if version == 42 and schema_signature_state(connection, 41) != "expected":
                     raise MentatDatabaseError("Mentat schema 41 cannot be safely upgraded")
+                if version == 43 and schema_signature_state(connection, 42) != "expected":
+                    raise MentatDatabaseError("Mentat schema 42 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)

@@ -390,6 +390,87 @@ class ProjectWorkerJournalTests(unittest.TestCase):
                                        "VALUES('run_closed','project_proposal','hermes','[]','reserved','reserved',?,?)",
                                        (receipts.CREATED, receipts.CREATED))
 
+    def test_schema42_drift_refuses_journal_migration_without_ddl_or_receipt(self):
+        for tamper in ("ALTER TABLE mentat_runs ADD COLUMN injected_drift TEXT",
+                       "DROP TRIGGER mentat_project_proposal_input_receipt_immutable"):
+            with self.subTest(tamper=tamper), TemporaryDirectory() as temporary:
+                path = Path(temporary) / "mentat.sqlite3"
+                private_console_unit._initialize_database(path, schema_version=42)
+                with closing(sqlite3.connect(path)) as connection:
+                    connection.execute(tamper)
+                    connection.commit()
+                    before = list(connection.iterdump())
+                    self.assertEqual(mentat_db.schema_signature_state(connection, 42), "invalid")
+                    with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 42 cannot be safely upgraded"):
+                        mentat_db.migrate(connection)
+                    self.assertEqual(list(connection.iterdump()), before)
+                    self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 42)
+                    self.assertIsNone(connection.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_calls'").fetchone())
+                    self.assertFalse(connection.in_transaction)
+
+    def test_schema43_ddl_failure_rolls_back_exact_schema42_and_receipt(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mentat.sqlite3"
+            private_console_unit._initialize_database(path, schema_version=42)
+            with closing(sqlite3.connect(path)) as connection:
+                before = list(connection.iterdump())
+                execute = mentat_db._execute_script_in_active_transaction
+                def execute_then_fail(active, script):
+                    execute(active, script)
+                    if script == dict(mentat_db.MIGRATIONS)[43]:
+                        self.assertTrue(active.in_transaction)
+                        self.assertIsNotNone(active.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_calls'").fetchone())
+                        raise RuntimeError("after journal DDL fixture")
+                with patch.object(mentat_db, "_execute_script_in_active_transaction", side_effect=execute_then_fail):
+                    with self.assertRaisesRegex(RuntimeError, "after journal DDL fixture"):
+                        mentat_db.migrate(connection)
+                self.assertEqual(list(connection.iterdump()), before)
+                self.assertEqual(mentat_db.schema_signature_state(connection, 42), "expected")
+                self.assertFalse(connection.in_transaction)
+                mentat_db.migrate(connection)
+                self.assertEqual(mentat_db.schema_signature_state(connection, 43), "expected")
+
+    def test_real_leased_journal_refuses_archive_without_modifying_source(self):
+        run_id = self._prepare()
+        with closing(mentat_db.connect(self.root)) as connection:
+            connection.execute("UPDATE mentat_runs SET reconcile_lease_owner='owned-fixture',reconcile_lease_until=? WHERE id=?",
+                               (time.time() + 60, run_id))
+            connection.commit()
+            before = list(connection.iterdump())
+            with self.assertRaisesRegex(RunRepositoryError, "run_repository.corrupt") as raised:
+                RunRepository(connection).validate(private_archival_proposals=True)
+            self.assertIsInstance(raised.exception.__cause__, journal.WorkerJournalError)
+            self.assertEqual(list(connection.iterdump()), before)
+        snapshot = {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        with self.assertRaises(private_console_unit.PrivateConsoleUnitError):
+            private_console_unit.capture_private_console_unit(self.root, harden_source=False, copy_sqlite_source=True)
+        self.assertEqual({path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}, snapshot)
+
+    def test_archival_domain_errors_translate_only_at_owning_validation_boundaries(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mentat.sqlite3"
+            private_console_unit._initialize_database(path)
+            for error in (project_context.ProjectContextError("context fixture"), journal.WorkerJournalError("journal fixture")):
+                with self.subTest(error=type(error).__name__), patch.object(journal, "archival_proposal_ids", side_effect=error):
+                    with closing(sqlite3.connect(path)) as connection:
+                        connection.row_factory = sqlite3.Row
+                        with self.assertRaisesRegex(RunRepositoryError, "run_repository.corrupt") as raised:
+                            RunRepository(connection).validate(private_archival_proposals=True)
+                        self.assertIs(raised.exception.__cause__, error)
+                    for validate in (private_console_unit._validate_and_filter_database, private_console_unit._inspect_filtered_database):
+                        with self.assertRaisesRegex(private_console_unit.PrivateConsoleUnitError, "private_run_attention_invalid") as raised:
+                            validate(path, ())
+                        self.assertIs(raised.exception.__cause__, error)
+            # Unexpected programming errors must remain visible: no generic
+            # exception translation and no partial-success fallback.
+            with patch.object(journal, "archival_proposal_ids", side_effect=RuntimeError("unexpected fixture")):
+                with closing(sqlite3.connect(path)) as connection:
+                    with self.assertRaisesRegex(RuntimeError, "unexpected fixture"):
+                        RunRepository(connection).validate(private_archival_proposals=True)
+                for validate in (private_console_unit._validate_and_filter_database, private_console_unit._inspect_filtered_database):
+                    with self.assertRaisesRegex(RuntimeError, "unexpected fixture"):
+                        validate(path, ())
+
     def test_policy_and_transaction_are_not_caller_chosen_work_or_implicit_authority(self):
         with self.assertRaises(journal.WorkerJournalError):
             journal.normalize_policy({**POLICY, "inference_calls": 2})
