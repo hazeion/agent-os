@@ -40,8 +40,7 @@ reports 103 compatible packages. Credential-free real-runtime probes confirm
 inventory/skill/model-writer signatures and Mentat's exact revised writer
 selection. A disposable home successfully exercises Mentat's fixed local
 control startup, session creation and owned-process shutdown with zero model
-submissions. The existing private profile state and selected CLI remain intact
-pending the backup/lifecycle activation step.
+submissions. These staged probes preceded the backup/lifecycle activation step.
 
 All 32 focused provider-switch/profile/runtime-switch tests pass. Independent
 review found a fallback ambiguity; the owner's no-fallback preference removes
@@ -49,3 +48,26 @@ that selection path entirely. Same-name/broken-package regressions remain to
 prove unsupported implementations never call an old writer. Final no-fallback
 code received both independent re-reviews with no remaining findings. The final
 stock-only import also passed the real credential-free official-release probe.
+
+Host activation completed after two independent operator-script reviews,
+validated owner-private backups, and exact live authority/quiescence checks.
+The selected CLI, fixed canonical Python discovery, and supported gateway
+service now resolve to the pinned official release. Gateway health verifies
+its live PID, zero active agents, and a loopback API listener. No automatic
+fork fallback exists. The previous checkout remains available for deliberate
+operator recovery.
+
+Official CLI startup upgraded a stock default soul template and relocated
+older configuration backups; hash checks verified the relocated copies.
+The original backup remains retained, and a fresh backup validated the resulting
+state before activation. The readiness audit uses the precise gateway snapshot,
+because the textual CLI status command itself updates logs and skill metadata.
+
+The host received only the reviewed two-file compatibility backport; 33 focused
+provider/profile/creator regressions passed there. With the required Node runtime
+installed, the local Next.js dashboard returns HTTP 200 and its dashboard/bridge
+listeners remain loopback-only. The host's legacy lifecycle status report still
+omits the verified live listener and needs separate diagnosis; HTTP/socket
+readback, rather than that report, establishes this acceptance evidence.
+This does not establish live model execution, authenticated off-network Mentat
+access, or qualified Project-worker admission.
