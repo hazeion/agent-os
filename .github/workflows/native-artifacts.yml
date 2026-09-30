@@ -87,6 +87,7 @@ jobs:
           }
 
       - name: Build unsigned native test installer
+        id: native_build
         run: python scripts/build_native.py
 
       - name: Verify macOS artifact shape
@@ -254,9 +255,16 @@ jobs:
           if (Test-Path 'dist/Mentat/_internal/data/private') { throw 'Private data entered artifact' }
           if (Test-Path 'dist/Mentat/_internal/data/runtime') { throw 'Runtime data entered artifact' }
 
+      - name: Archive public Windows bundle before smoke
+        id: windows_bundle
+        if: runner.os == 'Windows'
+        run: python scripts/archive_native_windows.py
+
       - name: Smoke install, run, and uninstall on Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          MENTAT_CI_NATIVE_STARTUP_DIAGNOSTICS: "1"
         run: |
           $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
           $installDir = Join-Path $env:RUNNER_TEMP 'MentatApp'
@@ -280,6 +288,7 @@ jobs:
           if (Test-Path "$installDir/stale-from-baseline.txt") { throw 'Upgrade retained stale application files' }
           $launcherStdout = Join-Path $env:RUNNER_TEMP 'mentat-native-upgrade.stdout.log'
           $launcherStderr = Join-Path $env:RUNNER_TEMP 'mentat-native-upgrade.stderr.log'
+          Write-Host "Mentat CI native launcher start utc=$([DateTimeOffset]::UtcNow.ToString('O'))"
           $upgradedLauncher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8896') -PassThru -RedirectStandardOutput $launcherStdout -RedirectStandardError $launcherStderr
           $upgradedHealthy = $false
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -334,6 +343,15 @@ jobs:
           path: |
             dist/*.pkg
             dist/installer/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retain validated Windows bundle after smoke
+        if: ${{ always() && runner.os == 'Windows' && steps.native_build.outcome == 'success' && steps.windows_bundle.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-windows-x64-public-bundle
+          path: dist/mentat-windows-x64-bundle.zip
           if-no-files-found: error
           retention-days: 7
 
