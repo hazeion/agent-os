@@ -34,6 +34,17 @@ or prompt cannot alone qualify the Agent loop and its descendants.
 
 ## Required supported operation
 
+The owner approved the [unchanged-stock controller route](2026-09-29-official-hermes-project-controller.md)
+on September 29. For that route, Mentat owns the fixed versioned worker
+admission transaction and isolated execution scope; Hermes need not itself
+atomically admit the prepared worker. Supported Hermes Kanban mutations retain
+the delegation ledger in a separate fixed root and must reconcile before Task
+execution. The exact inputs, policy, bounded work, shared capacity, broker,
+Stop, provenance and recovery requirements below remain mandatory. This
+amendment authorizes implementation and qualification, not dispatch before
+those gates pass. The following Hermes-owned operation describes the alternative
+upstream admission route, rather than a blocker on the approved controller.
+
 Preserve Hermes Kanban as the durable backend. Before Mentat may approve or
 admit Project execution, Hermes must expose one fixed, versioned operation
 that accepts an exact owner-authorized worker request. Mentat's browser and
@@ -188,5 +199,5 @@ as absent. Their current scope does not alone qualify the exact Project worker
 contract above. [Stock compatibility and backed-up activation](2026-09-29-official-hermes-compatibility.md)
 are now verified. The [reviewed controller proposal](2026-09-29-official-hermes-project-controller.md)
 maps the supported seams to an unchanged official runtime and identifies the
-specific execution-ownership amendment requiring an owner decision. This
+specific execution-ownership amendment explicitly approved by the owner. This
 prerequisite remains the safety floor; no production Project dispatch is enabled.

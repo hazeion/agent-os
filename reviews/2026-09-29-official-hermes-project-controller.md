@@ -1,6 +1,6 @@
 # Official Hermes Project execution: proposed controller amendment
 
-Status: **design for owner decision, not execution authority**. This assesses the installed, unchanged official Hermes `v2026.9.24` / `0.21.5` checkout at commit `f97608f178d1ffeca59860195ab7da295f7c8e5f`. No model call, upstream edit, Hermes configuration edit, Kanban mutation, or private-data read was made for this assessment. The current [worker admission contract](2026-09-29-project-worker-admission.md), [architecture](../ARCHITECTURE.md), [implementation plan](../IMPLEMENTATION_PLAN.md), and issues [#239](https://github.com/hazeion/agent-os/issues/239) and [#262](https://github.com/hazeion/agent-os/issues/262) remain the safety floor.
+Status: **owner-approved implementation direction; production execution requires qualification**. This assesses the installed, unchanged official Hermes `v2026.9.24` / `0.21.5` checkout at commit `f97608f178d1ffeca59860195ab7da295f7c8e5f`. No model call, upstream edit, Hermes configuration edit, Kanban mutation, or private-data read was made for this assessment. The current [worker admission contract](2026-09-29-project-worker-admission.md), [architecture](../ARCHITECTURE.md), [implementation plan](../IMPLEMENTATION_PLAN.md), and issues [#239](https://github.com/hazeion/agent-os/issues/239) and [#262](https://github.com/hazeion/agent-os/issues/262) remain the safety floor.
 
 ## Decision
 
@@ -56,7 +56,7 @@ Before advertising `project_proposal` or approved Task execution, test the exact
 
 Qualification must include cross-source races: two Projects reserving the same lead Agent, proposal versus active Console, Task versus proposal, checkpoint release versus Stop, and retry after revocation or restore. Prove the unqualified ceiling of one and only widen it after exact binding-specific capacity evidence.
 
-## Scope decision the owner should make
+## Decision presented to the owner
 
 Approve or reject **Mentat-owned isolated Project worker execution around unchanged official Hermes, with Hermes Kanban as the durable delegation ledger rather than the worker dispatcher for Mentat-scoped cards**. This is the only architectural authority change proposed here. It preserves manual assignment and all exact owner approval, safety and review boundaries. If the owner wants Hermes itself to atomically own Project worker admission/claims, a new upstream supported operation is needed; none of Run API idempotency, Subagent Lifecycle, plugin middleware, `ctx.llm`, or ordinary Kanban create/dispatch provides that contract in stock 0.21.5. Selecting the controller route authorizes implementation and qualification work, **not** production Agent dispatch before those tests pass.
 
@@ -65,6 +65,6 @@ Approve or reject **Mentat-owned isolated Project worker execution around unchan
 Two independent source/contract reviews found control-root isolation,
 credential custody, supported bootstrap, backup/restore fencing and shared
 cross-source capacity gaps. All were corrected; both final re-reviews are clear.
-The controller amendment awaits the owner decision. No model invocation,
+On September 29 the owner explicitly selected Build the Mentat controller. This approves the isolated controller implementation and qualification direction; it grants no production dispatch before qualification. No model invocation,
 runtime dispatch, Hermes storage mutation or execution-guard change forms part
 of this design slice.

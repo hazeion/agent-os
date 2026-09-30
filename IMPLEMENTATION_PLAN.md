@@ -157,8 +157,10 @@ have clear independent reviews; hosted timing gains remain unverified.
    separate acceptance work.
    A [reviewed stock-Hermes controller proposal](reviews/2026-09-29-official-hermes-project-controller.md)
    offers isolated Mentat-owned execution with a separate fixed Hermes Kanban
-   delegation ledger. The specific dispatcher-ownership amendment awaits an
-   owner decision; existing Project dispatch guards remain in force.
+   delegation ledger. The owner approved that dispatcher-ownership amendment
+   on September 29. Implement and qualify the fixed worker scope and broker
+   transport first; existing Project dispatch guards remain in force until
+   complete admission, provenance and host qualification pass.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
