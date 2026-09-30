@@ -301,8 +301,30 @@ class ProjectInferenceBrokerTests(unittest.TestCase):
             thread = threading.Thread(target=actual_broker.serve, args=(host,))
             thread.start()
             handle = scope.handoff_namespace(prepared, worker)
+            from copy import copy
+            with self.assertRaises(scopes.WorkerScopeError): copy(handle).wait()
             result = handle.wait()
             self.assertEqual(result["text"], "PROBE_OK")
+            with self.assertRaises(scopes.WorkerScopeError):
+                handle.completion_witness()
+            result['text'] = 'caller-edited text is not the native result'
+            scope.close_verified()
+            from mentat.project_namespace_evidence import completion_metadata
+            cloned_handle = copy(handle)
+            cloned_handle._verified_result = ('cloned issuer text', 1)
+            with self.assertRaises(scopes.WorkerScopeError): cloned_handle.completion_witness()
+            witness = handle.completion_witness()
+            private = completion_metadata(witness)
+            self.assertEqual(private['result']['text'], 'PROBE_OK')
+            self.assertEqual(private['query_digest'], hashlib.sha256(self.inputs.query).hexdigest())
+            self.assertEqual(private['image_digest'], self.inputs.image_digest)
+            self.assertIsNone(private['runtime_image_digest'])
+            self.assertFalse(private['sealed_libraries'])
+            private['result']['text'] = 'changed metadata copy'
+            self.assertEqual(completion_metadata(witness)['result']['text'], 'PROBE_OK')
+            self.assertIs(handle.completion_witness(), witness)
+            with self.assertRaises(scopes.WorkerScopeError): copy(handle).completion_witness()
+            with self.assertRaises(ValueError): completion_metadata(copy(witness))
             self.assertEqual(self.backend.calls, 1)
             content = self.backend.requests[0]["messages"][1]["content"]
             self.assertEqual(content[0]["text"], self.inputs.query.decode())
@@ -311,7 +333,8 @@ class ProjectInferenceBrokerTests(unittest.TestCase):
         finally:
             if actual_broker is not None:
                 actual_broker.stop()
-            scope.close_verified()
+            if not scope._closed:
+                scope.close_verified()
             for endpoint in (host, worker):
                 try:
                     endpoint.shutdown(socket.SHUT_RDWR)
