@@ -205,6 +205,14 @@ have clear independent reviews; hosted timing gains remain unverified.
    It excludes local generated metadata and modified Python sysconfig bytes.
    This is selected artifact-origin evidence only; complete loader behavior,
    system/helper provenance and provider/model readiness remain separate.
+   The [provider compatibility audit](reviews/2026-09-30-project-provider-compatibility.md)
+   verifies that the stock Codex OAuth route omits the current output-token
+   limit and retains an outer retry; read-only credential resolution also does
+   not prove exact profile scope or zero auth-store writes. It is not a
+   qualified replacement for the synthetic broker. A documented public OAuth
+   route and a supported API-key profile are candidates pending owner choice
+   and exact qualification, not readiness claims. Do not weaken the policy or
+   change credentials automatically.
    Next implement supported host credential custody, complete runtime/model
    qualification and durable scope admission, then
    exact Project execution admission and generated-output provenance.
