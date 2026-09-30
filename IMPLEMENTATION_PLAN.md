@@ -182,8 +182,15 @@ have clear independent reviews; hosted timing gains remain unverified.
    Stop, invalid authority and changed policy/deadlines. The combined 78-test
    Linux group includes the unchanged stock CLI and accepted image through the
    durable journal; both independent reviews are clear. Its only backend is an
-   explicit fake responder. Next implement supported host credential custody,
-   immutable release/model qualification and durable scope admission, then
+   explicit fake responder. The [runtime-image lease](reviews/2026-09-30-project-runtime-image.md)
+   now makes selected source/venv/Python bytes kernel-immutable, with bounded
+   FUSE probes, worker-held references and exact owned cleanup. All 15 final
+   Linux image tests pass, including unchanged official Hermes from the sealed
+   public candidate through canonical image inputs and the durable fake broker.
+   This proves byte/lifecycle containment only; installed dependency origin,
+   system-library closure and helper/model qualification remain unproved.
+   Next implement supported host credential custody, complete runtime/model
+   qualification and durable scope admission, then
    exact Project execution admission and generated-output provenance.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
