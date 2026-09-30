@@ -1264,6 +1264,24 @@ invariants reject noncanonical double-slash aliases before prefix comparison.
 This evidence covers the exercised operation only and grants no live-provider
 or production Run readiness.
 
+An offline Linux public-origin utility builds a fresh disposable candidate from
+reviewed SHA-256/size-pinned official Hermes source, Astral standalone Python
+and 111 public wheels. It validates all 106 declared upstream wheel tuples
+against the exact extracted uv.lock, with five separately hard-pinned public
+supplements and exact wheel metadata. It reads no installed Hermes home or
+venv, downloads nothing and executes no archive contents. Regular payloads are
+staged through no-follow descriptors before in-tree archive links; fixed
+configuration, interpreter aliases and a CLI wrapper use private virtual roots.
+Every tar member, including ignored public headers/cache, consumes the expanded
+budget. Failed or existing stages cannot become successful candidate evidence.
+
+The exercised fresh candidate retains public Python sysconfig bytes instead of
+the locally modified installed file. The pinned source/wheel/Python relation is
+origin evidence for selected bytes, not package safety, full loader behavior,
+system-helper provenance, provider/model readiness or Run admission. The
+utility's report explicitly retains production_qualified=false. Existing
+Project execution and proposal-source guards remain in force.
+
 Schema 43 stores immutable Project proposal controller generations and one
 durable inference-call reservation per generation in the private database.
 The generation binds the exact schema-42 Run/input/binding graph, fixed policy,
