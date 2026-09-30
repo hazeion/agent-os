@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from requests.structures import CaseInsensitiveDict
 
@@ -232,6 +232,61 @@ class GoogleTransportTests(unittest.TestCase):
             self.assertIsNotNone(processes[0].poll())
         finally:
             self.assertTrue(runner.close())
+
+    def test_full_worker_budget_accepts_repeated_coarse_monotonic_tick(self):
+        processes = []
+
+        def spawn(*args, **kwargs):
+            process = subprocess.Popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        runner = transport.GoogleWorkerRunner(_spawn=spawn)
+        tick = 246.004
+        self.assertGreater((tick + worker.WORK_SECONDS) - tick, worker.WORK_SECONDS)
+        try:
+            with patch.object(transport.time, "monotonic", return_value=tick):
+                self.assertEqual(
+                    runner({"operation": "never-network"}, tick + worker.WORK_SECONDS),
+                    {"ok": False, "error": "unavailable"},
+                )
+            self.assertEqual(len(processes), 1)
+            self.assertIsNotNone(processes[0].poll())
+        finally:
+            self.assertTrue(runner.close())
+
+    def test_worker_deadline_rejects_actual_excess_expiry_and_nonfinite_values(self):
+        spawn = Mock()
+        runner = transport.GoogleWorkerRunner(_spawn=spawn)
+        try:
+            with patch.object(transport.time, "monotonic", return_value=246.004):
+                for deadline in (256.005, 246.004, 245.0, float("inf"), float("nan")):
+                    with self.subTest(deadline=deadline), self.assertRaisesRegex(
+                        transport.GoogleOidcTransportError, "^invalid$"
+                    ):
+                        runner({"operation": "never-network"}, deadline)
+            spawn.assert_not_called()
+        finally:
+            self.assertTrue(runner.close())
+
+    def test_worker_wait_never_exceeds_the_hard_work_ceiling(self):
+        process = Mock(returncode=0)
+        process.communicate.return_value = (b'{"ok":false,"error":"unavailable"}', None)
+        owned = Mock()
+        owned.stop.return_value = True
+        with (
+            patch.object(transport.time, "monotonic", return_value=246.004),
+            patch.object(transport, "_CAPACITY"),
+            patch.object(transport, "_OwnedWorker", return_value=owned),
+            patch.object(transport, "_attach_windows_kill_job", return_value=None),
+        ):
+            runner = transport.GoogleWorkerRunner(_spawn=Mock(return_value=process))
+            try:
+                runner({"operation": "never-network"}, 246.004 + worker.WORK_SECONDS)
+                self.assertEqual(process.communicate.call_args.kwargs["timeout"], worker.WORK_SECONDS)
+                owned.stop.assert_called_once()
+            finally:
+                self.assertTrue(runner.close())
 
     def test_timed_out_worker_is_killed_without_retry_and_capacity_is_reusable(self):
         processes = []
