@@ -14,6 +14,16 @@ from data_schema import schema_startup_status
 
 SUPPORTED_PLATFORM = sys.platform == 'linux'
 
+_FAILURE_GUIDANCE = {
+    'host': ('host verification', 'Check the HTTPS origin, supported Node runtime, verified Caddy assets and TLS files.'),
+    'ceremony': ('setup preparation', 'Check the selected data root, setup purpose and Google Web client settings.'),
+    'gateway': ('setup gateway startup', 'Check domain routing and availability of ports 80, 443 and 8888.'),
+    'browser': ('browser sign-in', 'Check the Google Web client settings and complete sign-in within the setup window.'),
+    'teardown': ('setup gateway shutdown', 'Check that the owned setup listeners have stopped before restarting Mentat.'),
+    'confirmation': ('owner confirmation', 'Check data-root access and backup readiness. If confirmation was interrupted, reconcile ownership before another ceremony.'),
+    'recovery': ('recovery-code output', 'Owner confirmation succeeded. Keep any displayed recovery codes privately; use host recovery if they were not retained.'),
+}
+
 
 def _read_confirmation(candidate) -> bool:
     remaining = max(0, candidate.expires_at - time.time())
@@ -33,6 +43,7 @@ def run_google_setup(args, config) -> int:
         print('Initialize this data root with `mentat setup` and complete any required migration before Google owner setup.')
         return 2
     ceremony = runtime = None
+    phase = 'host'
     prior_handlers = {}
     def interrupted(_signal, _frame):
         raise KeyboardInterrupt
@@ -42,10 +53,13 @@ def run_google_setup(args, config) -> int:
         origin, host = canonical_origin(args.origin)
         runtime = OwnerSetupRuntime(host=host, caddy=args.caddy_bin, cosign=args.cosign_bin,
             release_dir=args.release_dir, architecture=args.architecture, certificate=args.tls_cert, key=args.tls_key)
+        phase = 'ceremony'
         ceremony = OwnerSetupCeremony(OwnerAuthAuthority(config.data_dir), purpose=args.purpose,
             client_id=args.client_id, origin=origin, client_secret=secret)
         secret = ''
+        phase = 'gateway'
         runtime.start(ceremony)
+        phase = 'browser'
         print(f'Open {origin}/auth/setup in your browser.')
         print(f'Setup code: {ceremony.take_terminal_grant()}')
         print('Complete Google sign-in. Your account is not the owner until you confirm here.')
@@ -55,8 +69,10 @@ def run_google_setup(args, config) -> int:
             time.sleep(0.1)
         candidate = ceremony.terminal_candidate()
         # Stop the complete browser surface before asking the operator to commit.
+        phase = 'teardown'
         if not runtime.stop():
             raise RuntimeError('setup teardown failed')
+        phase = 'confirmation'
         print(f'Data root: {config.data_dir}')
         print(f'Verified Google account: {candidate.email}')
         print(f'Action: {candidate.purpose}. This changes the owner login, signs out all browsers, disables old passkeys, and rotates recovery codes.')
@@ -65,6 +81,7 @@ def run_google_setup(args, config) -> int:
             print('Setup cancelled or expired. The prior owner remains unchanged.')
             return 2
         result = ceremony.confirm(candidate_id=candidate.candidate_id, revision=candidate.revision)
+        phase = 'recovery'
         print('Google owner confirmed. Normal remote serving is not activated by this ceremony.')
         print(f'Validated backup: {result.backup_name}')
         print('Store these new recovery codes privately; they are shown once:')
@@ -72,7 +89,8 @@ def run_google_setup(args, config) -> int:
             print(code)
         return 0
     except (Exception, KeyboardInterrupt):
-        print('Owner setup did not complete. Check the host configuration and start a new ceremony; no provider error or secret is printed here.')
+        label, guidance = _FAILURE_GUIDANCE[phase]
+        print(f'Owner setup stopped during {label}. {guidance}')
         return 2
     finally:
         secret = ''
