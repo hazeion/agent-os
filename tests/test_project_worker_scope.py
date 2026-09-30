@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import errno
 from pathlib import Path
 import signal
 import subprocess
@@ -58,6 +59,31 @@ class WorkerScopeContractTests(unittest.TestCase):
 
 @unittest.skipUnless(scopes.IS_LINUX, "Descriptor path checks require Linux")
 class LinuxScopeDescriptorTests(unittest.TestCase):
+    def test_removed_control_node_requires_held_cgroup_and_original_inactive_unit(self):
+        scope = scopes.LinuxWorkerScope()
+        scope._descriptor, scope._invocation = 9999, "f" * 32
+        inactive = {"ActiveState": "inactive", "ControlGroup": "", "InvocationID": "f" * 32, "LoadState": "loaded"}
+        try:
+            for error in (errno.ENOENT, errno.ENODEV):
+                with patch.object(scopes, "_read_control", side_effect=OSError(error, "controlled")), patch.object(
+                    scopes, "_require_cgroup2"
+                ) as filesystem, patch.object(scope, "_state", return_value=inactive):
+                    self.assertTrue(scope._empty())
+                    filesystem.assert_called_once_with(9999)
+                for changed in ({**inactive, "ActiveState": "active"}, {**inactive, "InvocationID": "a" * 32},
+                                {**inactive, "ControlGroup": scope._relative}):
+                    with patch.object(scopes, "_read_control", side_effect=OSError(error, "controlled")), patch.object(
+                        scopes, "_require_cgroup2"
+                    ), patch.object(scope, "_state", return_value=changed):
+                        self.assertFalse(scope._empty())
+            with patch.object(scopes, "_read_control", side_effect=OSError(errno.EIO, "controlled")), patch.object(
+                scopes, "_require_cgroup2"
+            ) as filesystem, self.assertRaises(OSError):
+                scope._empty()
+            filesystem.assert_not_called()
+        finally:
+            scope._descriptor = None  # Fake descriptor is never an actual close target.
+
     def test_symlink_parent_cannot_replace_the_pinned_kernel_path(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

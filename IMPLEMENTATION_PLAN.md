@@ -170,8 +170,14 @@ have clear independent reviews; hosted timing gains remain unverified.
    reservation, token-bound unknown/known outcome accounting and validated
    private archival backup/restore. Both independent reviews are clear;
    current migration/attention/journal checks pass. It grants no provider
-   submission or producing-Run authority. Next integrate the fixed namespace
-   bootstrap and qualified broker transport before Project execution admission.
+   submission or producing-Run authority. The [fixed namespace handoff](reviews/2026-09-30-project-worker-namespace.md)
+   now runs unchanged official Hermes through a credential-free frontend,
+   sealed inputs and isolated bounded writable roots. All 31 actual Linux tests
+   pass, including native image-byte equality through a fake broker, detached
+   Stop and post-exit export readback; both independent reviews are clear.
+   These component tests grant no live provider or Run authority. Next implement
+   the qualified host broker and complete immutable release/model qualification,
+   then exact Project execution admission and generated-output provenance.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
