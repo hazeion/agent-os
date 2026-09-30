@@ -64,6 +64,9 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.original_limiter = server.HERMES_WEBHOOK_RATE_LIMITER
         self.temporary = TemporaryDirectory()
         self.data_dir = Path(self.temporary.name) / "data"
+        self.data_patch = patch.object(server, "DATA_DIR", self.data_dir)
+        self.data_patch.start()
+        self.addCleanup(self.data_patch.stop)
         server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(self.data_dir)
         server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
         server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
@@ -78,6 +81,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         server.HERMES_WEBHOOK_RATE_LIMITER = self.original_limiter
         server.HERMES_EVENT_REFRESH = self.original_coordinator
         server.HERMES_WEBHOOK_HINT_CAPACITY = self.original_capacity
+        self.data_patch.stop()
         self.temporary.cleanup()
 
     def request(self, *, event="on_session_end", delivery="delivery-1", body_overrides=None, content_type="application/json"):
@@ -817,16 +821,39 @@ with TemporaryDirectory(prefix="mentat-webhook-lock-order-") as temporary:
 
                 for body, headers, expected in cases:
                     connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
-                    connection.request("POST", "/api/integrations/hermes/webhooks/v1/local-default", body, headers)
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, expected)
-                    self.assertLessEqual(len(response.read()), 512)
-                    connection.close()
+                    try:
+                        if expected == 413:
+                            # This gate rejects the declared length before any
+                            # body read. Sending unread bytes after that close
+                            # can reset Winsock and obscure the actual response.
+                            connection.putrequest("POST", "/api/integrations/hermes/webhooks/v1/local-default")
+                            for name, value in headers.items():
+                                connection.putheader(name, value)
+                            connection.endheaders()
+                        else:
+                            connection.request("POST", "/api/integrations/hermes/webhooks/v1/local-default", body, headers)
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, expected)
+                        self.assertLessEqual(len(response.read()), 512)
+                    finally:
+                        connection.close()
             self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 0)
         finally:
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=3)
+
+    def test_oversized_length_rejection_never_reads_a_body(self):
+        harness = _WebhookHandlerHarness(b"", {
+            "Content-Length": str(server.HERMES_WEBHOOK_MAX_BODY_BYTES + 1)
+        })
+        with patch.object(harness.rfile, "read", side_effect=AssertionError("body read")) as read, patch.dict(
+            os.environ, {"MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT": self.secret.decode()}, clear=False
+        ):
+            server.Handler.handle_hermes_webhook(harness, self.binding_id)
+        read.assert_not_called()
+        self.assertEqual(next(value for kind, value in harness.responses if kind == "error"), 413)
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 0)
 
     def test_queue_saturation_retries_without_deduplicating_delivery(self):
         server.HERMES_WEBHOOK_HINT_CAPACITY = 1
