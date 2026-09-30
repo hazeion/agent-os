@@ -55,6 +55,7 @@ PROJECT_INPUT_ACTION_MAX_METADATA_BYTES = PROJECT_INPUT_MAX_METADATA_BYTES + 256
 PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES + 512 * 1024
 # At most one normalized completion and bounded control/call metadata per Run.
 WORKER_JOURNAL_MAX_METADATA_BYTES = PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES + 10 * 1024 * 1024
+OUTPUT_RESERVATION_MAX_METADATA_BYTES = WORKER_JOURNAL_MAX_METADATA_BYTES + 16 * 1024 * 1024 + 4096
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -222,6 +223,16 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'scope_journal.capacity':
                 _fail('capacity')
             _fail('scope_journal_invalid')
+    if schema_version >= 45:
+        budget = OUTPUT_RESERVATION_MAX_METADATA_BYTES
+        from project_output_reservations import validate_output_reservations_connection
+        from project_worker_journal import WorkerJournalError
+        try:
+            metadata.extend(validate_output_reservations_connection(connection))
+        except WorkerJournalError as exc:
+            if str(exc) == 'output_reservation.capacity':
+                _fail('capacity')
+            _fail('output_reservation_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}
@@ -287,7 +298,13 @@ def validate_retained_capacity(connection: sqlite3.Connection) -> None:
         "SELECT COUNT(*),COALESCE(SUM(byte_size),0) FROM blobs WHERE id IN "
         "(SELECT a.blob_id FROM attachments a JOIN mentat_retained_attachments r ON r.attachment_id=a.id)"
     ).fetchone()
-    if row[0] > MAX_RETAINED_BLOBS or row[1] > MAX_RETAINED_BLOB_BYTES:
+    from project_output_reservations import pending_capacity
+    from project_worker_journal import WorkerJournalError
+    try:
+        slots, reserved_bytes = pending_capacity(connection)
+    except WorkerJournalError as exc:
+        _fail('output_reservation_invalid')
+    if row[0] + slots > MAX_RETAINED_BLOBS or row[1] + reserved_bytes > MAX_RETAINED_BLOB_BYTES:
         _fail("blob_capacity")
 
 

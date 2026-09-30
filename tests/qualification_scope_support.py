@@ -3,12 +3,15 @@ from contextlib import closing
 
 import mentat_db
 import project_scope_journal as journal
+from project_output_reservations import require_output_reservation
 from private_state import private_state_lock
 
 
 def start_recorded_scope(root, run_id, generation, scope):
     with private_state_lock(root), closing(mentat_db.connect(root)) as connection:
         connection.execute('BEGIN IMMEDIATE')
+        # A separate committed read must precede any scope intent or launch.
+        require_output_reservation(connection, run_id, generation)
         prepared = journal.prepare_scope(connection, run_id=run_id, generation=generation,
                                          plan_witness=scope.journal_plan())
         starting = journal.transition_scope(connection, run_id=run_id, generation=generation,

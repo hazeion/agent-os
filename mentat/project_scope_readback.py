@@ -194,9 +194,10 @@ def _reference_snapshot(root, run_id, generation, revision, deadline):
     root_identity=(root_details.st_dev,root_details.st_ino,directory.st_dev,directory.st_ino,identities[path])
     with _read_database_snapshot(path,private) as connection:
         connection.execute('BEGIN')
-        if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]!=44:
+        version=connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
+        if version not in {44,45}:
             raise ScopeReadbackError('scope_readback.schema')
-        if schema_signature_state(connection,44)!='expected':
+        if schema_signature_state(connection,version)!='expected':
             raise ScopeReadbackError('scope_readback.schema')
         authority=RunRepository(connection).authority_receipt(required=True)
         validate_project_context_connection(connection,require_available=False)

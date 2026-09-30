@@ -53,6 +53,7 @@ PUBLIC_MODULES = {
     "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }
 PUBLIC_PACKAGES = {"mentat", "deploy", "deploy.caddy"}
+PUBLIC_MODULES.add("project_output_reservations")
 PUBLIC_DATA_FILES = {destination: set(sources) for destination, sources in PACKAGE_PUBLIC_DATA_FILES.items()}
 
 

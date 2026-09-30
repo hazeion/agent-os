@@ -1166,6 +1166,14 @@ def bind_run_attachment(
             ).fetchone()
             retained_count = int(retained[0]) + (0 if already_referenced else 1)
             retained_bytes = int(retained[1]) + (0 if already_referenced else int(row["byte_size"]))
+            from project_output_reservations import pending_capacity
+            from project_worker_journal import WorkerJournalError
+            try:
+                reserved_slots, reserved_bytes = pending_capacity(connection)
+            except WorkerJournalError as exc:
+                raise AttachmentUnavailable("Retained output reservation is invalid") from exc
+            retained_count += reserved_slots
+            retained_bytes += reserved_bytes
             if (
                 retained_count > MAX_RETAINED_BLOBS
                 or retained_bytes > MAX_RETAINED_BLOB_BYTES
