@@ -853,6 +853,10 @@ def _validated_run_details(row: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise RunRepositoryError("run_repository.corrupt")
         source = str(row["source"])
+        if source == "project_proposal" and details == {}:
+            # Only the private archival validator can reach this through the
+            # Run source gate. No live getter/mutation accepts this source.
+            return {}
         expected_keys = (
             _CONSOLE_DETAIL_KEYS if source == "console" else _TASK_DISPATCH_DETAIL_KEYS
         )
@@ -920,7 +924,7 @@ def _validated_run_details(row: Mapping[str, Any]) -> dict[str, Any]:
         raise RunRepositoryError("run_repository.corrupt") from exc
 
 
-def _validate_run_row(row: Mapping[str, Any]) -> frozenset[str]:
+def _validate_run_row(row: Mapping[str, Any], *, archival_proposal: bool = False) -> frozenset[str]:
     try:
         terminal_finalized = (
             int(row["terminal_finalized"])
@@ -928,7 +932,7 @@ def _validate_run_row(row: Mapping[str, Any]) -> frozenset[str]:
             else int(str(row["status"]) in _TERMINAL_STATUSES)
         )
         if (
-            str(row["source"]) not in {"console", "task_dispatch"}
+            str(row["source"]) not in ({"console", "task_dispatch", "project_proposal"} if archival_proposal else {"console", "task_dispatch"})
             or str(row["status"]) not in _ALL_STATUSES
             or str(row["dispatch_state"]) not in _DISPATCH_STATES
             or int(row["state_revision"]) < 1
@@ -7488,7 +7492,11 @@ class RunRepository:
             changed.append(run_id)
         return tuple(changed)
 
-    def validate(self) -> tuple[int, int, int]:
+    def validate(self, *, private_archival_proposals: bool = False) -> tuple[int, int, int]:
+        archival_ids = frozenset()
+        if private_archival_proposals:
+            from project_worker_journal import archival_proposal_ids
+            archival_ids = archival_proposal_ids(self.connection)
         self.authority_receipt(required=True)
         task_authority = self.connection.execute(
             "SELECT authority FROM mentat_task_store_state WHERE singleton = 1"
@@ -7518,7 +7526,7 @@ class RunRepository:
         if self.schema_version >= 36:
             from run_attention import RunAttentionError, validate_run_attention_connection
             try:
-                validate_run_attention_connection(self.connection)
+                validate_run_attention_connection(self.connection, archival_proposals=archival_ids)
             except RunAttentionError as exc:
                 raise RunRepositoryError("run_repository.corrupt") from exc
         page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
@@ -7554,7 +7562,7 @@ class RunRepository:
         if terminal_count > TERMINAL_RUN_RETENTION:
             raise RunRepositoryError("run_repository.corrupt")
         for row in self.connection.execute("SELECT * FROM mentat_runs"):
-            run_capabilities = _validate_run_row(row)
+            run_capabilities = _validate_run_row(row, archival_proposal=str(row["id"]) in archival_ids)
             if str(row["status"]) not in _ALL_STATUSES or str(row["dispatch_state"]) not in _DISPATCH_STATES:
                 raise RunRepositoryError("run_repository.corrupt")
             if int(row["runtime_event_cursor"]) < 0:
@@ -7808,7 +7816,7 @@ class RunRepository:
                     )
                     if not legal:
                         raise RunRepositoryError("run_repository.corrupt")
-            else:
+            elif str(row["id"]) not in archival_ids:
                 raise RunRepositoryError("run_repository.corrupt")
             events = self._event_rows(str(row["id"]))
             _validate_event_window(row, events)

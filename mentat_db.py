@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2764,6 +2764,65 @@ MIGRATIONS += ((42, """
         UNION SELECT attachment_id FROM mentat_project_proposal_input_files;
 """),)
 
+MIGRATIONS += ((43, """
+    CREATE UNIQUE INDEX mentat_runs_worker_source_key ON mentat_runs(id,source);
+    CREATE TABLE mentat_project_worker_generations (
+        run_id TEXT NOT NULL PRIMARY KEY,
+        source TEXT NOT NULL CHECK(source='project_proposal'),
+        generation TEXT NOT NULL UNIQUE CHECK(length(generation)=32),
+        authority_epoch BLOB NOT NULL CHECK(typeof(authority_epoch)='blob' AND length(authority_epoch)=32),
+        input_manifest_digest TEXT NOT NULL CHECK(length(input_manifest_digest)=64),
+        runtime_binding_digest TEXT NOT NULL CHECK(length(runtime_binding_digest)=64),
+        policy_json TEXT NOT NULL CHECK(length(policy_json) BETWEEN 1 AND 4096),
+        policy_digest TEXT NOT NULL CHECK(length(policy_digest)=64),
+        model_snapshot_json TEXT NOT NULL CHECK(length(model_snapshot_json) BETWEEN 1 AND 1024),
+        claim_digest TEXT NOT NULL CHECK(length(claim_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000),
+        UNIQUE(run_id,generation),
+        FOREIGN KEY(run_id,source) REFERENCES mentat_runs(id,source) ON DELETE RESTRICT,
+        FOREIGN KEY(run_id) REFERENCES mentat_project_proposal_input_receipts(run_id) ON DELETE RESTRICT
+    );
+    CREATE TRIGGER mentat_project_worker_generation_exact BEFORE INSERT ON mentat_project_worker_generations
+        WHEN NOT EXISTS(SELECT 1 FROM mentat_project_proposal_input_receipts r WHERE
+            r.run_id=NEW.run_id AND r.manifest_digest=NEW.input_manifest_digest
+            AND r.runtime_binding_digest=NEW.runtime_binding_digest AND r.limits_digest=NEW.policy_digest)
+        BEGIN SELECT RAISE(ABORT,'worker_journal.input_mismatch'); END;
+    CREATE TRIGGER mentat_project_worker_generation_immutable BEFORE UPDATE ON mentat_project_worker_generations
+        BEGIN SELECT RAISE(ABORT,'worker_journal.immutable'); END;
+    CREATE TRIGGER mentat_project_worker_generation_retained BEFORE DELETE ON mentat_project_worker_generations
+        BEGIN SELECT RAISE(ABORT,'worker_journal.retained'); END;
+    CREATE TABLE mentat_project_worker_calls (
+        call_id TEXT NOT NULL PRIMARY KEY CHECK(length(call_id)=32),
+        run_id TEXT NOT NULL UNIQUE,
+        generation TEXT NOT NULL CHECK(length(generation)=32),
+        request_digest TEXT NOT NULL CHECK(length(request_digest)=64),
+        result_token_hash TEXT NOT NULL CHECK(length(result_token_hash)=64),
+        work_debit INTEGER NOT NULL CHECK(typeof(work_debit)='integer' AND work_debit=1),
+        state TEXT NOT NULL CHECK(state IN ('reserved','unknown','succeeded','failed')),
+        disposition TEXT CHECK(disposition IN ('rejected','non_text','oversized')),
+        response_text TEXT,
+        result_digest TEXT CHECK(result_digest IS NULL OR length(result_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000),
+        settled_at REAL CHECK(settled_at IS NULL OR settled_at>=created_at AND settled_at<1000000000000),
+        FOREIGN KEY(run_id,generation) REFERENCES mentat_project_worker_generations(run_id,generation) ON DELETE RESTRICT,
+        CHECK((state IN ('reserved','unknown') AND disposition IS NULL AND response_text IS NULL AND result_digest IS NULL AND settled_at IS NULL)
+           OR (state='succeeded' AND disposition IS NULL AND response_text IS NOT NULL
+               AND length(CAST(response_text AS BLOB))<=32768 AND result_digest IS NOT NULL AND settled_at IS NOT NULL)
+           OR (state='failed' AND disposition IS NOT NULL AND response_text IS NULL
+               AND result_digest IS NOT NULL AND settled_at IS NOT NULL))
+    );
+    CREATE TRIGGER mentat_project_worker_call_no_new_identity BEFORE UPDATE ON mentat_project_worker_calls
+        WHEN NEW.call_id IS NOT OLD.call_id OR NEW.run_id IS NOT OLD.run_id
+          OR NEW.generation IS NOT OLD.generation OR NEW.request_digest IS NOT OLD.request_digest
+          OR NEW.result_token_hash IS NOT OLD.result_token_hash
+          OR NEW.work_debit IS NOT OLD.work_debit OR NEW.created_at IS NOT OLD.created_at
+          OR NOT ((OLD.state='reserved' AND NEW.state='unknown')
+               OR (OLD.state='unknown' AND NEW.state IN ('succeeded','failed')))
+        BEGIN SELECT RAISE(ABORT,'worker_journal.immutable'); END;
+    CREATE TRIGGER mentat_project_worker_call_retained BEFORE DELETE ON mentat_project_worker_calls
+        BEGIN SELECT RAISE(ABORT,'worker_journal.retained'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37, 41})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -3118,6 +3177,7 @@ _RUN_NONFK_REFERENCE_TABLES = frozenset({
 })
 
 _SCHEMA42_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_proposal_input_files"})
+_SCHEMA43_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_calls"})
 
 
 def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tuple[str, int, str, int], ...]:
@@ -3141,6 +3201,8 @@ def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tupl
     expected_nonfk = _RUN_NONFK_REFERENCE_TABLES
     if "mentat_project_proposal_input_files" in names:
         expected_nonfk = expected_nonfk | _SCHEMA42_RUN_NONFK_REFERENCE_TABLES
+    if "mentat_project_worker_calls" in names:
+        expected_nonfk = expected_nonfk | _SCHEMA43_RUN_NONFK_REFERENCE_TABLES
     if nonfk != expected_nonfk:
         raise MentatDatabaseError("Mentat Run reference inventory changed")
     dependent.update(nonfk)

@@ -53,6 +53,8 @@ PROJECT_INPUT_ACTION_MAX_METADATA_BYTES = PROJECT_INPUT_MAX_METADATA_BYTES + 256
 # Schema 42 reserves bounded historical evidence for 128 proposal Run-input
 # receipts with at most eight exact file records each. Dispatch stays closed.
 PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES + 512 * 1024
+# At most one normalized completion and bounded control/call metadata per Run.
+WORKER_JOURNAL_MAX_METADATA_BYTES = PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES + 10 * 1024 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -202,6 +204,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'project_proposal_input.capacity':
                 _fail('capacity')
             _fail('proposal_inputs_invalid')
+    if schema_version >= 43:
+        budget = WORKER_JOURNAL_MAX_METADATA_BYTES
+        from project_worker_journal import WorkerJournalError, validate_worker_journal_connection
+        try:
+            metadata.extend(validate_worker_journal_connection(connection))
+        except WorkerJournalError as exc:
+            if str(exc) == 'worker_journal.capacity':
+                _fail('capacity')
+            _fail('worker_journal_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}
