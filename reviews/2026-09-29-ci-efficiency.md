@@ -1,50 +1,5 @@
 # CI execution efficiency
 
-## PR #277 compatible replay
-
-This replay starts at `d33f52d` and preserves its original 30-minute watchdog.
-The scheduler and CI-contract baseline are identical to PR #273; the split
-Task repository source differs only in its expected schema number (34 versus
-33), with identical methods and fixture ownership. The record below describes
-the already reviewed PR #273/276 changes and measurements, not a new hosted
-or local PR #277 speed measurement. Exact inventory contracts are rerun here.
-
-## Older-base compatibility backport
-
-This PR #273 backport starts at `2fd7e7d` and preserves its original 30-minute
-group watchdog and unchanged workflow/job limits. It copies only the reviewed
-two-child split-unit overlap plus fixture-free Task repository distribution;
-no product/schema changes or timeout increase. Exact coverage preserves the
-ordinary-discovery ID multiset and schedules every selected unit once. This
-older source has 2,241 ordinary executions but 2,226 unique IDs (15 existing
-imported-fixture duplicates); this scheduler preserves that inventory. Removing
-those accidental duplicate IDs is separate reviewed discovery work, not a claim
-made by this backport. The record below is historical PR #276/schema-42
-evidence; its 40-minute values are not this older branch's limits.
-
-Measured this exact older branch's three slow backup/schema units sequentially:
-44.219 seconds, then 31.953 seconds with two-child overlap (27.7% lower wall
-time), all passed. Individual durations increased under contention from
-12.122/17.182/14.084 to 15.969/22.840/15.405 seconds. All 11 exact-coverage and
-scheduler contracts pass with the unchanged 30-minute deadline. These are
-local subset measurements; hosted full-group improvement is unproven. Obtain
-two independent old-base compatibility reviews before publishing.
-
-The complete mixed group discovered 181 tests and exposed one unrelated fixture
-error: the mocked identity-apply test still resolved the machine's installed
-Hermes interpreter. Patch that lookup to a fixed fixture value and require the
-same exact apply arguments, so tests never inspect an owner's runtime install.
-The 16 identity, owner-website and planning-integration methods pass with this
-isolated lookup. A repeated full group exposed two legacy Console fixtures
-reusing fixed Run IDs in the checkout's runtime directory: stale exclusive-create
-telemetry made their mocked launch fail. Each now uses its own TemporaryDirectory
-as DATA_DIR. Exact command, resume, response, PATH and Hermes-home assertions
-remain; 25 dashboard methods plus both repeated fixture methods (27) pass.
-The complete mixed group then passed on a repeated invocation (181 test
-executions); all 11 CI contracts passed again. Two independent reviewers
-cleared the scheduler compatibility changes; both must also clear the final
-private fixture isolation before publication.
-
 Scope: retain every platform/Python leg, test, syntax check, dependency/security
 gate, fixture boundary, and existing watchdog. Improve execution time inside
 the current Windows jobs. No product/runtime authority changes.
@@ -136,6 +91,12 @@ Complete Windows group 11 passed: 34 isolated units and 193 discovered tests
 serial whole-module HTTP, auth, delegation, and upgrade checks. The command
 was `python scripts/run_unittest_shards.py --run-group 11`. Python compilation
 and `git diff --check` also pass.
+
+The optimization is published against the independent reviewed CI base
+PR #276 rather than the product stack. The scheduler/test baseline matches;
+all 11 contracts also pass after cherry-picking onto that base. The subset
+measurements and complete group above use the schema-42 Project tree, as
+stated, and do not claim a hosted timing result for the earlier base.
 
 ## Deferred investigation
 
