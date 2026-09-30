@@ -15,6 +15,12 @@ assertion; the parent uses 30 minutes. No deadline increase, dynamic assertion
 or test rewrite is introduced. Parent changes and the complete resulting diff
 are inspected for expected CI-only dependencies before publication.
 
+The complete merge diff also inherits two already independently reviewed
+CI fixtures from this exact parent: both mocked dashboard launches use a
+temporary data root, and the profile-identity test uses a fixed interpreter
+fixture. Original response, command, PATH/home and exact apply-argument
+assertions remain; no owner installation or production files are changed.
+
 ## Prior branch-specific qualification
 
 The following preamble is historical and retained from the exact prior head;
