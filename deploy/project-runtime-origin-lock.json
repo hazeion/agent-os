@@ -1,0 +1,1018 @@
+{
+  "format": 1,
+  "source_commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+  "uv_lock_sha256": "5b3798f326209475abca8ef7cbf7c9406f12e687c28c0b540dfe597466f48590",
+  "source": {
+    "filename": "hermes-agent-f97608f178d1ffeca59860195ab7da295f7c8e5f.tar.gz",
+    "sha256": "b71f4b7d4fe5b158ed9bbbeb73f5eb107f2f05e54bd582d32c2d9f718b58d9b0",
+    "size": 75262959,
+    "url": "https://api.github.com/repos/NousResearch/hermes-agent/tarball/f97608f178d1ffeca59860195ab7da295f7c8e5f"
+  },
+  "python": {
+    "filename": "cpython-3.13.14+20260718-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "sha256": "571a710c62520b26dbadbd16e8850e24565c01dea94440223bc16caa21614021",
+    "size": 34813607,
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.13.14%2B20260718-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+  },
+  "wheels": [
+    {
+      "authority": "official-uv-lock",
+      "filename": "agent_client_protocol-0.9.0-py3-none-any.whl",
+      "name": "agent-client-protocol",
+      "sha256": "06911500b51d8cb69112544e2be01fc5e7db39ef88fecbc3848c5c6f194798ee",
+      "size": 56850,
+      "url": "https://files.pythonhosted.org/packages/8f/ed/c284543c08aa443a4ef2c8bd120be51da8433dd174c01749b5d87c333f22/agent_client_protocol-0.9.0-py3-none-any.whl",
+      "version": "0.9.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "aiohappyeyeballs-2.6.1-py3-none-any.whl",
+      "name": "aiohappyeyeballs",
+      "sha256": "f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8",
+      "size": 15265,
+      "url": "https://files.pythonhosted.org/packages/0f/15/5bf3b99495fb160b63f95972b81750f18f7f4e02ad051373b669d17d44f2/aiohappyeyeballs-2.6.1-py3-none-any.whl",
+      "version": "2.6.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "aiohttp-3.14.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "aiohttp",
+      "sha256": "d7d2deec16eeedf55f2c7cf75b521ea3856a5177e123844f8fd0f114ce252cb5",
+      "size": 1789289,
+      "url": "https://files.pythonhosted.org/packages/ca/1c/7da8d08e74d56f00070822f9638ff3f1c563f8ad87d1efa996c87bfc8644/aiohttp-3.14.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.14.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "aiosignal-1.4.0-py3-none-any.whl",
+      "name": "aiosignal",
+      "sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+      "size": 7490,
+      "url": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl",
+      "version": "1.4.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "annotated_doc-0.0.4-py3-none-any.whl",
+      "name": "annotated-doc",
+      "sha256": "571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320",
+      "size": 5303,
+      "url": "https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl",
+      "version": "0.0.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "annotated_types-0.7.0-py3-none-any.whl",
+      "name": "annotated-types",
+      "sha256": "1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53",
+      "size": 13643,
+      "url": "https://files.pythonhosted.org/packages/78/b6/6307fbef88d9b5ee7421e68d78a9f162e0da4900bc5f5793f6d3d0e34fb8/annotated_types-0.7.0-py3-none-any.whl",
+      "version": "0.7.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "anyio-4.12.1-py3-none-any.whl",
+      "name": "anyio",
+      "sha256": "d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c",
+      "size": 113592,
+      "url": "https://files.pythonhosted.org/packages/38/0e/27be9fdef66e72d64c0cdc3cc2823101b80585f8119b5c112c2e8f5f7dab/anyio-4.12.1-py3-none-any.whl",
+      "version": "4.12.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "attrs-25.4.0-py3-none-any.whl",
+      "name": "attrs",
+      "sha256": "adcf7e2a1fb3b36ac48d97835bb6d8ade15b8dcce26aba8bf1d14847b57a3373",
+      "size": 67615,
+      "url": "https://files.pythonhosted.org/packages/3a/2a/7cc015f5b9f5db42b7d48157e23356022889fc354a2813c15934b7cb5c0e/attrs-25.4.0-py3-none-any.whl",
+      "version": "25.4.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "boto3-1.42.89-py3-none-any.whl",
+      "name": "boto3",
+      "sha256": "6204b189f4d0c655535f43d7eaa57ff4e8d965b8463c97e45952291211162932",
+      "size": 140556,
+      "url": "https://files.pythonhosted.org/packages/b9/33/55103ba5ef9975ea54b8d39e69b76eb6e9fded3beae5f01065e26951a3a1/boto3-1.42.89-py3-none-any.whl",
+      "version": "1.42.89"
+    },
+    {
+      "authority": "pypi-supplement",
+      "filename": "botocore-1.42.97-py3-none-any.whl",
+      "name": "botocore",
+      "sha256": "77d2c8ce1bc592d3fbd7c01c35836f4a5b0cac2ca03ccdf6ffc60faa16b5fadc",
+      "size": 14950367,
+      "url": "https://files.pythonhosted.org/packages/e3/d2/8e025ba1a4e257879af72d06913272311af79673d82fa2581a351b924317/botocore-1.42.97-py3-none-any.whl",
+      "version": "1.42.97"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "certifi-2026.5.20-py3-none-any.whl",
+      "name": "certifi",
+      "sha256": "3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897",
+      "size": 134134,
+      "url": "https://files.pythonhosted.org/packages/59/8c/57e832b7af6d7c5abe66eb3fbe3a3a32f4d11ea23a1aa7131371035be991/certifi-2026.5.20-py3-none-any.whl",
+      "version": "2026.5.20"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "cffi-2.0.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "name": "cffi",
+      "sha256": "c8d3b5532fc71b7a77c09192b4a5a200ea992702734a2e9279a37f2478236f26",
+      "size": 219499,
+      "url": "https://files.pythonhosted.org/packages/98/df/0a1755e750013a2081e863e7cd37e0cdd02664372c754e5560099eb7aa44/cffi-2.0.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "version": "2.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "charset_normalizer-3.4.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "charset-normalizer",
+      "sha256": "a8a8b89589086a25749f471e6a900d3f662d1d3b6e2e59dcecf787b1cc3a1894",
+      "size": 153076,
+      "url": "https://files.pythonhosted.org/packages/f5/83/6ab5883f57c9c801ce5e5677242328aa45592be8a00644310a008d04f922/charset_normalizer-3.4.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.4.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "click-8.4.2-py3-none-any.whl",
+      "name": "click",
+      "sha256": "e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76",
+      "size": 119243,
+      "url": "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl",
+      "version": "8.4.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "croniter-6.0.0-py2.py3-none-any.whl",
+      "name": "croniter",
+      "sha256": "2f878c3856f17896979b2a4379ba1f09c83e374931ea15cc835c5dd2eee9b368",
+      "size": 25468,
+      "url": "https://files.pythonhosted.org/packages/07/4b/290b4c3efd6417a8b0c284896de19b1d5855e6dbdb97d2a35e68fa42de85/croniter-6.0.0-py2.py3-none-any.whl",
+      "version": "6.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl",
+      "name": "cryptography",
+      "sha256": "82148ec5bddac30b51a5b3c1945075f896fa022cb93f8e4a01e9f6ee95292c5f",
+      "size": 4734462,
+      "url": "https://files.pythonhosted.org/packages/da/3a/f05e32c99d440c9bb891ea0e36c9091891e36be5a9a87ab2ee6ea20729f6/cryptography-50.0.0-cp311-abi3-manylinux_2_34_x86_64.whl",
+      "version": "50.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "defusedxml-0.7.1-py2.py3-none-any.whl",
+      "name": "defusedxml",
+      "sha256": "a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61",
+      "size": 25604,
+      "url": "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl",
+      "version": "0.7.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "distro-1.9.0-py3-none-any.whl",
+      "name": "distro",
+      "sha256": "7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2",
+      "size": 20277,
+      "url": "https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl",
+      "version": "1.9.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "edge_tts-7.2.7-py3-none-any.whl",
+      "name": "edge-tts",
+      "sha256": "ac11d9e834347e5ee62cbe72e8a56ffd65d3c4e795be14b1e593b72cf6480dd9",
+      "size": 30556,
+      "url": "https://files.pythonhosted.org/packages/bf/89/92ac6b154ab87d236c15e5e0c73cb99be58efb1ea3eb9318c266bf9a36bf/edge_tts-7.2.7-py3-none-any.whl",
+      "version": "7.2.7"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "fastapi-0.133.1-py3-none-any.whl",
+      "name": "fastapi",
+      "sha256": "658f34ba334605b1617a65adf2ea6461901bdb9af3a3080d63ff791ecf7dc2e2",
+      "size": 109029,
+      "url": "https://files.pythonhosted.org/packages/d2/c9/a175a7779f3599dfa4adfc97a6ce0e157237b3d7941538604aadaf97bfb6/fastapi-0.133.1-py3-none-any.whl",
+      "version": "0.133.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "fire-0.7.1-py3-none-any.whl",
+      "name": "fire",
+      "sha256": "e43fd8a5033a9001e7e2973bab96070694b9f12f2e0ecf96d4683971b5ab1882",
+      "size": 115945,
+      "url": "https://files.pythonhosted.org/packages/e5/4c/93d0f85318da65923e4b91c1c2ff03d8a458cbefebe3bc612a6693c7906d/fire-0.7.1-py3-none-any.whl",
+      "version": "0.7.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "firecrawl_anydoc-0.2.4-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "firecrawl-anydoc",
+      "sha256": "0e5aed01bf6d4e5c588d3363888293f2ceeb9feb00449a32e0ba993797cf0bd3",
+      "size": 3506751,
+      "url": "https://files.pythonhosted.org/packages/fc/16/feeca9705bfdb237f1cb69ede0b373b144c0d51df4297e595a74b815557e/firecrawl_anydoc-0.2.4-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "0.2.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "frozenlist-1.8.0-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "name": "frozenlist",
+      "sha256": "fb30f9626572a76dfe4293c7194a09fb1fe93ba94c7d4f720dfae3b646b45027",
+      "size": 234391,
+      "url": "https://files.pythonhosted.org/packages/d5/4e/e4691508f9477ce67da2015d8c00acd751e6287739123113a9fca6f1604e/frozenlist-1.8.0-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "version": "1.8.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "google_api_core-2.30.3-py3-none-any.whl",
+      "name": "google-api-core",
+      "sha256": "a85761ba72c444dad5d611c2220633480b2b6be2521eca69cca2dbb3ffd6bfe8",
+      "size": 173274,
+      "url": "https://files.pythonhosted.org/packages/03/15/e56f351cf6ef1cfea58e6ac226a7318ed1deb2218c4b3cc9bd9e4b786c5a/google_api_core-2.30.3-py3-none-any.whl",
+      "version": "2.30.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "google_api_python_client-2.194.0-py3-none-any.whl",
+      "name": "google-api-python-client",
+      "sha256": "61eaaac3b8fc8fdf11c08af87abc3d1342d1b37319cc1b57405f86ef7697e717",
+      "size": 15016514,
+      "url": "https://files.pythonhosted.org/packages/b0/34/5a624e49f179aa5b0cb87b2ce8093960299030ff40423bfbde09360eb908/google_api_python_client-2.194.0-py3-none-any.whl",
+      "version": "2.194.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "google_auth-2.55.1-py3-none-any.whl",
+      "name": "google-auth",
+      "sha256": "eada68dfd52b3b81191827601e2a0c3fa12540c818534b630ddc5355769c3995",
+      "size": 252349,
+      "url": "https://files.pythonhosted.org/packages/e8/1d/f6d3ca1ad0725f2e08a1c6915640748a52de2e66596160a4d53b010cccf0/google_auth-2.55.1-py3-none-any.whl",
+      "version": "2.55.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "google_auth_httplib2-0.3.1-py3-none-any.whl",
+      "name": "google-auth-httplib2",
+      "sha256": "682356a90ef4ba3d06548c37e9112eea6fc00395a11b0303a644c1a86abc275c",
+      "size": 9534,
+      "url": "https://files.pythonhosted.org/packages/97/e9/93afb14d23a949acaa3f4e7cc51a0024671174e116e35f42850764b99634/google_auth_httplib2-0.3.1-py3-none-any.whl",
+      "version": "0.3.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "google_auth_oauthlib-1.3.1-py3-none-any.whl",
+      "name": "google-auth-oauthlib",
+      "sha256": "1a139ef23f1318756805b0e95f655c238bffd29655329a2978218248da4ee7f8",
+      "size": 19247,
+      "url": "https://files.pythonhosted.org/packages/2a/e0/cb454a95f460903e39f101e950038ec24a072ca69d0a294a6df625cc1627/google_auth_oauthlib-1.3.1-py3-none-any.whl",
+      "version": "1.3.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "googleapis_common_protos-1.73.0-py3-none-any.whl",
+      "name": "googleapis-common-protos",
+      "sha256": "dfdaaa2e860f242046be561e6d6cb5c5f1541ae02cfbcb034371aadb2942b4e8",
+      "size": 297578,
+      "url": "https://files.pythonhosted.org/packages/69/28/23eea8acd65972bbfe295ce3666b28ac510dfcb115fac089d3edb0feb00a/googleapis_common_protos-1.73.0-py3-none-any.whl",
+      "version": "1.73.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "h11-0.16.0-py3-none-any.whl",
+      "name": "h11",
+      "sha256": "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",
+      "size": 37515,
+      "url": "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl",
+      "version": "0.16.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "httpcore-1.0.9-py3-none-any.whl",
+      "name": "httpcore",
+      "sha256": "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",
+      "size": 78784,
+      "url": "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl",
+      "version": "1.0.9"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "httpcore2-2.7.0-py3-none-any.whl",
+      "name": "httpcore2",
+      "sha256": "1452f589fe23f55b44546cd884294c41a29330af902bc0b71a761fd52d18f92b",
+      "size": 81506,
+      "url": "https://files.pythonhosted.org/packages/6f/6c/62e2e279e63fc4f7a5ee841ef13175a8bbc613f258e9dcc186e9de803a42/httpcore2-2.7.0-py3-none-any.whl",
+      "version": "2.7.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "httplib2-0.32.0-py3-none-any.whl",
+      "name": "httplib2",
+      "sha256": "dc6705cacdf3fb0a2aba7629fa33c90fd93e30035db0c157325826be177e4816",
+      "size": 93148,
+      "url": "https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl",
+      "version": "0.32.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "httptools-0.7.1-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "name": "httptools",
+      "sha256": "04c6c0e6c5fb0739c5b8a9eb046d298650a0ff38cf42537fc372b28dc7e4472c",
+      "size": 478596,
+      "url": "https://files.pythonhosted.org/packages/32/6a/6aaa91937f0010d288d3d124ca2946d48d60c3a5ee7ca62afe870e3ea011/httptools-0.7.1-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "version": "0.7.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "httpx-0.28.1-py3-none-any.whl",
+      "name": "httpx",
+      "sha256": "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",
+      "size": 73517,
+      "url": "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl",
+      "version": "0.28.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "httpx2-2.7.0-py3-none-any.whl",
+      "name": "httpx2",
+      "sha256": "ed2a2719c696789e09493bd8e2bec3d8bd925cc6e26b68389ec25ade132f7bf4",
+      "size": 90234,
+      "url": "https://files.pythonhosted.org/packages/1d/b8/c341bba6411bdfda786020343c47a75ef472f6085caf82391b142b1a3ad9/httpx2-2.7.0-py3-none-any.whl",
+      "version": "2.7.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "idna-3.18-py3-none-any.whl",
+      "name": "idna",
+      "sha256": "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2",
+      "size": 65455,
+      "url": "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl",
+      "version": "3.18"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "importlib_metadata-8.7.1-py3-none-any.whl",
+      "name": "importlib-metadata",
+      "sha256": "5a1f80bf1daa489495071efbb095d75a634cf28a8bc299581244063b53176151",
+      "size": 27865,
+      "url": "https://files.pythonhosted.org/packages/fa/5e/f8e9a1d23b9c20a551a8a02ea3637b4642e22c2626e3a13a9a29cdea99eb/importlib_metadata-8.7.1-py3-none-any.whl",
+      "version": "8.7.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "jinja2-3.1.6-py3-none-any.whl",
+      "name": "jinja2",
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "size": 134899,
+      "url": "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+      "version": "3.1.6"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "jiter-0.13.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "jiter",
+      "sha256": "98fbafb6e88256f4454de33c1f40203d09fc33ed19162a68b3b257b29ca7f663",
+      "size": 359120,
+      "url": "https://files.pythonhosted.org/packages/01/99/ed5e478ff0eb4e8aa5fd998f9d69603c9fd3f32de3bd16c2b1194f68361c/jiter-0.13.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "0.13.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "jmespath-1.1.0-py3-none-any.whl",
+      "name": "jmespath",
+      "sha256": "a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64",
+      "size": 20419,
+      "url": "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl",
+      "version": "1.1.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "jsonschema-4.26.0-py3-none-any.whl",
+      "name": "jsonschema",
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+      "size": 90630,
+      "url": "https://files.pythonhosted.org/packages/69/90/f63fb5873511e014207a475e2bb4e8b2e570d655b00ac19a9a0ca0a385ee/jsonschema-4.26.0-py3-none-any.whl",
+      "version": "4.26.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "name": "jsonschema-specifications",
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+      "size": 18437,
+      "url": "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "version": "2025.9.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "markdown-3.10.2-py3-none-any.whl",
+      "name": "markdown",
+      "sha256": "e91464b71ae3ee7afd3017d9f358ef0baf158fd9a298db92f1d4761133824c36",
+      "size": 108180,
+      "url": "https://files.pythonhosted.org/packages/de/1f/77fa3081e4f66ca3576c896ae5d31c3002ac6607f9747d2e3aa49227e464/markdown-3.10.2-py3-none-any.whl",
+      "version": "3.10.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "markdown_it_py-4.0.0-py3-none-any.whl",
+      "name": "markdown-it-py",
+      "sha256": "87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147",
+      "size": 87321,
+      "url": "https://files.pythonhosted.org/packages/94/54/e7d793b573f298e1c9013b8c4dade17d481164aa517d1d7148619c2cedbf/markdown_it_py-4.0.0-py3-none-any.whl",
+      "version": "4.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "markupsafe-3.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "markupsafe",
+      "sha256": "ccfcd093f13f0f0b7fdd0f198b90053bf7b2f02a3927a30e63f3ccc9df56b676",
+      "size": 22980,
+      "url": "https://files.pythonhosted.org/packages/a9/21/9b05698b46f218fc0e118e1f8168395c65c8a2c750ae2bab54fc4bd4e0e8/markupsafe-3.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.0.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "mcp-2.0.0-py3-none-any.whl",
+      "name": "mcp",
+      "sha256": "1cb4c75d2d2c7b8c1d756355e5d82a39f2822cc7f13e22a2051d7ca3592349d6",
+      "size": 349980,
+      "url": "https://files.pythonhosted.org/packages/67/72/7d7897418912c1d12e87556630dfb7bf0eac71160e9bef8b447960804ee3/mcp-2.0.0-py3-none-any.whl",
+      "version": "2.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "mcp_types-2.0.0-py3-none-any.whl",
+      "name": "mcp-types",
+      "sha256": "6b2de797ca2797f568b79529e1b25948e34de511bcc0bd82fef1039a6d1b8eb0",
+      "size": 69649,
+      "url": "https://files.pythonhosted.org/packages/f5/4c/c78d78c3d52b0ac594ad7cc8ef5972adfe070e3597a8a4c6ce0cd39196ea/mcp_types-2.0.0-py3-none-any.whl",
+      "version": "2.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "mdurl-0.1.2-py3-none-any.whl",
+      "name": "mdurl",
+      "sha256": "84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8",
+      "size": 9979,
+      "url": "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl",
+      "version": "0.1.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "multidict-6.7.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "multidict",
+      "sha256": "9d624335fd4fa1c08a53f8b4be7676ebde19cd092b3895c421045ca87895b429",
+      "size": 254277,
+      "url": "https://files.pythonhosted.org/packages/b0/73/6e1b01cbeb458807aa0831742232dbdd1fa92bfa33f52a3f176b4ff3dc11/multidict-6.7.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "6.7.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "nemo-relay",
+      "sha256": "10b08a939678d8f54ad02e5fb086454ffad15f269eae4854e9597956dc96b176",
+      "size": 9760299,
+      "url": "https://files.pythonhosted.org/packages/18/00/15705b941df64443e50c49139140dd84603f23125ab48f9c122942911439/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "0.8.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "oauthlib-3.3.1-py3-none-any.whl",
+      "name": "oauthlib",
+      "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1",
+      "size": 160065,
+      "url": "https://files.pythonhosted.org/packages/be/9c/92789c596b8df838baa98fa71844d84283302f7604ed565dafe5a6b5041a/oauthlib-3.3.1-py3-none-any.whl",
+      "version": "3.3.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "openai-2.24.0-py3-none-any.whl",
+      "name": "openai",
+      "sha256": "fed30480d7d6c884303287bde864980a4b137b60553ffbcf9ab4a233b7a73d94",
+      "size": 1120122,
+      "url": "https://files.pythonhosted.org/packages/c9/30/844dc675ee6902579b8eef01ed23917cc9319a1c9c0c14ec6e39340c96d0/openai-2.24.0-py3-none-any.whl",
+      "version": "2.24.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "opentelemetry_api-1.39.1-py3-none-any.whl",
+      "name": "opentelemetry-api",
+      "sha256": "2edd8463432a7f8443edce90972169b195e7d6a05500cd29e6d13898187c9950",
+      "size": 66356,
+      "url": "https://files.pythonhosted.org/packages/cf/df/d3f1ddf4bb4cb50ed9b1139cc7b1c54c34a1e7ce8fd1b9a37c0d1551a6bd/opentelemetry_api-1.39.1-py3-none-any.whl",
+      "version": "1.39.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "packaging-26.0-py3-none-any.whl",
+      "name": "packaging",
+      "sha256": "b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529",
+      "size": 74366,
+      "url": "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl",
+      "version": "26.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pathspec-1.1.1-py3-none-any.whl",
+      "name": "pathspec",
+      "sha256": "a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189",
+      "size": 57328,
+      "url": "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl",
+      "version": "1.1.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pillow-12.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "pillow",
+      "sha256": "0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3",
+      "size": 6937129,
+      "url": "https://files.pythonhosted.org/packages/f7/62/de5bdd77d935331f4f802edc11e4d82950f642caad6cb2f949837b8560e2/pillow-12.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "12.3.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pillow_heif-1.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "pillow-heif",
+      "sha256": "e87c9a51ee973b5c1896beba74ddf9b58417f5b8a52d021b493f3ef6257c5f90",
+      "size": 5601975,
+      "url": "https://files.pythonhosted.org/packages/b7/7e/72c9fd99a74c82b08df3690077141bd16f1c9c7a3b3cd1c30e6fec4eb4a5/pillow_heif-1.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "1.5.0"
+    },
+    {
+      "authority": "pypi-supplement",
+      "filename": "pip-26.1.2-py3-none-any.whl",
+      "name": "pip",
+      "sha256": "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab",
+      "size": 1813144,
+      "url": "https://files.pythonhosted.org/packages/5d/95/6b5cb3461ea5673ba0995989746db58eb18b91b54dbf331e72f569540946/pip-26.1.2-py3-none-any.whl",
+      "version": "26.1.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "prompt_toolkit-3.0.52-py3-none-any.whl",
+      "name": "prompt-toolkit",
+      "sha256": "9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955",
+      "size": 391431,
+      "url": "https://files.pythonhosted.org/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl",
+      "version": "3.0.52"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "propcache-0.4.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "propcache",
+      "sha256": "d472aeb4fbf9865e0c6d622d7f4d54a4e101a89715d8904282bb5f9a2f476c3f",
+      "size": 204442,
+      "url": "https://files.pythonhosted.org/packages/f1/8b/544bc867e24e1bd48f3118cecd3b05c694e160a168478fa28770f22fd094/propcache-0.4.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.4.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "proto_plus-1.27.2-py3-none-any.whl",
+      "name": "proto-plus",
+      "sha256": "6432f75893d3b9e70b9c412f1d2f03f65b11fb164b793d14ae2ca01821d22718",
+      "size": 50450,
+      "url": "https://files.pythonhosted.org/packages/84/f3/1fba73eeffafc998a25d59703b63f8be4fe8a5cb12eaff7386a0ba0f7125/proto_plus-1.27.2-py3-none-any.whl",
+      "version": "1.27.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl",
+      "name": "protobuf",
+      "sha256": "cbf16ba3350fb7b889fca858fb215967792dc125b35c7976ca4818bee3521cf0",
+      "size": 323465,
+      "url": "https://files.pythonhosted.org/packages/9b/53/a9443aa3ca9ba8724fdfa02dd1887c1bcd8e89556b715cfbacca6b63dbec/protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl",
+      "version": "6.33.5"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "psutil",
+      "sha256": "076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9",
+      "size": 155560,
+      "url": "https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "7.2.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "ptyprocess-0.7.0-py2.py3-none-any.whl",
+      "name": "ptyprocess",
+      "sha256": "4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35",
+      "size": 13993,
+      "url": "https://files.pythonhosted.org/packages/22/a6/858897256d0deac81a172289110f31629fc4cee19b6f01283303e18c8db3/ptyprocess-0.7.0-py2.py3-none-any.whl",
+      "version": "0.7.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pyasn1-0.6.4-py3-none-any.whl",
+      "name": "pyasn1",
+      "sha256": "deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b",
+      "size": 84410,
+      "url": "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl",
+      "version": "0.6.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pyasn1_modules-0.4.2-py3-none-any.whl",
+      "name": "pyasn1-modules",
+      "sha256": "29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a",
+      "size": 181259,
+      "url": "https://files.pythonhosted.org/packages/47/8d/d529b5d697919ba8c11ad626e835d4039be708a35b0d22de83a269a6682c/pyasn1_modules-0.4.2-py3-none-any.whl",
+      "version": "0.4.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pycparser-3.0-py3-none-any.whl",
+      "name": "pycparser",
+      "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+      "size": 48172,
+      "url": "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl",
+      "version": "3.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pydantic-2.13.4-py3-none-any.whl",
+      "name": "pydantic",
+      "sha256": "45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba",
+      "size": 472262,
+      "url": "https://files.pythonhosted.org/packages/fd/7b/122376b1fd3c62c1ed9dc80c931ace4844b3c55407b6fb2d199377c9736f/pydantic-2.13.4-py3-none-any.whl",
+      "version": "2.13.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pydantic_core-2.46.4-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "pydantic-core",
+      "sha256": "9551187363ffc0de2a00b2e47c25aeaeb1020b69b668762966df15fc5659dd5a",
+      "size": 2094467,
+      "url": "https://files.pythonhosted.org/packages/07/f8/41db9de19d7987d6b04715a02b3b40aea467000275d9d758ffaa31af7d50/pydantic_core-2.46.4-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "2.46.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pygments-2.20.0-py3-none-any.whl",
+      "name": "pygments",
+      "sha256": "81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176",
+      "size": 1231151,
+      "url": "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl",
+      "version": "2.20.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pyjwt-2.13.0-py3-none-any.whl",
+      "name": "pyjwt",
+      "sha256": "66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728",
+      "size": 31274,
+      "url": "https://files.pythonhosted.org/packages/a3/5e/ecf12fdb62546d64385c158514e9b2b671f7832108ef2ecd2020ce0af2d1/pyjwt-2.13.0-py3-none-any.whl",
+      "version": "2.13.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pyparsing-3.3.2-py3-none-any.whl",
+      "name": "pyparsing",
+      "sha256": "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d",
+      "size": 122781,
+      "url": "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl",
+      "version": "3.3.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "name": "python-dateutil",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "size": 229892,
+      "url": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "version": "2.9.0.post0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "python_dotenv-1.2.2-py3-none-any.whl",
+      "name": "python-dotenv",
+      "sha256": "1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a",
+      "size": 22101,
+      "url": "https://files.pythonhosted.org/packages/0b/d7/1959b9648791274998a9c3526f6d0ec8fd2233e4d4acce81bbae76b44b2a/python_dotenv-1.2.2-py3-none-any.whl",
+      "version": "1.2.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "python_multipart-0.0.32-py3-none-any.whl",
+      "name": "python-multipart",
+      "sha256": "ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23",
+      "size": 30042,
+      "url": "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl",
+      "version": "0.0.32"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "python_telegram_bot-22.8-py3-none-any.whl",
+      "name": "python-telegram-bot",
+      "sha256": "42373918097f1b837cc4e717d588c19ea79651497ec712bb5b0c76e5e63c50e1",
+      "size": 769397,
+      "url": "https://files.pythonhosted.org/packages/60/7c/ed7d4dd94280bd434173cae9f7a7aedaaab9af128ae4f494423a5687c820/python_telegram_bot-22.8-py3-none-any.whl",
+      "version": "22.8"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pytz-2025.2-py2.py3-none-any.whl",
+      "name": "pytz",
+      "sha256": "5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00",
+      "size": 509225,
+      "url": "https://files.pythonhosted.org/packages/81/c4/34e93fe5f5429d7570ec1fa436f1986fb1f00c3e0f43a589fe2bbcd22c3f/pytz-2025.2-py2.py3-none-any.whl",
+      "version": "2025.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "pyyaml",
+      "sha256": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
+      "size": 801626,
+      "url": "https://files.pythonhosted.org/packages/74/27/e5b8f34d02d9995b80abcef563ea1f8b56d20134d8f4e5e81733b1feceb2/pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "6.0.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "referencing-0.37.0-py3-none-any.whl",
+      "name": "referencing",
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+      "size": 26766,
+      "url": "https://files.pythonhosted.org/packages/2c/58/ca301544e1fa93ed4f80d724bf5b194f6e4b945841c5bfd555878eea9fcb/referencing-0.37.0-py3-none-any.whl",
+      "version": "0.37.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "requests-2.33.0-py3-none-any.whl",
+      "name": "requests",
+      "sha256": "3324635456fa185245e24865e810cecec7b4caf933d7eb133dcde67d48cee69b",
+      "size": 65017,
+      "url": "https://files.pythonhosted.org/packages/56/5d/c814546c2333ceea4ba42262d8c4d55763003e767fa169adc693bd524478/requests-2.33.0-py3-none-any.whl",
+      "version": "2.33.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "requests_oauthlib-2.0.0-py2.py3-none-any.whl",
+      "name": "requests-oauthlib",
+      "sha256": "7dd8a5c40426b779b0868c404bdef9768deccf22749cde15852df527e6269b36",
+      "size": 24179,
+      "url": "https://files.pythonhosted.org/packages/3b/5d/63d4ae3b9daea098d5d6f5da83984853c1bbacd5dc826764b249fe119d24/requests_oauthlib-2.0.0-py2.py3-none-any.whl",
+      "version": "2.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "rich-14.3.3-py3-none-any.whl",
+      "name": "rich",
+      "sha256": "793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d",
+      "size": 310458,
+      "url": "https://files.pythonhosted.org/packages/14/25/b208c5683343959b670dc001595f2f3737e051da617f66c31f7c4fa93abc/rich-14.3.3-py3-none-any.whl",
+      "version": "14.3.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "rpds_py-0.30.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "rpds-py",
+      "sha256": "9027da1ce107104c50c81383cae773ef5c24d296dd11c99e2629dbd7967a20c6",
+      "size": 394025,
+      "url": "https://files.pythonhosted.org/packages/b7/de/f7192e12b21b9e9a68a6d0f249b4af3fdcdff8418be0767a627564afa1f1/rpds_py-0.30.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "0.30.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "ruamel_yaml-0.18.17-py3-none-any.whl",
+      "name": "ruamel-yaml",
+      "sha256": "9c8ba9eb3e793efdf924b60d521820869d5bf0cb9c6f1b82d82de8295e290b9d",
+      "size": 121594,
+      "url": "https://files.pythonhosted.org/packages/af/fe/b6045c782f1fd1ae317d2a6ca1884857ce5c20f59befe6ab25a8603c43a7/ruamel_yaml-0.18.17-py3-none-any.whl",
+      "version": "0.18.17"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "ruamel_yaml_clib-0.2.15-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "ruamel-yaml-clib",
+      "sha256": "4d1032919280ebc04a80e4fb1e93f7a738129857eaec9448310e638c8bccefcf",
+      "size": 782129,
+      "url": "https://files.pythonhosted.org/packages/ff/5d/e4f84c9c448613e12bd62e90b23aa127ea4c46b697f3d760acc32cb94f25/ruamel_yaml_clib-0.2.15-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.2.15"
+    },
+    {
+      "authority": "pypi-supplement",
+      "filename": "s3transfer-0.16.1-py3-none-any.whl",
+      "name": "s3transfer",
+      "sha256": "61bcd00ccb83b21a0fe7e91a553fff9729d46c83b4e0106e7c314a733891f7c2",
+      "size": 86825,
+      "url": "https://files.pythonhosted.org/packages/03/19/90d7d4ed51932c022d53f1d02d564b62d10e272692a1f9b76425c1ad2a02/s3transfer-0.16.1-py3-none-any.whl",
+      "version": "0.16.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "name": "six",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "size": 11050,
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "version": "1.17.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "sniffio-1.3.1-py3-none-any.whl",
+      "name": "sniffio",
+      "sha256": "2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2",
+      "size": 10235,
+      "url": "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl",
+      "version": "1.3.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "snowballstemmer-3.1.1-py3-none-any.whl",
+      "name": "snowballstemmer",
+      "sha256": "7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752",
+      "size": 104164,
+      "url": "https://files.pythonhosted.org/packages/4c/07/2ebca9b11fb9be7340a818d8d6f63feaebb146be2c4afbd6061701d6df6e/snowballstemmer-3.1.1-py3-none-any.whl",
+      "version": "3.1.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "socksio-1.0.0-py3-none-any.whl",
+      "name": "socksio",
+      "sha256": "95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3",
+      "size": 12763,
+      "url": "https://files.pythonhosted.org/packages/37/c3/6eeb6034408dac0fa653d126c9204ade96b819c936e136c5e8a6897eee9c/socksio-1.0.0-py3-none-any.whl",
+      "version": "1.0.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "sse_starlette-3.3.2-py3-none-any.whl",
+      "name": "sse-starlette",
+      "sha256": "5c3ea3dad425c601236726af2f27689b74494643f57017cafcb6f8c9acfbb862",
+      "size": 14270,
+      "url": "https://files.pythonhosted.org/packages/61/28/8cb142d3fe80c4a2d8af54ca0b003f47ce0ba920974e7990fa6e016402d1/sse_starlette-3.3.2-py3-none-any.whl",
+      "version": "3.3.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "starlette-1.3.1-py3-none-any.whl",
+      "name": "starlette",
+      "sha256": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6",
+      "size": 73632,
+      "url": "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl",
+      "version": "1.3.1"
+    },
+    {
+      "authority": "pypi-supplement",
+      "filename": "tabulate-0.10.0-py3-none-any.whl",
+      "name": "tabulate",
+      "sha256": "f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3",
+      "size": 39814,
+      "url": "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl",
+      "version": "0.10.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "tenacity-9.1.4-py3-none-any.whl",
+      "name": "tenacity",
+      "sha256": "6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55",
+      "size": 28926,
+      "url": "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl",
+      "version": "9.1.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "termcolor-3.3.0-py3-none-any.whl",
+      "name": "termcolor",
+      "sha256": "cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5",
+      "size": 7734,
+      "url": "https://files.pythonhosted.org/packages/33/d1/8bb87d21e9aeb323cc03034f5eaf2c8f69841e40e4853c2627edf8111ed3/termcolor-3.3.0-py3-none-any.whl",
+      "version": "3.3.0"
+    },
+    {
+      "authority": "pypi-supplement",
+      "filename": "tornado-6.5.10-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "name": "tornado",
+      "sha256": "bdf942448169e5336451d0494d7e3d81cfa726d5aa312affdc4682dd62a62f6d",
+      "size": 467096,
+      "url": "https://files.pythonhosted.org/packages/60/33/df6d7d04854a58619f8349a51e3edb138324130a7562b0bb21f115bb940f/tornado-6.5.10-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "version": "6.5.10"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "tqdm-4.67.3-py3-none-any.whl",
+      "name": "tqdm",
+      "sha256": "ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf",
+      "size": 78374,
+      "url": "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl",
+      "version": "4.67.3"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "truststore-0.10.4-py3-none-any.whl",
+      "name": "truststore",
+      "sha256": "adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981",
+      "size": 18660,
+      "url": "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl",
+      "version": "0.10.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "typing_extensions-4.15.0-py3-none-any.whl",
+      "name": "typing-extensions",
+      "sha256": "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+      "size": 44614,
+      "url": "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl",
+      "version": "4.15.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "typing_inspection-0.4.2-py3-none-any.whl",
+      "name": "typing-inspection",
+      "sha256": "4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7",
+      "size": 14611,
+      "url": "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl",
+      "version": "0.4.2"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "uritemplate-4.2.0-py3-none-any.whl",
+      "name": "uritemplate",
+      "sha256": "962201ba1c4edcab02e60f9a0d3821e82dfc5d2d6662a21abd533879bdb8a686",
+      "size": 11488,
+      "url": "https://files.pythonhosted.org/packages/a9/99/3ae339466c9183ea5b8ae87b34c0b897eda475d2aec2307cae60e5cd4f29/uritemplate-4.2.0-py3-none-any.whl",
+      "version": "4.2.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "urllib3-2.7.0-py3-none-any.whl",
+      "name": "urllib3",
+      "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+      "size": 131087,
+      "url": "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl",
+      "version": "2.7.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "uvicorn-0.41.0-py3-none-any.whl",
+      "name": "uvicorn",
+      "sha256": "29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187",
+      "size": 68783,
+      "url": "https://files.pythonhosted.org/packages/83/e4/d04a086285c20886c0daad0e026f250869201013d18f81d9ff5eada73a88/uvicorn-0.41.0-py3-none-any.whl",
+      "version": "0.41.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "uvloop-0.22.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "uvloop",
+      "sha256": "0530a5fbad9c9e4ee3f2b33b148c6a64d47bbad8000ea63704fa8260f4cf728e",
+      "size": 4366890,
+      "url": "https://files.pythonhosted.org/packages/15/c0/0be24758891ef825f2065cd5db8741aaddabe3e248ee6acc5e8a80f04005/uvloop-0.22.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.22.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "watchfiles-1.1.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "watchfiles",
+      "sha256": "c755367e51db90e75b19454b680903631d41f9e3607fbd941d296a020c2d752d",
+      "size": 456147,
+      "url": "https://files.pythonhosted.org/packages/62/da/def65b170a3815af7bd40a3e7010bf6ab53089ef1b75d05dd5385b87cf08/watchfiles-1.1.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "1.1.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "wcwidth-0.6.0-py3-none-any.whl",
+      "name": "wcwidth",
+      "sha256": "1a3a1e510b553315f8e146c54764f4fb6264ffad731b3d78088cdb1478ffbdad",
+      "size": 94189,
+      "url": "https://files.pythonhosted.org/packages/68/5a/199c59e0a824a3db2b89c5d2dade7ab5f9624dbf6448dc291b46d5ec94d3/wcwidth-0.6.0-py3-none-any.whl",
+      "version": "0.6.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "websockets-15.0.1-cp313-cp313-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "name": "websockets",
+      "sha256": "0f3c1e2ab208db911594ae5b4f79addeb3501604a165019dd221c0bdcabe4db8",
+      "size": 182496,
+      "url": "https://files.pythonhosted.org/packages/ff/b2/83a6ddf56cdcbad4e3d841fcc55d6ba7d19aeb89c50f24dd7e859ec0805f/websockets-15.0.1-cp313-cp313-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "15.0.1"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "yarl-1.22.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "name": "yarl",
+      "sha256": "bec03d0d388060058f5d291a813f21c011041938a441c593374da6077fe21b1b",
+      "size": 377059,
+      "url": "https://files.pythonhosted.org/packages/11/c9/cd8538dc2e7727095e0c1d867bad1e40c98f37763e6d995c1939f5fdc7b1/yarl-1.22.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "1.22.0"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "youtube_transcript_api-1.2.4-py3-none-any.whl",
+      "name": "youtube-transcript-api",
+      "sha256": "03878759356da5caf5edac77431780b91448fb3d8c21d4496015bdc8a7bc43ff",
+      "size": 485227,
+      "url": "https://files.pythonhosted.org/packages/be/95/129ea37efd6cd6ed00f62baae6543345c677810b8a3bf0026756e1d3cf3c/youtube_transcript_api-1.2.4-py3-none-any.whl",
+      "version": "1.2.4"
+    },
+    {
+      "authority": "official-uv-lock",
+      "filename": "zipp-3.23.0-py3-none-any.whl",
+      "name": "zipp",
+      "sha256": "071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e",
+      "size": 10276,
+      "url": "https://files.pythonhosted.org/packages/2e/54/647ade08bf0db230bfea292f893923872fd20be6ac6f53b2b936ba839d75/zipp-3.23.0-py3-none-any.whl",
+      "version": "3.23.0"
+    }
+  ]
+}

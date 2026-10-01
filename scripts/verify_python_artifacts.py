@@ -96,6 +96,7 @@ def _source_files(*, require_runtime: bool = False) -> set[str]:
         "scripts/verify_macos_architecture.py",
     }
     files.add('deploy/caddy/caddy-lock.json')
+    files.add('deploy/project-runtime-origin-lock.json')
     files.update(f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"])
     for package in project["tool"]["setuptools"]["packages"]:
         files.update(
@@ -116,6 +117,7 @@ def _wheel_files(*, require_runtime: bool = False) -> set[str]:
     project = _project()
     files = {f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"]}
     files.add('deploy/caddy/caddy-lock.json')
+    files.add('deploy/project-runtime-origin-lock.json')
     for package in project["tool"]["setuptools"]["packages"]:
         files.update(
             path.relative_to(ROOT).as_posix()

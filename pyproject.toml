@@ -130,3 +130,4 @@ py-modules = [
 
 [tool.setuptools.package-data]
 "deploy.caddy" = ["caddy-lock.json"]
+"deploy" = ["project-runtime-origin-lock.json"]
