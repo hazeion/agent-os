@@ -43,7 +43,7 @@ class OwnerInboxTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as connection:
                 self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
                 mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 35)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 36)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_inbox_items").fetchone()[0], 0)
                 validate_inbox_connection(connection)
 
