@@ -1967,20 +1967,21 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 target / "private" / "restore-fixture",
             )
             stage.rename(target / "private" / "console")
-            preview = data_backup_restore.preview_durable_restore(
-                target,
-                source_path,
-            )
-            with patch.object(
-                data_backup_restore,
-                "_restore_private_console_under_lock",
-                side_effect=OSError("simulated released interruption"),
-            ):
-                partial = data_backup_restore.restore_durable_backup(
+            with patch.object(data_backup_restore, "RESTORE_PROTOCOL_VERSION", 3):
+                preview = data_backup_restore.preview_durable_restore(
                     target,
                     source_path,
-                    confirmation_token=preview.confirmation_token or "",
                 )
+                with patch.object(
+                    data_backup_restore,
+                    "_restore_private_console_under_lock",
+                    side_effect=OSError("simulated released interruption"),
+                ):
+                    partial = data_backup_restore.restore_durable_backup(
+                        target,
+                        source_path,
+                        confirmation_token=preview.confirmation_token or "",
+                    )
             self.assertEqual(partial.status, "partial_failure")
             state = json.loads(
                 (

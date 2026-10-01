@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 import stat
 import struct
+import secrets
+import time
 from typing import Any, Mapping
 import zipfile
 
@@ -62,6 +64,7 @@ from private_console_unit import (
     private_console_unit_digest,
     remove_private_console_tree,
     sanitize_owner_auth_restore_unit,
+    matching_legacy_owner_restore_unit,
     validate_private_console_unit,
     validate_private_console_stage_inventory,
 )
@@ -70,7 +73,9 @@ from private_state import console_root as private_console_root
 
 
 BACKUP_FORMAT_VERSION = 5
-RESTORE_PROTOCOL_VERSION = 3
+SANITIZED_RESTORE_PROTOCOL_VERSION = 4
+RESTORE_PROTOCOL_VERSION = SANITIZED_RESTORE_PROTOCOL_VERSION
+PREVIOUS_RESTORE_PROTOCOL_VERSION = 3
 LEGACY_RESTORE_PROTOCOL_VERSION = 2
 BACKUP_KIND = "mentat-general-backup"
 BACKUP_PREFIX = "mentat-backup-v5-"
@@ -1272,6 +1277,46 @@ def _capture_private_for_restore_state(
     return capture_private_console_unit(target)
 
 
+def _valid_sanitization_timestamp(value: object) -> bool:
+    return type(value) in {int, float} and 0 < value <= 253402300799.0
+
+
+def _new_restore_sanitization(source: PrivateConsoleUnit | None) -> dict | None:
+    if source is None:
+        return None
+    timestamp = time.time()
+    if not _valid_sanitization_timestamp(timestamp):
+        raise ValueError('restore sanitization invalid')
+    seed = secrets.token_bytes(32)
+    sanitized = sanitize_owner_auth_restore_unit(source, now=timestamp, epoch_seed=seed)
+    return {'timestamp': timestamp, 'seed': seed.hex(), 'private_sha256': private_console_unit_digest(sanitized)}
+
+
+def _sanitized_restore_source(source: PrivateConsoleUnit | None, state: Mapping[str, Any], *, live: PrivateConsoleUnit | None = None) -> PrivateConsoleUnit | None:
+    if state.get('protocol_version') in {LEGACY_RESTORE_PROTOCOL_VERSION, PREVIOUS_RESTORE_PROTOCOL_VERSION}:
+        # Published legacy code did not record its clock. Recognize only an
+        # exact replay from its complete published private tree. Before that
+        # publication, confirmation may choose a clock; the result becomes the
+        # durable witness. Schema 28 never uses these old receipt protocols.
+        return matching_legacy_owner_restore_unit(source, live) if source is not None and live is not None else None
+    if state.get('protocol_version') != SANITIZED_RESTORE_PROTOCOL_VERSION:
+        raise ValueError('restore sanitization invalid')
+    context = state.get('sanitization')
+    if source is None:
+        if context is not None:
+            raise ValueError('restore sanitization invalid')
+        return None
+    if (not isinstance(context, dict) or set(context) != {'timestamp','seed','private_sha256'}
+            or not _valid_sanitization_timestamp(context['timestamp'])
+            or not isinstance(context['seed'], str) or _TOKEN_RE.fullmatch(context['seed']) is None
+            or not isinstance(context['private_sha256'], str) or _TOKEN_RE.fullmatch(context['private_sha256']) is None):
+        raise ValueError('restore sanitization invalid')
+    sanitized = sanitize_owner_auth_restore_unit(source, now=context['timestamp'], epoch_seed=bytes.fromhex(context['seed']))
+    if private_console_unit_digest(sanitized) != context['private_sha256']:
+        raise ValueError('restore sanitization changed')
+    return sanitized
+
+
 def _restore_state_document(
     *,
     token: str,
@@ -1287,6 +1332,7 @@ def _restore_state_document(
     recovery_raw: bytes,
     recovery_evidence_binding: str,
     protocol_version: int | None = None,
+    sanitization: dict | None = None,
 ) -> dict[str, Any]:
     effective_protocol = (
         RESTORE_PROTOCOL_VERSION
@@ -1299,7 +1345,7 @@ def _restore_state_document(
         if effective_protocol == LEGACY_RESTORE_PROTOCOL_VERSION
         else private_console_unit_digest
     )
-    return {
+    document = {
         "protocol_version": effective_protocol,
         "restore_id": token[:24],
         "preview_token": token,
@@ -1340,6 +1386,9 @@ def _restore_state_document(
             for item in source_documents
         ],
     }
+    if effective_protocol == SANITIZED_RESTORE_PROTOCOL_VERSION:
+        document['sanitization'] = _new_restore_sanitization(source_private) if sanitization is None else sanitization
+    return document
 
 
 def _validated_resume(
@@ -1355,7 +1404,6 @@ def _validated_resume(
     live_private: PrivateConsoleUnit,
     target_binding: str,
     root_descriptor: int | None = None,
-    sanitized_source_private: PrivateConsoleUnit | None = None,
 ) -> tuple[bool, tuple[_Document, ...], bytes]:
     expected_keys = {
         "protocol_version",
@@ -1375,6 +1423,8 @@ def _validated_resume(
     }
     token = state.get("preview_token")
     protocol_version = state.get("protocol_version")
+    if protocol_version == SANITIZED_RESTORE_PROTOCOL_VERSION:
+        expected_keys.add('sanitization')
     private_digest = (
         legacy_private_console_unit_digest
         if protocol_version == LEGACY_RESTORE_PROTOCOL_VERSION
@@ -1384,7 +1434,8 @@ def _validated_resume(
         set(state) != expected_keys
         or protocol_version not in {
             LEGACY_RESTORE_PROTOCOL_VERSION,
-            RESTORE_PROTOCOL_VERSION,
+            PREVIOUS_RESTORE_PROTOCOL_VERSION,
+            SANITIZED_RESTORE_PROTOCOL_VERSION,
         }
         or not isinstance(token, str)
         or _TOKEN_RE.fullmatch(token) is None
@@ -1404,6 +1455,10 @@ def _validated_resume(
         )
         or not isinstance(state.get("items"), list)
     ):
+        return False, (), b""
+    try:
+        sanitized_source_private = _sanitized_restore_source(source_private, state, live=live_private)
+    except (OSError, ValueError, TypeError):
         return False, (), b""
     recovery_name = state.get("recovery_backup_name")
     recovery_digest = state.get("recovery_backup_sha256")
@@ -1457,6 +1512,7 @@ def _validated_resume(
             recovery_raw=recovery_raw,
             recovery_evidence_binding=recovery_evidence_binding,
             protocol_version=int(protocol_version),
+            sanitization=state.get('sanitization'),
         )["items"]
     ):
         return False, (), b""
@@ -1469,8 +1525,6 @@ def _validated_resume(
         }:
             return False, (), b""
     allowed_private = {private_digest(recovery_private)}
-    if source_private is not None:
-        allowed_private.add(private_digest(source_private))
     # Owner-auth restore publication deliberately sanitizes its private source
     # after the immutable backup/receipt has been bound.  An interruption after
     # that exchange must resume only from that deterministic sanitized unit or
@@ -1545,11 +1599,6 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
             )
         state = state_hint
         if state is not None:
-            sanitized_backup_private = (
-                sanitize_owner_auth_restore_unit(backup_private)
-                if backup_private is not None
-                else None
-            )
             valid, _recovery_documents, _recovery_raw = _validated_resume(
                 target,
                 state,
@@ -1561,7 +1610,6 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
                 live_documents=target_documents,
                 live_private=target_private,
                 target_binding=binding,
-                sanitized_source_private=sanitized_backup_private,
             )
             if not valid:
                 return _blocked_preview("unsafe", "restore_state_invalid")
@@ -1994,11 +2042,6 @@ def restore_durable_backup(
                 _source_name,
                 source_binding,
             ) = _read_backup_file(Path(backup_file))
-            sanitized_source_private = (
-                sanitize_owner_auth_restore_unit(source_private)
-                if source_private is not None
-                else None
-            )
             live_documents = _load_live_documents(target, root_descriptor)
             binding = _target_binding(target, root_descriptor)
             state = _read_restore_state(target, root_descriptor)
@@ -2099,7 +2142,6 @@ def restore_durable_backup(
                     live_private=live_private,
                     target_binding=binding,
                     root_descriptor=root_descriptor,
-                    sanitized_source_private=sanitized_source_private,
                 )
                 if not valid or state.get("preview_token") != confirmation_token:
                     return _blocked_result(initial, "restore_state_changed")
@@ -2113,6 +2155,10 @@ def restore_durable_backup(
                 ) = _read_internal_backup(target, recovery_name, root_descriptor)
                 if recovery_private is None:
                     raise OSError("restore recovery private unit missing")
+            sanitized_source_private = _sanitized_restore_source(source_private, state, live=live_private)
+            if source_private is not None and sanitized_source_private is None:
+                # Only a validated legacy recovery tree reaches this case.
+                sanitized_source_private = sanitize_owner_auth_restore_unit(source_private, legacy=True)
             if sanitized_source_private is not None:
                 # Sanitize only after the exact backup's unsanitized identity
                 # has bound the preview and any resumable restore receipt.

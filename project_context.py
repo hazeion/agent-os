@@ -23,7 +23,10 @@ MAX_BRIEF_BYTES = 16 * 1024
 MAX_FILES = 16
 MAX_PROJECT_VERSIONS = 32
 MAX_VERSIONS = 256
-MAX_METADATA_BYTES = 4 * 1024 * 1024
+LEGACY_MAX_METADATA_BYTES = 4 * 1024 * 1024
+# Schema 28 reserves bounded migration/control overhead for 128 Agent
+# incarnations, up to 256 scope retirement fields, and the approval epoch.
+MAX_METADATA_BYTES = LEGACY_MAX_METADATA_BYTES + 64 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -66,7 +69,7 @@ def _encoded(value: object) -> bytes:
         _fail("invalid")
 
 
-def validate_project_context_connection(connection: sqlite3.Connection) -> None:
+def validate_project_context_connection(connection: sqlite3.Connection, *, require_available: bool = True) -> None:
     """Validate the complete bounded retained graph, including backup snapshots."""
     # No row_factory mutation: backup validators and repositories share this handle.
     scopes = connection.execute(
@@ -80,7 +83,20 @@ def validate_project_context_connection(connection: sqlite3.Connection) -> None:
     ).fetchmany(MAX_VERSIONS * MAX_FILES + 1)
     if len(scopes) > MAX_VERSIONS or len(versions) > MAX_VERSIONS or len(files) > MAX_VERSIONS * MAX_FILES:
         _fail("capacity")
-    if len(_encoded([[list(row) for row in rows] for rows in (scopes, versions, files)])) > MAX_METADATA_BYTES:
+    schema_version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
+    metadata = [[list(row) for row in rows] for rows in (scopes, versions, files)]
+    budget = LEGACY_MAX_METADATA_BYTES
+    if schema_version >= 28:
+        budget = MAX_METADATA_BYTES
+        metadata[0] = [list(row[:4]) + ['0' * 32] for row in scopes]
+        from project_context_access import ProjectContextAccessError, validate_access_connection
+        try:
+            metadata.extend(validate_access_connection(connection))
+        except ProjectContextAccessError as exc:
+            if str(exc) == 'project_context_access.capacity':
+                _fail('capacity')
+            _fail('invalid')
+    if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}
     scope_map = {}
@@ -129,11 +145,11 @@ def validate_project_context_connection(connection: sqlite3.Connection) -> None:
     for identifier, identifiers in attachment_lists.items():
         if hashlib.sha256(_encoded(identifiers)).hexdigest() != file_digests[identifier]:
             _fail("invalid")
+    availability = " OR a.state!='attached' OR b.state!='ready'" if require_available else ''
     dangling = connection.execute(
         "SELECT COUNT(*) FROM mentat_project_context_files r "
         "LEFT JOIN attachments a ON a.id=r.attachment_id LEFT JOIN blobs b ON b.id=a.blob_id "
-        "WHERE a.id IS NULL OR b.id IS NULL OR a.state!='attached' OR b.state!='ready' "
-        "OR a.byte_size!=b.byte_size"
+        "WHERE a.id IS NULL OR b.id IS NULL OR a.byte_size!=b.byte_size" + availability
     ).fetchone()[0]
     if dangling:
         _fail("file_unavailable")
@@ -179,13 +195,14 @@ def read_project_context(data_dir: Path, project_id: str, *, revision: int | Non
                 repository = ProjectRepository(connection)
                 repository.authority_receipt(required=True)
                 repository.get(project_id)
-                validate_project_context_connection(connection)
+                validate_project_context_connection(connection, require_available=False)
                 return _snapshot(connection, project_id, revision)
 
 
 def publish_project_context(
     data_dir: Path, project_id: str, *, expected_project_revision: int,
     expected_revision: int, brief: str, attachment_ids: tuple[str, ...] | list[str],
+    expected_staged_ids: tuple[str, ...] | list[str] | None = None,
 ) -> dict:
     """Publish one exact revision, retaining every selected file or none."""
     if (type(expected_revision) is not int or expected_revision < 0
@@ -193,6 +210,7 @@ def publish_project_context(
         _fail("revision_invalid")
     brief = _brief(brief)
     identifiers = _file_ids(attachment_ids)
+    staged = None if expected_staged_ids is None else _file_ids(expected_staged_ids)
     root = Path(data_dir)
     with private_state_lock(root):
         with _open_repository_database(root) as (connection, guard):
@@ -204,7 +222,21 @@ def publish_project_context(
                     _fail("project_changed")
                 if project.document["status"] != "active":
                     _fail("project_unavailable")
-                validate_project_context_connection(connection)
+                validate_project_context_connection(connection, require_available=False)
+                if staged is not None:
+                    current_staged = tuple(row[0] for row in connection.execute(
+                        'SELECT attachment_id FROM mentat_project_context_staged WHERE project_id=? ORDER BY attachment_id', (project_id,)
+                    ))
+                    if tuple(sorted(staged)) != current_staged:
+                        _fail('staging_changed')
+                    for attachment in identifiers:
+                        retained_here = connection.execute(
+                            'SELECT 1 FROM mentat_project_context_files f JOIN mentat_project_context_versions v ON v.id=f.context_id '
+                            'JOIN mentat_project_context_scopes s ON s.id=v.scope_id '
+                            'WHERE s.project_id=? AND s.retired_at IS NULL AND f.attachment_id=?', (project_id, attachment)
+                        ).fetchone()
+                        if attachment not in staged and retained_here is None:
+                            _fail('file_scope')
                 scope = connection.execute(
                     "SELECT id,revision FROM mentat_project_context_scopes WHERE project_id=? AND retired_at IS NULL", (project_id,)
                 ).fetchone()
@@ -222,6 +254,11 @@ def publish_project_context(
                     except (AttachmentError, OSError):
                         _fail("file_unavailable")
                 scope_id = scope[0] if scope else "project_scope_" + uuid.uuid4().hex
+                if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] >= 28:
+                    connection.execute(
+                        'UPDATE mentat_project_context_access_state SET approval_epoch=randomblob(32) '
+                        'WHERE singleton=1 AND approval_epoch=zeroblob(32)'
+                    )
                 revision = expected_revision + 1
                 identifier = "project_context_" + uuid.uuid4().hex
                 if scope:
@@ -240,7 +277,9 @@ def publish_project_context(
                         "UPDATE attachments SET state='attached',expires_at=NULL,delete_after=NULL,updated_at=? WHERE id=?",
                         (now, attachment),
                     )
-                validate_project_context_connection(connection)
+                    if staged is not None:
+                        connection.execute('DELETE FROM mentat_project_context_staged WHERE project_id=? AND attachment_id=?', (project_id, attachment))
+                validate_project_context_connection(connection, require_available=False)
                 return _snapshot(connection, project_id, revision)
 
 
@@ -262,7 +301,7 @@ def read_retired_project_context(data_dir: Path, context_id: str) -> dict:
     with private_state_lock(Path(data_dir)):
         with _open_repository_database(Path(data_dir)) as (connection, guard):
             with _guarded_transaction(connection, guard):
-                validate_project_context_connection(connection)
+                validate_project_context_connection(connection, require_available=False)
                 row = connection.execute(
                     "SELECT v.id,v.revision,v.brief,v.created_at,s.project_id FROM mentat_project_context_versions v "
                     "JOIN mentat_project_context_scopes s ON s.id=v.scope_id WHERE v.id=? AND s.retired_at IS NOT NULL",
