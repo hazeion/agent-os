@@ -1056,6 +1056,19 @@ rows disclose changed or unavailable Task/Agent identity without substituting
 new content after ID reuse. Editing or saving a plan does not start work or
 make a version-1 plan eligible for approval.
 
+Schema 34 adds an owner-private Inbox receipt table for exact Project result
+review generations. A complete three-slot bundle with no exact owner decision
+creates one item in the same transaction as the result save; an exact acceptance
+or change request resolves it in the review transaction. New heads create a
+new generation, while source history remains in the deliverable authority.
+Read and Acknowledge change only the item's owner attention state, using exact
+revisions and a bounded repeated-action receipt. Acknowledgment cannot accept
+results, dispatch an Agent or resolve the underlying review. Project deletion
+retains the item as stale history, and another Project using the same public ID
+cannot inherit it. The owner-only fixed bridge exposes bounded safe list and
+mark operations; the item-bound review destination and additional producers
+remain separate capabilities.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains

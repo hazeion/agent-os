@@ -2,7 +2,7 @@ import { ownerFetch } from "../../public/owner-session.js";
 import { DeliverableContractError, deliverableRequest, deliverableResult, type DeliverableOperation, type DeliverableResults } from "./project-deliverable-contract.ts";
 
 export class PublicDeliverableError extends Error { constructor(readonly code: string) { super(code); } }
-const FAILURES = new Set(["invalid", "revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable", "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable", "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid", "incomplete", "stale", "confirmation_conflict", "unavailable"]);
+const FAILURES = new Set(["invalid", "revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable", "project_unavailable", "capacity", "inbox_capacity", "content_invalid", "content_capacity", "preview_unavailable", "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid", "incomplete", "stale", "confirmation_conflict", "unavailable"]);
 const VERSION = /^deliverable_version_[0-9a-f]{32}$/u;
 export function deliverablePreviewUrl(versionId: string): string {
   if (!VERSION.test(versionId)) throw new PublicDeliverableError("invalid");

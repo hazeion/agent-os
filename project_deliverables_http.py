@@ -104,14 +104,14 @@ def dispatch_project_deliverables(data_dir: Path, operation: str, body: object) 
     except DeliverableError as exc:
         code = str(exc).rsplit(".", 1)[-1]
         allowed = {"revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable",
-                   "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable",
+                   "project_unavailable", "capacity", "inbox_capacity", "content_invalid", "content_capacity", "preview_unavailable",
                    "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid"}
-        return _failure(code if code in allowed else "unavailable", 409)
+        return _failure(code, 409) if code in allowed else _failure("unavailable", 503)
     except DeliverableReviewError as exc:
         code = str(exc).rsplit(".", 1)[-1]
         if code in {"request_invalid", "confirmation_invalid"}:
             return _failure("invalid", 400)
-        if code in {"incomplete", "stale", "confirmation_conflict", "capacity", "project_unavailable"}:
+        if code in {"incomplete", "stale", "confirmation_conflict", "capacity", "inbox_capacity", "project_unavailable"}:
             return _failure(code, 409)
         return _failure("unavailable", 503)
     except ProjectRepositoryError as exc:

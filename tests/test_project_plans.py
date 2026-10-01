@@ -65,10 +65,10 @@ class ProjectPlanTests(unittest.TestCase):
                     target, restored, target / "private" / "console",
                 )
                 with closing(mentat_db.connect(target)) as upgraded:
-                    self.assertEqual(upgraded.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
+                    self.assertEqual(upgraded.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 34)
                     validate_plan_connection(upgraded)
                 mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 34)
                 validate_plan_connection(connection)
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"

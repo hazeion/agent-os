@@ -256,6 +256,12 @@ def confirm_review(data_dir: Path, project_id: str, action: object, note: object
                     "UPDATE mentat_deliverable_review_state SET revision=? WHERE singleton=1",
                     (next_revision,),
                 )
+                from owner_inbox import OwnerInboxError, sync_result_review_connection, validate_inbox_connection
+                try:
+                    sync_result_review_connection(connection, project_id)
+                    validate_inbox_connection(connection)
+                except OwnerInboxError as exc:
+                    _fail("inbox_capacity" if str(exc) == "owner_inbox.capacity" else "inbox_unavailable")
                 validate_project_context_connection(connection, require_available=False)
                 return {"id": identifier, "revision": next_revision, "action": action,
                         "project_id": project_id, "duplicate": False}
