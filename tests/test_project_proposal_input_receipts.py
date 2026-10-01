@@ -88,9 +88,10 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
         connection.execute("DROP TRIGGER mentat_runs_project_proposal_closed_insert")
         connection.execute(
             "INSERT INTO mentat_runs(id,source,agent_id,runtime_type,runtime_config_id,"
-            "runtime_binding_digest,capabilities_json,status,dispatch_state,created_at,updated_at) "
-            "VALUES(?,'project_proposal',?,?,?,?,'[]','reserved','reserved',?,?)",
-            (run_id, selected[5], runtime[0], runtime[1], selected[8], CREATED, CREATED),
+            "runtime_binding_digest,capabilities_json,status,dispatch_state,created_at,updated_at,capacity_scope_digest,admitted_capacity_limit) "
+            "VALUES(?,'project_proposal',?,?,?,?,'[]','reserved','reserved',?,?,?,?)",
+            (run_id, selected[5], runtime[0], runtime[1], selected[8], CREATED, CREATED,
+             *(getattr(self,'producer_capacity',None) or (None,None))),
         )
         connection.execute(trigger)
         created_at = max(time.time(), selected[12])

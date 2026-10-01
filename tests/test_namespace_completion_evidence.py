@@ -15,6 +15,17 @@ from mentat.project_scope_evidence import _issue as issue_scope
 
 
 class NamespaceCompletionTests(unittest.TestCase):
+    def test_deadline_is_pinned_before_wait_and_cannot_be_extended_or_repaired(self):
+        for deadline,changed in ((None,10**12),(float('inf'),10**12),(10**12,10**12+1)):
+            scope=MagicMock()
+            scope._deadline=deadline
+            lifecycle=MagicMock()
+            handle=namespaces.NamespaceWorker(scope,lifecycle,9999)
+            scope._deadline=changed
+            with self.subTest(deadline=deadline),self.assertRaises(WorkerScopeError): handle.wait()
+            lifecycle.recvmsg.assert_not_called()
+            self.assertIsNone(handle._verified_result)
+
     def test_raw_values_and_public_constructor_cannot_issue_evidence(self):
         for value in (True,{},None,b'output'):
             with self.assertRaises(ValueError): evidence.completion_metadata(value)
@@ -67,6 +78,7 @@ class NamespaceCompletionTests(unittest.TestCase):
         scope._lock=threading.RLock()
         scope._closed=True
         scope.deadline_hit=False
+        scope._deadline=time.monotonic()+20
         values={'unit':'mentat-project-worker-'+'a'*32+'.scope','boot_id':'b'*32,'uid':1000,
                 'memory_bytes':512*1024*1024,'processes':32,'cpu_percent':100,'wall_seconds':20,
                 'invocation':'c'*32,'device':1,'inode':2,'pid':3,'start_ticks':4}
@@ -75,6 +87,7 @@ class NamespaceCompletionTests(unittest.TestCase):
         scope._namespace_worker=handle
         handle._verified_result=('output',10)
         barrier=threading.Barrier(2)
+        handle._verified_deadline=scope._deadline
         original=evidence._issue
         calls=[]
         def slow_issue(*args):
@@ -89,6 +102,12 @@ class NamespaceCompletionTests(unittest.TestCase):
             first,second=[future.result(timeout=2) for future in futures]
         self.assertIs(first,second)
         self.assertEqual(len(calls),1)
+        self.assertEqual(evidence.completion_metadata(first),evidence.completion_metadata(second))
+        self.assertEqual(evidence.completion_acceptance_deadline(first),scope._deadline)
+        # Waiting or issuing a witness later must never reset conversion time.
+        with patch.object(evidence.time,'monotonic',return_value=scope._deadline):
+            with self.assertRaisesRegex(ValueError,'expired'):
+                evidence.completion_acceptance_deadline(first)
         self.assertEqual(evidence.completion_metadata(first),evidence.completion_metadata(second))
 
 

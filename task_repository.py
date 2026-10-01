@@ -557,11 +557,14 @@ class _DatabaseIdentityGuard:
         self,
         data_root: Path,
         opening_identities: Mapping[Path, tuple[int, int] | None],
+        *,
+        connection: sqlite3.Connection | None = None,
     ):
         selected = database_path(data_root)
         self.private = selected.parent.resolve(strict=True)
         self.path = self.private / selected.name
         self.main_identity = opening_identities.get(self.path)
+        self.connection = connection
         if self.main_identity is None:
             raise TaskRepositoryUnavailable("task_repository.database_changed")
         self.verify(opening_identities)
@@ -586,10 +589,13 @@ def _guarded_transaction(
     guard: _DatabaseIdentityGuard | None,
     *,
     immediate: bool = False,
+    before_commit: Callable[[], None] | None = None,
 ):
     if guard is None:
         with transaction(connection, immediate=immediate):
             yield
+            if before_commit is not None:
+                before_commit()
         return
     guard.capture()
     connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
@@ -601,6 +607,8 @@ def _guarded_transaction(
         connection.rollback()
         raise
     try:
+        if before_commit is not None:
+            before_commit()
         connection.commit()
         guard.verify(expected)
     except Exception:
@@ -616,7 +624,7 @@ def _open_repository_database(data_root: Path):
     connection = None
     try:
         connection, opening_identities = connect_database_with_identity(data_root)
-        guard = _DatabaseIdentityGuard(data_root, opening_identities)
+        guard = _DatabaseIdentityGuard(data_root, opening_identities, connection=connection)
         yield connection, guard
         guard.capture()
     except TaskRepositoryError:
@@ -670,9 +678,9 @@ class TaskRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
         allowed_versions = (
-            {5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44, DATABASE_SCHEMA_VERSION}
+            {5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44, 45, DATABASE_SCHEMA_VERSION}
             if self.allow_pre_authority_schema
-            else {6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44, DATABASE_SCHEMA_VERSION}
+            else {6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44, 45, DATABASE_SCHEMA_VERSION}
         )
         if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")
