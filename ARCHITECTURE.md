@@ -993,6 +993,16 @@ approval grant or adapter dispatch is added by this migration. Exact approval,
 atomic Run/receipt reservation and runtime qualification remain prerequisites
 before Project execution can be exposed.
 
+Schema 31 adds a separate Project incarnation for three typed deliverable
+slots: layout, products and ordered steps. Owner edits create immutable
+versions with an exact prior-version link; a dimensioned layout renders one
+bounded PNG preview, and all preview blobs join the retained attachment graph.
+Project collection edits preserve existing incarnations in place; only actual
+confirmed deletion retires the slots. Old versions remain inspectable after
+deletion and Project ID reuse. New generated versions fail validation until a
+trusted Run-output promotion capability can bind an exact successful Run and
+input receipt. Owner storage alone does not mark work complete or accepted.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains

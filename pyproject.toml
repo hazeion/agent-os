@@ -109,6 +109,7 @@ py-modules = [
   "private_console_unit",
   "private_state",
   "project_context", "project_context_access", "project_context_editor", "project_context_http", "project_repository",
+  "project_deliverables",
   "remote_hermes",
   "run_input_receipts",
   "run_repository",

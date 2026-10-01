@@ -95,13 +95,13 @@ four native children: [storage and backup](https://github.com/hazeion/agent-os/i
 [owner editor and grants](https://github.com/hazeion/agent-os/issues/261),
 [approved Task inputs](https://github.com/hazeion/agent-os/issues/262), and
 [versioned deliverables](https://github.com/hazeion/agent-os/issues/263).
-The storage child is implemented in PR 265; its verification is recorded in
-the context review above. Its current CI still has a Windows Conversations-read
-timeout and a mobile Lighthouse performance failure requiring diagnosis.
+The storage child is implemented in [PR 265](https://github.com/hazeion/agent-os/pull/265);
+its verification and subsequent CI corrections are recorded in the context
+review. Final cross-platform checks and merge remain separate gates.
 The owner editor and grants are implemented with two clean reviews and built
 desktop/mobile acceptance in [the editor review](reviews/2026-09-22-project-context-editor.md).
 Published in [PR 266](https://github.com/hazeion/agent-os/pull/266), pending CI
-and merge; approved Task inputs are the next product slice.
+and merge.
 The [Task-input and plan-admission contract](reviews/2026-09-22-project-task-inputs.md)
 has two clean reviews, including explicit bounded conditional transfers so
 approved Agents can coordinate between owner checkpoints. Runtime feasibility
@@ -113,9 +113,14 @@ the contract is not completion evidence.
 The owner Task-input editor and retained versions are published in
 [PR 267](https://github.com/hazeion/agent-os/pull/267). Its final guard blocks
 ordinary Run once and legacy Hermes delegation from omitting saved inputs.
-The next Project-execution step is immutable Run-input receipt authority and
-retention under the existing Run/backup limits, followed by exact approval and
-reservation. The current Kanban adapter has no qualified operation binding
+The immutable Run-input evidence foundation is published in
+[PR 268](https://github.com/hazeion/agent-os/pull/268); it adds no executable
+Project route. The owner deliverable storage slice follows with typed garage
+content and retained preview versions. Generated-output promotion, grouped
+review, and the website editor remain necessary before issue 263 is complete.
+The next Project-execution step is exact owner approval and atomic Run/receipt
+reservation against the retained evidence. The current Kanban adapter has no
+qualified operation binding
 prepared files, allowed tools and enforced limits; no Project execution route
 may be advertised until the actual host/runtime combination proves those
 properties. See the qualification inventory in the Task-input review.
