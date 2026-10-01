@@ -1136,6 +1136,17 @@ while a guard was absent, so ordinary dashboard paths remain closed. Before
 real proposal Runs are admitted, the Run-attention retired-source constraint,
 retention logic and Inbox projection must be extended with that receipt.
 
+Schema 42 adds a separate bounded private Project proposal Run-input receipt
+and ordered file snapshot graph. Its historical validator binds a proposal Run
+to the exact prepared Project input, Project incarnation, lead, Agent binding,
+context, grant, capabilities and retained file bytes. The file references join
+the private backup and garbage-collection pin graph. The schema-41 proposal
+Run insertion and source-update guards remain intact: schema 42 adds no Run
+admission, runtime qualification, owner approval, adapter dispatch, or
+generated-output authority. A future reservation must revalidate live Project,
+lead, Agent, grant, selected bytes and qualification before atomically binding
+the Run and receipt; historical receipt validation alone cannot do so.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

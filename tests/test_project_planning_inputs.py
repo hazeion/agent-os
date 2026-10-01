@@ -274,7 +274,7 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                 connection.commit()
                 self.assertEqual(mentat_db.schema_signature_state(connection, 39), "expected")
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 row = connection.execute(
                     "SELECT action_id,input_id,request_digest,source_kind "
                     "FROM mentat_project_planning_input_actions"
@@ -296,7 +296,7 @@ class ProjectPlanningInputMigrationTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=39)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"
@@ -315,7 +315,7 @@ class ProjectPlanningInputMigrationTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=38)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"
