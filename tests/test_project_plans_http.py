@@ -6,12 +6,12 @@ from project_plans_http import dispatch_project_plans
 from task_inputs import publish_task_inputs
 from task_repository import mutate_authoritative_tasks
 from tests import test_owner_bridge_admission as admission_tests
-from tests.test_task_inputs import TaskInputStorageTests
+from tests import test_task_inputs as inputs_tests
 
 
 class ProjectPlanCapabilityTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = TaskInputStorageTests(); self.fixture.setUp()
+        self.fixture = inputs_tests.TaskInputStorageTests(); self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.root = self.fixture.root
         self.saved_input = publish_task_inputs(self.root, self.fixture.payload)
