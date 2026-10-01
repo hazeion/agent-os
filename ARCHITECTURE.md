@@ -2047,6 +2047,19 @@ be retriggered by idempotent updates.
 
 ### Safe rich-link preview boundary
 
+A separate private Linux public-page reader reuses the same HTTPS URL/IP,
+pinned TLS, header and redirect checks with fixed ten-second/two-MiB research
+limits. It extracts bounded inert article/plain text and at most 32 normalized
+HTTPS link candidates in two dedicated credential-free, replaceable processes.
+Candidates require full DNS/IP validation if later fetched. Explicit truncation,
+finite parser/resource/IPC limits and parent DNS/operation watchdogs apply.
+It receives no Project context, private file, data-root path or provider input.
+This trusted transport/parser component is not a browser fetch route or an
+Agent execution capability; it does not claim to hide all host files from its
+process. Production research still requires approved public-only input,
+durable work reservation, exact Run/scope/epoch fencing, qualified Hermes tools
+and generated-output provenance. Private synthesis remains without public web.
+
 Link previews are asynchronous, Message-bound derived data. A browser request
 contains only canonical Conversation ID, Message ID, exact Message revision,
 and a fixed enqueue or retry action. Python re-reads the accepted user Message
