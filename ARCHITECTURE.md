@@ -904,6 +904,143 @@ privacy controls and transport-advertised interruption semantics. Mentat does
 not parse assistant prose for local paths, `MEDIA:` directives, citation
 authority, audio, or transcripts.
 
+### Approved Project context and deliverable contract
+
+This is the implementation contract for [authorized Project context and
+versioned deliverables](https://github.com/hazeion/agent-os/issues/238), not a
+claim that these capabilities are already available. Its staged implementation
+must extend the existing private SQLite/blob consistency unit. It must not
+enable execution until the complete admission and runtime qualification gates
+pass. The owner's approved Project workflow includes the following boundaries.
+
+**Project context authority.** A Project has immutable, numbered context
+revisions and one revisioned current pointer. Each revision contains the
+owner's brief and an ordered set of exact validated attachment IDs. A file
+replacement or brief edit creates a new version. Publishing binds the current
+pointer revision and the exact staged file set in one immediate transaction;
+staging remains disposable until publication. Files are snapshots, not live
+workspace paths. Read-only Context Pack or note imports copy only the explicitly
+previewed bounded snapshot through the existing attachment boundary.
+
+Canonical Project/Task IDs remain in their existing repositories. Their
+whole-collection replacement is not permission to cascade-delete context.
+Existing Project removal and Task membership changes remain unavailable; this
+slice does not introduce either operation. Their current rejection paths must
+preserve all context. If a later approved capability enables either operation,
+it must satisfy the incarnation and invalidation rules below atomically.
+Context scope has a private immutable incarnation. Repository mutation hooks
+must compare true before/after membership in the same transaction: actual
+Project deletion tombstones its scope and revokes grants; actual Task deletion
+or move invalidates task-specific admission. Agent deletion also revokes its
+grants. Task and Agent incarnations are bound wherever ID reuse could otherwise
+revive a receipt. Reusing an ID cannot reactivate an old scope or grant.
+Renames preserve identity. Missing or archived Projects
+cannot admit new work; retained evidence stays available to the owner.
+
+**Explicit access.** A context grant binds Project incarnation, canonical Agent,
+exact context revision and a monotonically increasing grant revision. The
+owner sees the brief, file list and Agent before granting access. Publishing a
+new context revision never expands an existing grant. A lead role, assignment,
+Conversation planning link or proposed plan cannot create or enlarge a grant.
+The browser supplies opaque IDs and expected revisions only; Python resolves
+the private references. A grant permits the selected Project input, not all
+files, Tasks, notes, Calendar data or runtime credentials.
+
+Task-specific input is a separately versioned set of approved references and
+bounded instructions. Exact owner approval binds that input version, Task
+revision/membership, selected Agent, runtime configuration/capability snapshot,
+Project context version and grant revision. Outputs from another Task cross
+this boundary only as explicitly selected immutable deliverable versions.
+Changing an assignment, input, execution configuration or grant invalidates
+the pending approval. It never changes an already-dispatched snapshot.
+
+The 16-file Project storage ceiling is not an execution limit. Each Task's
+approved input manifest explicitly selects files from its granted context and
+selected deliverable versions. The existing materialization ceiling remains
+eight inputs and one image, or a smaller adapter limit. Oversized selections
+are rejected with an actionable request to revise the selection; no truncation
+or text-only fallback is permitted. A larger execution ceiling requires a
+separately qualified adapter and admission change.
+
+**Execution and revocation.** A fixed Python capability validates the whole
+input graph and reserves its immutable Run-input receipt together with the
+canonical Run in one transaction under the existing private-state lock. The
+receipt records exact scope, Task, Agent, revisions and ordered attachments;
+no input is silently omitted. Materialization uses the existing no-follow,
+run-owned cleanup boundary and fails before execution on unsupported platforms.
+No new generic file-read, filesystem, runtime-method or command capability is
+introduced. The ordinary Conversation Send path remains unchanged.
+
+Revocation blocks every subsequent reservation, retry, handoff and newly
+requested context read. It cannot retract bytes already delivered to an Agent.
+An active Run retains its exact input evidence; the owner is shown that it may
+continue and can use the existing verified Stop control. No successor may
+start on the revoked grant. The lock/transaction order defines the race: a Run
+reserved before revocation remains explicitly visible, while reservations
+after revocation fail. Runtime qualification must establish that Project work
+does not inherit unrelated workspace access or broader tools merely because
+inputs were filtered. Until then, scoped Project execution is unavailable.
+
+**Deliverables.** A deliverable is Project-owned, optionally Task-associated,
+with immutable numbered versions and separate owner review state. A generated
+version must resolve a registered output of the exact originating canonical
+Run and match its Task/Project input receipt. No model-prose path, arbitrary
+URL or browser-selected source Run can import a file. Owner edits create a new
+version labelled as an owner edit, preserving the source version; they never
+forge Agent provenance. Completed Run, generated result and accepted result
+are separate states. Acceptance or requested changes binds the exact version;
+new versions require fresh acceptance. Historical provenance survives Task or
+Run pruning without pretending that the old Task or Run is still live.
+
+The garage result consists of a dimensioned layout, an editable product/source
+document and an ordered implementation document. Initially use validated
+Markdown/plain text, structured JSON and raster images already supported by
+the file boundary. The layout retains editable dimensions/placements as
+structured data and a rendered image. Missing dimensions become an owner
+question/checkpoint; the Agent must not invent measurements. Product links
+are inert validated links, not permission to fetch, buy or message anyone.
+The coordinated review slice groups these versions for owner acceptance.
+
+**Retention and boundedness.** Project context and deliverable references are
+real additional durable roots, never fabricated `run_attachments` IDs. Extend
+every attachment release, unbind, orphan scan, deletion claim/recheck, startup
+reconciliation, capacity check and backup pruning/validation path together.
+An attachment remains retained while any Run, retained context revision or
+deliverable version references it. Count deduplicated blobs across all roots
+against the existing 100-blob/24-MiB retained limit. Preserve existing per-file
+content/size checks, staged expiry, orphan grace and bounded GC batches.
+
+Initial metadata bounds are 16 KiB of UTF-8 brief/instructions per context,
+16 files per revision, 32 context revisions per Project, 32 versions per
+deliverable, 256 context revisions and 256 deliverable versions globally,
+and 4 MiB total serialized new authority metadata. That shared budget includes
+Task-input versions, Run-input receipts, grants and retired scope/incarnation
+records as well as context and deliverable records. Task-input versions are
+bounded to 256 globally and 32 per Task. Grant rows are bounded to one current
+record per Project/Agent pair within the existing 256-Project/128-Agent ceilings;
+replaced grants increment their revision rather than accumulating unbounded
+history. Receipts/incarnations remain pinned by any retained provenance or
+live authority, and can be removed only when no current, historical or in-flight
+reference requires them. New incarnations always receive new random identity,
+even after an eligible tombstone is pruned. Capacity exhaustion rejects before mutation;
+there is no silent eviction. Explicit owner pruning uses an exact preview and
+confirmation and cannot remove a current, granted, Run-input or referenced
+deliverable version. Archive is reversible and does not prune evidence.
+
+**Backup and restore.** The validated private backup contains the exact union
+of retained Run and Project reference graphs and only their ready blobs.
+Validate schema, bounds, provenance, reference integrity and blob bytes before
+publication and after restore. Project-only files and deliverables survive
+history pruning and a backup round trip. Missing retained input is an explicit
+failure, never a partial context. Restore retains historical grants as
+revoked pending explicit owner reauthorization, discards transient staging and
+intents proven never reserved or submitted, and never resumes work. Every
+reservation/attempt that could have reached an adapter retains immutable input
+and provenance and reconciles as interrupted or unknown, with no automatic
+replay. Dispatched input receipts remain evidence. Compatible schema-5 export
+omits the unsupported
+Project context/grant/deliverable authority while leaving the source unchanged.
+
 ## Write boundaries
 
 | Surface | Policy |
@@ -942,11 +1079,11 @@ owner-only, server-side boundary below. Mentat's connection record stores only
 a credential-source reference; the key is resolved from a validated environment
 variable or owner-only env file.
 
-Mentat is an unauthenticated local application and must bind only to a loopback
-host. Non-loopback serving of Mentat is not a deployment option under this
-contract. A later server-side outbound connection to one remote Hermes endpoint
-is allowed only under [REMOTE_HERMES.md](REMOTE_HERMES.md); that does not expose
-Mentat itself or permit the browser to call Hermes directly.
+Ordinary Mentat launch is unauthenticated and must bind only to loopback.
+Authenticated remote serving is available only through the explicit owner
+website profile described above, with its canonical HTTPS gateway and session
+boundary. Outbound connections to remote Hermes remain governed separately by
+[REMOTE_HERMES.md](REMOTE_HERMES.md); browsers never call Hermes directly.
 
 Compatibility paths may serialize starts within a runtime adapter while the
 strangler cutover is incomplete. Adapter capacity is not a product-wide Mentat
@@ -1738,7 +1875,8 @@ Deferred until separately approved:
 - clone-all;
 - profile rename;
 - skill content editing, hub installation, or arbitrary MCP configuration;
-- non-loopback Mentat serving or browser-to-Hermes access.
+- arbitrary non-loopback serving outside the owner website profile, or
+  browser-to-Hermes access.
 
 The target Agent Console permits concurrent Conversations and Agents while
 allowing at most one active Run per Conversation. Runtime adapters declare and

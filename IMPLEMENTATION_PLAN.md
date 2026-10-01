@@ -89,6 +89,16 @@ remains local; the explicit owner website profile needs real host/provider
 acceptance. Published slices remain subject to CI and merge. No live deployment
 or real-operator Google acceptance is claimed.
 
+The [Project context contract](reviews/2026-09-22-project-context.md) has passed
+two independent reviews after corrections. Its implementation sequence is now
+four native children: [storage and backup](https://github.com/hazeion/agent-os/issues/260),
+[owner editor and grants](https://github.com/hazeion/agent-os/issues/261),
+[approved Task inputs](https://github.com/hazeion/agent-os/issues/262), and
+[versioned deliverables](https://github.com/hazeion/agent-os/issues/263).
+The storage child is the next implementation slice. Project execution remains
+unavailable until exact admission and runtime qualification are implemented;
+the contract is not completion evidence.
+
 ### Implemented baseline and retained boundaries
 
 Beta QA stabilization merged through
