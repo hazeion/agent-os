@@ -48,11 +48,11 @@ PUBLIC_MODULES = {
     "link_preview_service", "link_preview_transport", "link_preview_webp", "link_preview_worker",
     "link_preview_workers",
     "mentat_db", "mentat_lifecycle", "orchestration_service", "private_console_migration",
-    "owner_auth", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_repository", "remote_hermes", "runtime_config",
+    "owner_auth", "owner_auth_setup", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_repository", "remote_hermes", "runtime_config",
     "run_repository", "server", "task_delegation_receipts", "task_planning", "task_repository",
     "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }
-PUBLIC_PACKAGES = {"mentat"}
+PUBLIC_PACKAGES = {"mentat", "deploy", "deploy.caddy"}
 PUBLIC_DATA_FILES = {destination: set(sources) for destination, sources in PACKAGE_PUBLIC_DATA_FILES.items()}
 
 
@@ -95,11 +95,12 @@ def _source_files(*, require_runtime: bool = False) -> set[str]:
         "scripts/build_native.py", "scripts/stage_web_runtime.py", "setup.py",
         "scripts/verify_macos_architecture.py",
     }
+    files.add('deploy/caddy/caddy-lock.json')
     files.update(f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"])
     for package in project["tool"]["setuptools"]["packages"]:
         files.update(
             path.relative_to(ROOT).as_posix()
-            for path in (ROOT / package).rglob("*.py")
+            for path in (ROOT / package.replace('.', '/')).rglob("*.py")
         )
     for _destination, sources in package_data_files(ROOT, require_runtime=require_runtime):
         files.update(Path(source).as_posix() for source in sources)
@@ -114,10 +115,11 @@ def _source_files(*, require_runtime: bool = False) -> set[str]:
 def _wheel_files(*, require_runtime: bool = False) -> set[str]:
     project = _project()
     files = {f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"]}
+    files.add('deploy/caddy/caddy-lock.json')
     for package in project["tool"]["setuptools"]["packages"]:
         files.update(
             path.relative_to(ROOT).as_posix()
-            for path in (ROOT / package).rglob("*.py")
+            for path in (ROOT / package.replace('.', '/')).rglob("*.py")
         )
     for destination, sources in package_data_files(ROOT, require_runtime=require_runtime):
         files.update(

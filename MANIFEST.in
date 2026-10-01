@@ -5,6 +5,8 @@ include requirements-native.lock
 include scripts/build_native.py
 include scripts/stage_web_runtime.py
 include scripts/verify_macos_architecture.py
+include web/scripts/owner-setup-gateway.mjs
+include deploy/caddy/caddy-lock.json
 recursive-include packaging *.md *.py *.spec *.iss
 include public/app.js
 include public/core.js
