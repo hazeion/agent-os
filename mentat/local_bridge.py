@@ -26,6 +26,10 @@ import unicodedata
 from urllib.parse import parse_qsl, quote, unquote, unquote_to_bytes, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+# The executable bridge removes the owner credential before importing runtime
+# adapters, so they cannot capture it in a child-environment snapshot.
+_ENTRY_OWNER_SECRET = os.environ.pop('MENTAT_GOOGLE_CLIENT_SECRET', '') if __name__ == '__main__' else None
+
 from conversation_repository import (
     ConversationRepositoryConflict,
     ConversationRepositoryError,
@@ -41,6 +45,8 @@ from .version import DISPLAY_VERSION
 BRIDGE_TOKEN_ENV = "MENTAT_BRIDGE_TOKEN"
 BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
+OWNER_GATEWAY_ROOT = "/bridge/v1/owner/"
+OWNER_GATEWAY_OPERATIONS = frozenset({'login-start', 'login-callback', 'login-cancel', 'session', 'validate', 'sign-out', 'sign-out-all', 'sse-reserve', 'sse-check', 'sse-release'})
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
 BRIDGE_PROVIDER_CONNECTIONS_PATH = "/bridge/v1/provider-connections"
 BRIDGE_TASKS_PATH = "/bridge/v1/tasks"
@@ -5935,8 +5941,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
 
     def _send_webp(self, body: bytes, max_age: int) -> None:
         self.send_response(200)
@@ -6044,6 +6053,42 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         self._send_json({"error": "method_not_allowed"}, 405)
+
+    def _owner_access_allowed(self, *, unsafe: bool) -> bool:
+        gateway = getattr(self.server, 'owner_gateway', None)
+        if gateway is None:
+            return True
+        try:
+            cookies = self.headers.get_all('X-Mentat-Owner-Session', [])
+            csrf = self.headers.get_all('X-Mentat-Owner-Csrf', [])
+            leases = self.headers.get_all('X-Mentat-Owner-Lease', [])
+            if len(cookies) != 1 or len(csrf) > 1 or len(leases) > 1:
+                return False
+            gateway.admit_private_operation(cookie=cookies[0], csrf=csrf[0] if csrf else None,
+                lease=leases[0] if leases else None, unsafe=unsafe)
+            return True
+        except Exception:
+            return False
+
+    def _owner_capability(self, operation: str) -> None:
+        gateway = getattr(self.server, 'owner_gateway', None)
+        if gateway is None or operation not in OWNER_GATEWAY_OPERATIONS:
+            self._send_json({'ok': False}, 404)
+            return
+        body = self._action_json_body(8192)
+        if body is None:
+            self._send_json({'ok': False}, 400)
+            return
+        try:
+            result = gateway.dispatch(operation, body)
+        except Exception as exc:
+            from owner_auth import OwnerAuthError
+            code = str(exc) if isinstance(exc, OwnerAuthError) else 'unavailable'
+            status = 401 if code in {'invalid', 'expired', 'wrong_account'} else 429 if code == 'limited' else 503
+            reason = code if operation == 'login-callback' and code in {'expired', 'wrong_account'} else 'unauthenticated' if status == 401 else 'unavailable'
+            self._send_json({'ok': False, 'reason': reason}, status)
+            return
+        self._send_json(result, 200)
 
     def _action_json_body(self, maximum_bytes: int = MAXIMUM_BRIDGE_ACTION_BODY_BYTES) -> dict[str, object] | None:
         content_types = self.headers.get_all("Content-Type", failobj=[]) or []
@@ -6158,6 +6203,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        if parsed.path != BRIDGE_HEALTH_PATH and not self._owner_access_allowed(unsafe=False):
+            self._send_json({'error': 'owner_authentication_required'}, 401)
+            return
         if parsed.path == BRIDGE_HEALTH_PATH and not parsed.query:
             self._send_json(
                 {
@@ -6659,6 +6707,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        if parsed.path.startswith(OWNER_GATEWAY_ROOT) and not parsed.query:
+            self._owner_capability(parsed.path[len(OWNER_GATEWAY_ROOT):])
+            return
+        stream_readback = bool(self.headers.get_all('X-Mentat-Owner-Lease', []) and not parsed.query and re.fullmatch(r'/bridge/v1/runs/[^/]+/refresh', parsed.path))
+        if not self._owner_access_allowed(unsafe=not stream_readback):
+            self._send_json({'error': 'owner_authentication_required'}, 401)
+            return
         if parsed.path in {"/bridge/v1/agent-setup/check", "/bridge/v1/agent-setup/preview", "/bridge/v1/agent-setup/confirm"} and not parsed.query:
             body = self._action_json_body(1_024)
             if body is None:
@@ -7492,8 +7547,12 @@ def start_bridge_startup_reconciliation() -> threading.Thread:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _ENTRY_OWNER_SECRET
     args = parse_args(argv)
     token = os.environ.pop(BRIDGE_TOKEN_ENV, "")
+    owner_secret = _ENTRY_OWNER_SECRET if _ENTRY_OWNER_SECRET is not None else os.environ.pop('MENTAT_GOOGLE_CLIENT_SECRET', '')
+    _ENTRY_OWNER_SECRET = None
+    configured_owner_origin = os.environ.pop('MENTAT_OWNER_ORIGIN', '')
     try:
         bridge = build_bridge_server(args.host, validate_bridge_port(args.port), token)
     except (BridgeConfigurationError, OSError) as exc:
@@ -7508,6 +7567,10 @@ def main(argv: list[str] | None = None) -> int:
             from server import DATA_DIR
 
             cleanup_owner_auth_at_startup(DATA_DIR)
+            if configured_owner_origin:
+                from owner_gateway import OwnerGateway
+                bridge.owner_gateway = OwnerGateway(DATA_DIR, configured_owner_origin, _client_secret=owner_secret)
+            owner_secret = ''
         except OwnerAuthError:
             bridge.server_close()
             print("Mentat Local Bridge refused startup: owner_auth_startup_cleanup_unavailable", flush=True)
@@ -7546,6 +7609,9 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         bridge.server_close()
+        owner_gateway = getattr(bridge, 'owner_gateway', None)
+        if owner_gateway is not None:
+            owner_gateway.close()
         loaded_server = sys.modules.get("server")
         shutdown_runtimes = getattr(loaded_server, "shutdown_agent_runtimes", None)
         if callable(shutdown_runtimes):

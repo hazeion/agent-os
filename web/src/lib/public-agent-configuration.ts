@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 import {
   validAgentConfigurationPayload,
   validAgentConfigurationPreview,
@@ -5,7 +6,7 @@ import {
   type PublicAgentConfigurationPayload,
   type PublicAgentConfigurationPreview,
   type PublicAgentConfigurationResult,
-} from "./bridge-conversations";
+} from "./agent-configuration-contract.ts";
 
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const HEADERS = { Accept: "application/json" };
@@ -19,7 +20,7 @@ export class PublicAgentConfigurationError extends Error {
 
 async function request(path: string, init: RequestInit = {}, timeout = AGENT_CONFIGURATION_READ_PUBLIC_TIMEOUT): Promise<{ response: Response; payload: unknown }> {
   try {
-    const response = await fetch(path, { ...init, cache: "no-store", headers: { ...HEADERS, ...init.headers }, signal: AbortSignal.timeout(timeout) });
+    const response = await ownerFetch(path, { ...init, cache: "no-store", headers: { ...HEADERS, ...init.headers }, signal: AbortSignal.timeout(timeout) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new Error();
     const declared = response.headers.get("content-length");
     if (declared && (!/^\d{1,10}$/u.test(declared) || Number(declared) > 3_000_000)) throw new Error();

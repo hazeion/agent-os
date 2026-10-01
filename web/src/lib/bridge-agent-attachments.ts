@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 const PRIVATE_ROOT = "/bridge/v1/agents";
 const MAXIMUM_RESPONSE_BYTES = 32 * 1024;
 
@@ -79,7 +80,7 @@ export async function enableBridgeAgentAttachments(agentId: string, expectedCapa
   if (!AGENT_ID.test(agentId) || !validCapabilities(expectedCapabilities)) throw new BridgeAgentAttachmentsError("agent_attachments_invalid");
   const bridge = configuration(environment); let response: Response;
   try {
-    response = await fetcher(new URL(`${PRIVATE_ROOT}/${encodeURIComponent(agentId)}/attachments/enable`, bridge.origin), { method: "POST", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": bridge.token }, body: JSON.stringify({ expected_capabilities: expectedCapabilities }), signal: AbortSignal.timeout(5_000) });
+    response = await fetcher(new URL(`${PRIVATE_ROOT}/${encodeURIComponent(agentId)}/attachments/enable`, bridge.origin), { method: "POST", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, body: JSON.stringify({ expected_capabilities: expectedCapabilities }), signal: AbortSignal.timeout(5_000) });
   } catch { throw new BridgeAgentAttachmentsError("bridge_unavailable"); }
   if (!["application/json", "application/json; charset=utf-8"].includes(response.headers.get("content-type")?.toLowerCase() ?? "")) throw new BridgeAgentAttachmentsError("bridge_response_invalid");
   let value: unknown; try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await bytes(response))); } catch (error) { if (error instanceof BridgeAgentAttachmentsError) throw error; throw new BridgeAgentAttachmentsError("bridge_response_invalid"); }
@@ -90,7 +91,7 @@ export async function enableBridgeAgentAttachments(agentId: string, expectedCapa
 export async function readBridgeAgentAttachmentsEnableStatus(agentId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<AgentAttachmentsEnableStatus> {
   if (!AGENT_ID.test(agentId)) throw new BridgeAgentAttachmentsError("agent_attachments_invalid");
   const bridge = configuration(environment); let response: Response;
-  try { response = await fetcher(new URL(`${PRIVATE_ROOT}/${encodeURIComponent(agentId)}/attachments/enable`, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(5_000) }); } catch { throw new BridgeAgentAttachmentsError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(`${PRIVATE_ROOT}/${encodeURIComponent(agentId)}/attachments/enable`, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(5_000) }); } catch { throw new BridgeAgentAttachmentsError("bridge_unavailable"); }
   if (!["application/json", "application/json; charset=utf-8"].includes(response.headers.get("content-type")?.toLowerCase() ?? "")) throw new BridgeAgentAttachmentsError("bridge_response_invalid");
   let value: unknown; try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await bytes(response))); } catch (error) { if (error instanceof BridgeAgentAttachmentsError) throw error; throw new BridgeAgentAttachmentsError("bridge_response_invalid"); }
   if (!response.ok) return failure(response, value);

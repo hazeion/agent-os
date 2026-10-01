@@ -30,7 +30,8 @@ export type GatewayRouteRule = Readonly<{
 }>;
 
 const SAFE_METHODS = new Set<GatewayHttpMethod>(["GET", "HEAD", "OPTIONS"]);
-const SUPERVISOR_PATHS = new Set(["/api/bridge/health", "/api/gateway/health"]);
+const SUPERVISOR_PATHS = new Set(["/api/gateway/health"]);
+const PUBLIC_STATIC_PATHS = new Set(["/icon.svg", "/mentat-mark-emerald.png", "/shell-runtime.js", "/owner-session.js", "/_next/static/[...path]"]);
 
 function routeCapability(path: string, method: GatewayHttpMethod): GatewayBridgeCapability {
   return `bridge:${path.slice("/api/".length).replaceAll("/", ".")}.${method.toLowerCase()}`;
@@ -66,7 +67,7 @@ function staticRule(path: `/${string}`, source: GatewayRouteSource): GatewayRout
     bridgeCapability: null,
     budget: "gateway_read" as const,
     csrf: "not_required" as const,
-    exposure: "static" as const,
+    exposure: path === "/sign-in" ? "anonymous_auth" as const : PUBLIC_STATIC_PATHS.has(path) ? "static" as const : "owner_session" as const,
     idempotency: "not_applicable" as const,
     method,
     path,
@@ -78,6 +79,16 @@ function staticRule(path: `/${string}`, source: GatewayRouteSource): GatewayRout
 
 /** Exactly one frozen row per API operation and per static method/surface pair. */
 export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze([
+  ...staticRule("/sign-in", "web/src/app/sign-in/page.tsx"),
+  ...([ ["POST", "/auth/google/start"], ["GET", "/auth/google/callback"] ] as const).map(([method, path]) => Object.freeze({
+    method, path, exposure: "anonymous_auth" as const, csrf: "not_required" as const,
+    audit: "gateway_api_mutation" as const, bridgeCapability: "bridge:owner.login" as const,
+    budget: "gateway_mutation" as const, idempotency: "route_owned" as const, projection: "route_owned" as const,
+    source: `web/src/app${path}/route.ts` as GatewayRouteSource, validator: `route:${path}` as const,
+  })),
+  rule("GET", "/api/auth/session", "web/src/app/api/auth/session/route.ts"),
+  rule("POST", "/api/auth/sign-out", "web/src/app/api/auth/sign-out/route.ts"),
+  rule("POST", "/api/auth/sign-out-all", "web/src/app/api/auth/sign-out-all/route.ts"),
   rule("GET", "/api/agent-activity", "web/src/app/api/agent-activity/route.ts"),
   rule("GET", "/api/agent-console/commands", "web/src/app/api/agent-console/commands/route.ts"),
   rule("GET", "/api/agent-console/planning-calendar", "web/src/app/api/agent-console/planning-calendar/route.ts"),
@@ -180,6 +191,7 @@ export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze
   ...staticRule("/mentat-mark-emerald.png", "web/public/mentat-mark-emerald.png"),
   ...staticRule("/agent-setup.js", "web/public/agent-setup.js"),
   ...staticRule("/shell-runtime.js", "web/public/shell-runtime.js"),
+  ...staticRule("/owner-session.js", "web/public/owner-session.js"),
   ...staticRule("/shell/agents.html", "web/scripts/prepare-standalone.mjs"),
   ...staticRule("/shell/runs.html", "web/scripts/prepare-standalone.mjs"),
   ...staticRule("/_next/static/[...path]", "framework:next"),

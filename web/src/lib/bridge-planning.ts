@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import {
   parseConversationPlanningContext,
   parseConversationPlanningMutation,
@@ -139,7 +140,7 @@ function fixedFailure(response: Response, payload: unknown): never {
 async function request(path: string, fetcher: FetchLike, environment: Environment, init: RequestInit = {}, timeout = READ_TIMEOUT_MILLISECONDS) {
   const bridge = configuration(environment);
   try {
-    const response = await fetcher(new URL(path, bridge.origin), { ...init, cache: "no-store", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token, ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeout) });
+    const response = await fetcher(new URL(path, bridge.origin), { ...init, cache: "no-store", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token, ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeout) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgePlanningError("bridge_response_invalid");
     return { response, payload: await boundedJson(response) };
   } catch (error) { if (error instanceof BridgePlanningError) throw error; throw new BridgePlanningError("bridge_unavailable"); }

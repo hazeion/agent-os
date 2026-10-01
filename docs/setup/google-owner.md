@@ -1,9 +1,8 @@
 # Set up the Google owner
 
 Google owner setup is a host-administrator operation. Everyday website sign-in
-will use **Continue with Google**; it must not require this terminal ceremony.
-The normal remote dashboard is still awaiting its authenticated gateway and
-live-provider acceptance gates.
+uses **Continue with Google** and does not require this terminal ceremony.
+Deployment still requires acceptance with your actual domain and Google client.
 
 The setup command supports one owner on an always-on Linux host. It temporarily
 serves only setup routes, verifies a Google account in a browser, then asks for
@@ -68,10 +67,47 @@ Cancellation, expired proof and failed confirmation preserve the previous owner.
 An interrupted response after a successful commit may require another host
 recovery ceremony. Setup does not activate ordinary remote serving.
 
+## Serve the website
+
+After confirming the owner, start the authenticated website in the foreground
+with the same verified Caddy assets and TLS files:
+
+```sh
+mentat owner-auth serve \
+  --architecture amd64 \
+  --release-dir /path/to/verified-release-assets \
+  --caddy-bin /path/to/caddy \
+  --cosign-bin /path/to/cosign \
+  --tls-cert /path/to/certificate-chain.pem \
+  --tls-key /path/to/private-key.pem
+```
+
+Keep `MENTAT_GOOGLE_CLIENT_SECRET` in the private host environment, and use the
+same configuration/data-root options as setup. The command takes its canonical
+origin from the confirmed owner configuration. It checks the loopback backend
+and its own HTTPS sign-in page before reporting readiness. It uses fixed gateway
+port 8888; ordinary `mentat start` keeps the local interface behavior.
+
+Open the HTTPS address from your browser and choose **Continue with Google**.
+Only the enrolled account can enter. The Account menu can sign out this browser
+or all browsers; approved agent work continues on the host. Each session has a
+one-hour idle and 24-hour absolute expiry. Live streams do not keep sessions
+alive. Closing the host command stops the website and its owned listeners.
+
+The website serves a small anonymous sign-in/asset surface. Project data,
+documents, actions, files and live events require a current owner session.
+Unsafe actions also require the session-bound CSRF token and exact origin.
+Host account enrollment, replacement and recovery are unavailable from the
+ordinary website.
+
 ## Verification status
 
 Automated checks cover the terminal/browser/backup flow with a fake Google
 provider, Chromium's Google redirect and CSP controls, and real pinned Caddy
 TLS routing on disposable loopback ports. Parent/guardian process-death tests
 check listener cleanup. Actual Google login with the operator's domain/client,
-website sign-in and complete Linux deployment acceptance are still required.
+complete Linux deployment acceptance with your host are still required. The
+website flow is exercised with real Chromium and a synthetic provider, including
+wrong-account rejection, cancellation, expiry, provider outage, two separate
+browser sessions and sign-out. A built-website HTTP test verifies live-stream
+revocation; real-Caddy tests verify the HTTPS forwarding contract separately.

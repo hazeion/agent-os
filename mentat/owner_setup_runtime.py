@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import signal
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,8 @@ class OwnerSetupRuntime:
         if self.node is None:
             raise SetupRuntimeError('Supported Node runtime is required')
         for path in (caddy, cosign, certificate, key):
+            if path.lstat().st_mode & (stat.S_ISUID | stat.S_ISGID):
+                raise SetupRuntimeError('Set-id setup inputs are unsupported')
             owner = path.lstat().st_uid
             if owner not in {0, os.geteuid()}:
                 raise SetupRuntimeError('Setup files must belong to the operator or root')

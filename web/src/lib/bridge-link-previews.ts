@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 const PRIVATE_ROOT = "/bridge/v1";
 const MAXIMUM_JSON_BYTES = 24_576;
 const MAXIMUM_IMAGE_BYTES = 512 * 1024;
@@ -106,7 +107,7 @@ function fixedFailure(response: Response, value: unknown): never {
 
 async function jsonRequest(path: string, init: RequestInit, fetcher: FetchLike, environment: Environment) {
   const bridge = configuration(environment); let response: Response;
-  try { response = await fetcher(new URL(path, bridge.origin), { ...init, cache: "no-store", redirect: "error", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token, ...init.headers }, signal: AbortSignal.timeout(3_500) }); } catch { throw new BridgeLinkPreviewError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(path, bridge.origin), { ...init, cache: "no-store", redirect: "error", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token, ...init.headers }, signal: AbortSignal.timeout(3_500) }); } catch { throw new BridgeLinkPreviewError("bridge_unavailable"); }
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgeLinkPreviewError("bridge_response_invalid");
   let value: unknown; try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await bounded(response))); } catch (error) { if (error instanceof BridgeLinkPreviewError) throw error; throw new BridgeLinkPreviewError("bridge_response_invalid"); }
   return { response, value };
@@ -153,7 +154,7 @@ export async function clearBridgeLinkPreviewCache(fetcher: FetchLike = fetch, en
 
 export async function readBridgeLinkPreviewImage(imageId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<{ body: Uint8Array; maxAge: number }> {
   if (!/^[0-9a-f]{32}$/u.test(imageId)) throw new BridgeLinkPreviewError("link_preview_not_found"); const bridge = configuration(environment); let response: Response;
-  try { response = await fetcher(new URL(`${PRIVATE_ROOT}/link-previews/images/${imageId}`, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "image/webp", "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1_500) }); } catch { throw new BridgeLinkPreviewError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(`${PRIVATE_ROOT}/link-previews/images/${imageId}`, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "image/webp", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1_500) }); } catch { throw new BridgeLinkPreviewError("bridge_unavailable"); }
   if (response.status === 404) throw new BridgeLinkPreviewError("link_preview_not_found");
   const match = /^private, max-age=(\d{1,3}), no-transform$/u.exec(response.headers.get("cache-control") ?? "");
   const declared = response.headers.get("content-length");

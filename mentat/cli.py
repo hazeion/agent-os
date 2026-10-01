@@ -138,6 +138,14 @@ def build_parser() -> argparse.ArgumentParser:
     owner_google.add_argument('--tls-cert', type=Path, required=True)
     owner_google.add_argument('--tls-key', type=Path, required=True)
     _runtime_arguments(owner_google)
+    owner_serve = owner_auth_commands.add_parser('serve', help='Serve the authenticated owner website on a prepared Linux HTTPS host.')
+    owner_serve.add_argument('--caddy-bin', type=Path, required=True)
+    owner_serve.add_argument('--cosign-bin', type=Path, required=True)
+    owner_serve.add_argument('--release-dir', type=Path, required=True)
+    owner_serve.add_argument('--architecture', choices=('amd64', 'arm64'), required=True)
+    owner_serve.add_argument('--tls-cert', type=Path, required=True)
+    owner_serve.add_argument('--tls-key', type=Path, required=True)
+    _runtime_arguments(owner_serve)
 
     connection = commands.add_parser(
         "connection",
@@ -330,6 +338,7 @@ def _legacy_start(args: argparse.Namespace) -> int:
     else:
         command = [sys.executable, "-m", "server", *runtime_arguments]
     environment = os.environ.copy()
+    environment.pop("MENTAT_GOOGLE_CLIENT_SECRET", None)
     environment["MENTAT_LAUNCHER_PID"] = str(os.getpid())
     if bool(getattr(sys, "frozen", False)):
         environment["MENTAT_NATIVE_SERVER"] = "1"
@@ -547,6 +556,9 @@ def run_owner_auth(args: argparse.Namespace) -> int:
     if args.owner_auth_command == 'google-setup':
         from mentat.owner_setup_cli import run_google_setup
         return run_google_setup(args, config)
+    if args.owner_auth_command == 'serve':
+        from mentat.owner_website_cli import run_owner_website
+        return run_owner_website(args, config, _web_runtime_environment(args))
     if args.owner_auth_command != "bootstrap":
         raise RuntimeError("unknown owner-auth command")
     try:

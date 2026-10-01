@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 export const PUBLIC_TASKS_PATH = "/api/tasks";
 const PRIVATE_PATH = "/bridge/v1/tasks";
 const MAX_BYTES = 1_048_576;
@@ -54,7 +55,7 @@ async function bounded(response: Response) {
 }
 export async function fetchBridgeTasks(fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicBridgeTasks> {
   const bridge = config(environment); let response: Response;
-  try { response = await fetcher(new URL(PRIVATE_PATH, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1500) }); } catch { throw new BridgeTasksError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(PRIVATE_PATH, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1500) }); } catch { throw new BridgeTasksError("bridge_unavailable"); }
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgeTasksError("bridge_response_invalid");
   const payload = await bounded(response);
   if (response.status === 200 && payload && typeof payload === "object" && !Array.isArray(payload)) {

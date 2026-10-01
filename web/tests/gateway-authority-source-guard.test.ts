@@ -23,6 +23,7 @@ const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", 
  * implementation reaches the shared gateway wrapper.
  */
 const APPROVED_WRAPPER_BACKED_ROUTE_FACTORIES = new Set([
+  "@/lib/owner-auth-routes",
   "@/lib/agent-attachments-route",
   "@/lib/agent-configuration-route",
   "@/lib/agent-setup-route",

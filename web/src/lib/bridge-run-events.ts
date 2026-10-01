@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import { createHash } from "node:crypto";
 
 const PRIVATE_PATH_PREFIX = "/bridge/v1/runs/";
@@ -83,7 +84,7 @@ export async function fetchBridgeRunEvents(runId: string, after: number, fetcher
   if (!validRunId(runId) || !validCursor(after)) throw new BridgeRunEventsError("request_invalid");
   const bridge = config(environment); let response: Response;
   const path = `${PRIVATE_PATH_PREFIX}${encodeURIComponent(runId)}/events?after=${after}`;
-  try { response = await fetcher(new URL(path, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1500) }); } catch { throw new BridgeRunEventsError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(path, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1500) }); } catch { throw new BridgeRunEventsError("bridge_unavailable"); }
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgeRunEventsError("bridge_response_invalid");
   const payload = await bounded(response);
   if (response.status === 200 && payload && typeof payload === "object" && !Array.isArray(payload)) {
@@ -110,7 +111,7 @@ export async function refreshBridgeRun(runId: string, fetcher: FetchLike = fetch
       body: "{}",
       cache: "no-store",
       redirect: "error",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": bridge.token },
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token },
       signal: AbortSignal.timeout(8_000),
     });
   } catch { throw new BridgeRunEventsError("bridge_unavailable"); }

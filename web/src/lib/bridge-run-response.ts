@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import { validRunId } from "./bridge-run-events.ts";
 
 const PATH = "/bridge/v1/runs/";
@@ -107,7 +108,7 @@ async function request(runId: string, suffix: string, body: object, fetcher: Fet
   try {
     response = await fetcher(new URL(`${PATH}${encodeURIComponent(runId)}/response${suffix}`, bridge.origin), {
       method: "POST", cache: "no-store", redirect: "error",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": bridge.token },
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token },
       body: JSON.stringify(body), signal: AbortSignal.timeout(1_500),
     });
   } catch { throw new BridgeRunResponseError("bridge_unavailable"); }

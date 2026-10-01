@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 export const PUBLIC_BRIDGE_HEALTH_PATH = "/api/bridge/health";
 const PRIVATE_BRIDGE_HEALTH_PATH = "/bridge/v1/health";
 const MAXIMUM_BRIDGE_RESPONSE_BYTES = 4096;
@@ -136,7 +137,7 @@ export async function fetchBridgeHealth(
         cache: "no-store",
         headers: {
           Accept: "application/json",
-          "X-Mentat-Bridge-Token": configuration.token,
+          ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": configuration.token,
         },
         method: "GET",
         redirect: "error",

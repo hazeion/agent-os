@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 const MAXIMUM_RESPONSE_BYTES = 16_384;
 const READ_TIMEOUT_MILLISECONDS = 5_000;
 
@@ -183,7 +184,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 export async function fetchCommandManifest(): Promise<PublicCommandManifest> {
   try {
-    const response = await fetch("/api/agent-console/commands", {
+    const response = await ownerFetch("/api/agent-console/commands", {
       cache: "no-store",
       credentials: "same-origin",
       headers: { Accept: "application/json" },

@@ -13,6 +13,8 @@ import time
 def stop_guard(process) -> bool:
     if process is None:
         return True
+    if getattr(process, '_mentat_group_stopped', False) is True:
+        return True
     try:
         # The guardian and listener share this owned process group. A dead
         # guardian is not evidence that the listener has exited.
@@ -31,7 +33,10 @@ def stop_guard(process) -> bool:
             try:
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
-                return process.poll() is not None
+                stopped = process.poll() is not None
+                if stopped:
+                    process._mentat_group_stopped = True
+                return stopped
             if time.monotonic() >= deadline:
                 os.killpg(process.pid, signal.SIGKILL)
                 return False  # A later stop must verify group disappearance.
@@ -71,7 +76,11 @@ def main():
                 parent_lost = True
                 break
         if child.poll() is None:
-            os.kill(child.pid, signal.SIGKILL if parent_lost else signal.SIGTERM)
+            if parent_lost:
+                # Dashboard workers can own Node/bridge descendants in this
+                # same group. Parent loss must withdraw every listener.
+                os.killpg(os.getpgrp(), signal.SIGKILL)
+            os.kill(child.pid, signal.SIGTERM)
             try:
                 child.wait(20)
             except subprocess.TimeoutExpired:

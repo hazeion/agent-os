@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import { parseAgentSetupResult, validAgentSetupBody, type AgentSetupAction, type AgentSetupResult } from "./agent-setup-contract.ts";
 
 export class AgentSetupBridgeError extends Error {
@@ -11,7 +12,7 @@ export async function requestBridgeAgentSetup(action: AgentSetupAction, body: Re
   const token = environment.MENTAT_BRIDGE_TOKEN ?? "";
   if (origin.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(origin.hostname) || !origin.port || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || !/^[A-Za-z0-9_-]{43,256}$/u.test(token)) throw new AgentSetupBridgeError("unavailable");
   let response: Response;
-  try { response = await fetcher(new URL(`/bridge/v1/agent-setup/${action}`, origin), { method: "POST", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": token }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }); } catch { throw new AgentSetupBridgeError("unavailable"); }
+  try { response = await fetcher(new URL(`/bridge/v1/agent-setup/${action}`, origin), { method: "POST", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": token }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }); } catch { throw new AgentSetupBridgeError("unavailable"); }
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json") || !response.body) throw new AgentSetupBridgeError("error");
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^\d{1,5}$/u.test(declared) || Number(declared) > 4096)) throw new AgentSetupBridgeError("error");

@@ -74,17 +74,20 @@ adds schema-25 method and generation bindings, preserves historical passkey
 authority, and covers private restore/export. Its evidence is in
 [the session-method review](reviews/2026-09-21-owner-session-methods.md).
 [Durable one-use callback transactions](https://github.com/hazeion/agent-os/issues/251)
-are the active slice; see [the transaction review](reviews/2026-09-21-google-login-transactions.md).
+are reviewed and published in [PR 254](https://github.com/hazeion/agent-os/pull/254).
 [One-use Google session issuance](https://github.com/hazeion/agent-os/issues/253)
-is implemented for review; see [the session review](reviews/2026-09-21-google-session-issuance.md).
+is reviewed and published in [PR 255](https://github.com/hazeion/agent-os/pull/255).
 [Host-admin enrollment, conversion and recovery](https://github.com/hazeion/agent-os/issues/256)
-is the active integration slice, including a setup-only browser gateway and HTTPS
-ingress lifecycle. A printed OAuth URL without a working callback is insufficient.
+is reviewed in [PR 258](https://github.com/hazeion/agent-os/pull/258), including
+the setup-only browser gateway, host confirmation, recovery and HTTPS lifecycle.
 [Website Google sign-in and authenticated access](https://github.com/hazeion/agent-os/issues/257)
-must provide a visible **Continue with Google** interface, useful error states
-and browser sign-out. The owner explicitly reaffirmed this UI requirement;
-CLI setup is not the everyday sign-in experience. Linux and real-provider
-acceptance follow these slices. Remote serving remains disabled.
+is reviewed and published in [PR 259](https://github.com/hazeion/agent-os/pull/259).
+It implements **Continue with Google**, bounded error states,
+browser/session sign-out and authenticated data/stream admission. See the
+[website review](reviews/2026-09-22-google-website-signin.md). Ordinary start
+remains local; the explicit owner website profile needs real host/provider
+acceptance. Published slices remain subject to CI and merge. No live deployment
+or real-operator Google acceptance is claimed.
 
 ### Implemented baseline and retained boundaries
 

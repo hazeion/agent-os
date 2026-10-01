@@ -1,7 +1,7 @@
 import { BridgeRunEventsError, type PublicBridgeRunEvents, type PublicRunEvent } from "./bridge-run-events.ts";
 
 type TimelineReader = (runId: string, after: number) => Promise<PublicBridgeRunEvents>;
-type StreamOptions = { runId: string; after: number; read: TimelineReader; signal: AbortSignal; polls?: number; pollMilliseconds?: number };
+type StreamOptions = { runId: string; after: number; read: TimelineReader; signal: AbortSignal; polls?: number; pollMilliseconds?: number; authorize?: () => Promise<boolean>; release?: () => Promise<void> };
 
 const encoder = new TextEncoder();
 
@@ -10,9 +10,11 @@ function frame(event: string, id: number, data: object) {
 }
 
 function pause(milliseconds: number, signal: AbortSignal) {
+  if (signal.aborted) return Promise.resolve();
   return new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, milliseconds);
-    signal.addEventListener("abort", () => { clearTimeout(timeout); resolve(); }, { once: true });
+    const done = () => { clearTimeout(timeout); signal.removeEventListener("abort", done); resolve(); };
+    const timeout = setTimeout(done, milliseconds);
+    signal.addEventListener("abort", done, { once: true });
   });
 }
 
@@ -25,14 +27,24 @@ export function createRunTimelineStream(options: StreamOptions): ReadableStream<
   const polls = options.polls ?? 13;
   const pollMilliseconds = options.pollMilliseconds ?? 2_000;
   let cancelled = false;
+  let releaseTask: Promise<void> | undefined;
+  const release = () => releaseTask ??= (async () => { try { await options.release?.(); } catch { /* Startup/expiry also collects leases. */ } })();
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       let cursor = options.after;
+      const authorized = async () => {
+        if (!options.authorize || await options.authorize()) return true;
+        if (!cancelled && !options.signal.aborted) controller.enqueue(encoder.encode('event: owner-auth-required\ndata: {}\n\n'));
+        return false;
+      };
+      try {
       controller.enqueue(encoder.encode("retry: 1500\n\n"));
       for (let poll = 0; poll < polls && !cancelled && !options.signal.aborted; poll += 1) {
         try {
+          if (!await authorized()) break;
           const payload = await options.read(options.runId, cursor);
           if (cancelled || options.signal.aborted) break;
+          if (!await authorized()) break;
           if (poll === 0) {
             controller.enqueue(frame("snapshot", payload.next_cursor, { events: payload.events, cursor: payload.next_cursor, reset: payload.cursor_reset_required }));
           } else if (payload.cursor_reset_required) {
@@ -44,14 +56,18 @@ export function createRunTimelineStream(options: StreamOptions): ReadableStream<
           }
           cursor = payload.next_cursor;
         } catch (error) {
-          if (!cancelled && !options.signal.aborted) controller.enqueue(frame("error", cursor, { code: publicError(error) }));
+          if (!cancelled && !options.signal.aborted) {
+            let allowed = true;
+            try { allowed = await authorized(); } catch { /* Emit only a fixed availability error. */ }
+            if (allowed) controller.enqueue(frame("error", cursor, { code: publicError(error) }));
+          }
           break;
         }
         if (poll + 1 < polls && !cancelled && !options.signal.aborted) await pause(pollMilliseconds, options.signal);
       }
-      if (!cancelled) controller.close();
+      } finally { await release(); if (!cancelled) controller.close(); }
     },
-    cancel() { cancelled = true; },
+    cancel() { cancelled = true; return release(); },
   });
 }
 
