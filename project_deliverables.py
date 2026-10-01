@@ -490,7 +490,7 @@ def publish_owner_edit(
                         )
                     validate_project_context_connection(connection, require_available=False)
                     return {"slot": slot, "slot_id": slot_id, "version_id": version_id, "revision": revision,
-                            "origin": "owner_edit", "content_digest": digest,
+                            "origin": "owner_edit",
                             "preview_attachment_id": staged["id"] if staged else None}
         except Exception:
             if staged is not None:
@@ -576,23 +576,28 @@ def read_deliverable_version(data_dir: Path, project_id: str, version_id: str) -
                         "created_at": row[5], "preview_attachment_id": preview[0] if preview else None}
 
 
-def read_retired_deliverable_history(data_dir: Path) -> list[dict]:
+def read_retired_deliverable_history(data_dir: Path, *, offset: int = 0) -> dict:
     from private_state import private_state_lock
     from project_context import validate_project_context_connection
     from task_repository import _guarded_transaction, _open_repository_database
 
+    if type(offset) is not int or not 0 <= offset <= 250 or offset % 50:
+        _fail("revision_invalid")
     root = Path(data_dir)
     with private_state_lock(root):
         with _open_repository_database(root) as (connection, guard):
             with _guarded_transaction(connection, guard):
                 validate_project_context_connection(connection, require_available=False)
-                return [{"id": row[0], "project_id": row[1], "slot": row[2],
-                         "revision": row[3], "origin": row[4], "created_at": row[5]}
-                        for row in connection.execute(
+                rows = connection.execute(
                             "SELECT v.id,s.project_id,s.slot,v.revision,v.origin,v.created_at "
                             "FROM mentat_deliverable_slots s JOIN mentat_deliverable_versions v ON v.slot_id=s.id "
-                            "WHERE s.retired_at IS NOT NULL ORDER BY s.retired_at DESC,v.created_at DESC LIMIT 50"
-                        )]
+                            "WHERE s.retired_at IS NOT NULL ORDER BY s.retired_at DESC,v.created_at DESC,v.id DESC "
+                            "LIMIT 51 OFFSET ?", (offset,),
+                        ).fetchall()
+                return {"versions": [{"id": row[0], "project_id": row[1], "slot": row[2],
+                                      "revision": row[3], "origin": row[4], "created_at": row[5]}
+                                     for row in rows[:50]],
+                        "next_offset": offset + 50 if len(rows) > 50 else None}
 
 
 def read_retired_deliverable_version(data_dir: Path, version_id: str) -> dict:

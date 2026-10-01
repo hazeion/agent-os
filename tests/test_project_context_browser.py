@@ -29,6 +29,7 @@ PROJECT = {'id': 'project_mentat', 'name': 'Garage', 'revision': 1, 'status': 'a
 class ContextFixtureHandler(local_bridge.BridgeRequestHandler):
     def do_GET(self):
         if (self.path == local_bridge.BRIDGE_HEALTH_PATH or self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT)
+                or self.path.startswith(local_bridge.PROJECT_DELIVERABLE_ROOT)
                 or self.path.startswith(local_bridge.TASK_INPUT_ROOT)
                 or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASKS_PATH)
                 or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASK_DETAIL_PATH)
@@ -44,6 +45,7 @@ class ContextFixtureHandler(local_bridge.BridgeRequestHandler):
 
     def do_POST(self):
         if (self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT) or self.path.startswith(local_bridge.TASK_INPUT_ROOT)
+                or self.path.startswith(local_bridge.PROJECT_DELIVERABLE_ROOT)
                 or self.path in {local_bridge.BRIDGE_PLANNING_DELETION_PREVIEW_PATH, local_bridge.BRIDGE_PLANNING_DELETION_CONFIRM_PATH}):
             return super().do_POST()
         return self._send_json({**ENVELOPE, 'status': 'unavailable'}, 503)
@@ -97,6 +99,7 @@ class ProjectContextBrowserTests(unittest.TestCase):
                 with __import__('contextlib').closing(__import__('mentat_db').connect(fixture.root)) as connection:
                     self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_versions').fetchone()[0], 0)
                     self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_scopes').fetchone()[0], 0)
+                    self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_deliverable_versions').fetchone()[0], 3)
             finally:
                 process.terminate()
                 try: process.wait(5)

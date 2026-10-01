@@ -47,6 +47,7 @@ BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
 OWNER_GATEWAY_ROOT = "/bridge/v1/owner/"
 PROJECT_CONTEXT_ROOT = "/bridge/v1/project-context/"
+PROJECT_DELIVERABLE_ROOT = "/bridge/v1/project-deliverables/"
 TASK_INPUT_ROOT = "/bridge/v1/task-inputs/"
 OWNER_GATEWAY_OPERATIONS = frozenset({'login-start', 'login-callback', 'login-cancel', 'session', 'validate', 'sign-out', 'sign-out-all', 'sse-reserve', 'sse-check', 'sse-release'})
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
@@ -6235,6 +6236,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = dispatch_project_context(DATA_DIR, operation, dict(pairs))
             self._send_json(payload, status)
             return
+        if parsed.path.startswith(PROJECT_DELIVERABLE_ROOT):
+            from project_deliverables_http import READ_OPERATIONS, dispatch_project_deliverables
+            from server import DATA_DIR
+            operation = parsed.path[len(PROJECT_DELIVERABLE_ROOT):]
+            if operation not in READ_OPERATIONS or len(parsed.query) > 1024:
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+                operation = ''
+            if len(pairs) != len(dict(pairs)):
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            payload, status = dispatch_project_deliverables(DATA_DIR, operation, dict(pairs))
+            self._send_json(payload, status)
+            return
         if parsed.path.startswith(TASK_INPUT_ROOT):
             from task_inputs_http import READ_OPERATIONS, dispatch_task_inputs
             from server import DATA_DIR
@@ -6770,6 +6789,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self._action_json_body(MAX_UPLOAD_JSON_BYTES if operation == 'upload' else 128 * 1024)
             payload, status = dispatch_project_context(DATA_DIR, operation, body)
+            self._send_json(payload, status)
+            return
+        if parsed.path.startswith(PROJECT_DELIVERABLE_ROOT) and not parsed.query:
+            from project_deliverables_http import WRITE_OPERATIONS, MAX_ACTION_BYTES, dispatch_project_deliverables
+            from server import DATA_DIR
+            operation = parsed.path[len(PROJECT_DELIVERABLE_ROOT):]
+            if operation not in WRITE_OPERATIONS:
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            body = self._action_json_body(MAX_ACTION_BYTES)
+            payload, status = dispatch_project_deliverables(DATA_DIR, operation, body)
             self._send_json(payload, status)
             return
         if parsed.path.startswith(TASK_INPUT_ROOT) and not parsed.query:

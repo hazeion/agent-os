@@ -43,6 +43,22 @@ try {
   await click('Revoke access'); await waitText('Agent access revoked.');
   await click('Delete Task'); await waitText('Saved Task inputs (1 versions)');
   await click('Confirm delete Task'); await waitText('Deleted 0 Projects, 1 Task');
+  await click('Open results'); await click('Create result');
+  await page.type('section[aria-label="Project results"] input[type="number"]', '6000');
+  const measurements = await page.$$('section[aria-label="Project results"] input[type="number"]');
+  await measurements[1].type('5000');
+  await click('Add object'); await page.type('section[aria-label="Project results"] .project-deliverable-row input', 'Workbench');
+  await click('Save result version'); await waitText('Garage layout saved as a new version.');
+  await page.waitForFunction(() => { const image = document.querySelector('img[alt="Saved dimensioned garage layout"]'); return image && image.complete && image.naturalWidth === 1200; });
+  await click('Products and sources', 'section[aria-label="Project results"]'); await click('Create result');
+  await click('Add product'); await page.type('section[aria-label="Project results"] .project-deliverable-row input', 'Wall shelf');
+  await page.type('section[aria-label="Project results"] input[type="url"]', 'https://example.com/shelf');
+  await click('Save result version'); await waitText('Products and sources saved as a new version.');
+  await click('Download product document');
+  await click('Implementation order', 'section[aria-label="Project results"]'); await click('Create result');
+  await click('Add step'); await page.type('section[aria-label="Project results"] .project-deliverable-row input', 'Measure the walls');
+  await click('Save result version'); await waitText('Implementation order saved as a new version.');
+  await click('Download implementation document');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
   assert.equal(overflow, false, 'context editor creates horizontal overflow');
   const output = resolve('../artifacts/project-context-editor'); await mkdir(output, { recursive: true });
@@ -60,7 +76,7 @@ try {
   await click('Review removal', history); await waitText('This cannot be undone.');
   await click('Confirm removal', history); await waitText('No retained history.');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ width, publish: true, exactGrant: true, revoke: true, retiredPrune: true, overflow: false }));
+  console.log(JSON.stringify({ width, publish: true, exactGrant: true, revoke: true, retiredPrune: true, garageResults: true, overflow: false }));
 } catch (error) {
   if (page) {
     console.error(await page.evaluate(() => ({ text: document.body.innerText.slice(-5000), selects: Array.from(document.querySelectorAll('select')).map(node => ({ label: node.parentElement.textContent, value: node.value })) })));
