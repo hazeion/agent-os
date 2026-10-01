@@ -161,6 +161,7 @@ class LinuxWorkerScope:
         self.deadline_cleanup_verified = False
         self._namespace_handed_off = False
         self._namespace_handles: list[int | socket.socket] = []
+        self._runtime_image = None
 
     @property
     def limits(self) -> WorkerScopeLimits:
@@ -390,13 +391,16 @@ class LinuxWorkerScope:
                 raise WorkerScopeError("worker_scope.deadline")
             # Reserve before send: an ambiguous partial handoff must not retry.
             self._namespace_handed_off = True
+            if prepared._runtime_image is not None:
+                prepared._runtime_image.retain_worker(self)
+                self._runtime_image = prepared._runtime_image
             parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             self._namespace_handles.append(parent)
             try:
                 prepared.handoff(self._control, broker, child, self.limits.wall_seconds, self._deadline)
                 exports = receive_ready(parent, min(self._deadline, time.monotonic() + 2))
                 self._namespace_handles.append(exports)
-                return NamespaceWorker(self, parent, exports)
+                return NamespaceWorker(self, parent, exports, prepared._runtime_image)
             finally:
                 child.close()
 
@@ -429,3 +433,6 @@ class LinuxWorkerScope:
                     os.close(handle)
             self._namespace_handles.clear()
             self._closed = True
+            if self._runtime_image is not None:
+                self._runtime_image.release_worker(self)
+                self._runtime_image = None

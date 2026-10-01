@@ -1217,6 +1217,26 @@ This fixture facility grants no live provider, durable execution/Stop receipt,
 Run success, registered output or Apply authority. Production still requires
 qualified credential/release/model custody and exact Run/scope admission.
 
+The private runtime-image lease seals a bounded digest-verified SquashFS image
+in a memfd and uses only a fixed owned foreground read-only FUSE helper.
+Source/venv/Python roots from that immutable image can map to the original
+private virtual runtime paths without changing official Hermes. FUSE metadata
+and sentinel reads happen only in a bounded disposable probe; parent inspection
+uses kernel mount/fd information and receives O_PATH roots. Failed or unreaped
+probes suspend further use. An independently captured kernel mount generation
+cannot be replaced by probe output. Each handed-off scope retains its own image
+reference until verified closure, even if prepared inputs close first.
+
+Cleanup refuses active references, busy descriptors or replaced mount names.
+It proves exact mount/target disappearance before underlying-directory removal
+and owned daemon reap; no lazy detach or recursive mount deletion is allowed.
+Startup failure preserves/reconciles the exact owned mount. Image buffers and
+decoder address-space/CPU/descriptor/thread limits are finite, but the decoder
+budget is separate from the worker cgroup. Byte immutability does not establish
+source/dependency provenance or real model/credential qualification. Host
+system-library closure and helper provenance remain separate production gates;
+this image component adds no Agent capability or Run/provider authority.
+
 Schema 43 stores immutable Project proposal controller generations and one
 durable inference-call reservation per generation in the private database.
 The generation binds the exact schema-42 Run/input/binding graph, fixed policy,
