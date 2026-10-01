@@ -1193,6 +1193,30 @@ generated-output registration or proposal Apply authority. The qualified host
 broker must still enforce exact admission/input/policy, output-token limits,
 durable journal and live revocation before any provider submission.
 
+The durable inference broker core currently exposes only an explicitly
+synthetic qualification responder, with fixed fake model identities and no
+credential, URL, callback or production factory. It derives a bounded query
+and native image from the exact schema-42 selected context/input/blob graph
+through the existing no-follow attachment reader. Canonical Run-store
+authority and the complete dormant private archival graph are required before
+preparation, work or replay. Missing/changed inputs invalidate the whole set.
+Worker system text and parameters are bounded evidence only; a fresh fixed
+Mentat proposal system/user/model/output-token request is constructed by the
+host. The exact stock namespace image annotation is verified and omitted from
+that request. Its digest binds both worker evidence and constructed content.
+
+One reservation and its unknown submission state commit separately before
+synthetic acceptance, with exact first-token ownership and committed readback.
+Response waits hold no database, private-state or submission-fence locks.
+Faults suspend the channel; duplicates, conflicts, unresolved calls and lost
+commit replies cannot invoke another completion. Policy-specific declared and
+effective scope ceilings and the original wall are enforced at live gates;
+missing or nonfinite scope deadlines fail closed. Stop fences new synthetic
+work while original-token late settlement may retain historical truth only.
+This fixture facility grants no live provider, durable execution/Stop receipt,
+Run success, registered output or Apply authority. Production still requires
+qualified credential/release/model custody and exact Run/scope admission.
+
 Schema 43 stores immutable Project proposal controller generations and one
 durable inference-call reservation per generation in the private database.
 The generation binds the exact schema-42 Run/input/binding graph, fixed policy,
