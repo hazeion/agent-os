@@ -35,11 +35,11 @@ The old Beta/MDA foundation is merged through
 [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow is a stack of **full, open PRs** starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243) and currently ending
-at [PR #288](https://github.com/hazeion/agent-os/pull/288). The PRs being open
+at [PR #290](https://github.com/hazeion/agent-os/pull/290). The PRs being open
 is not merged-product or issue-close evidence. Hosted CI and ordinary review
-remain gates. [PR #276](https://github.com/hazeion/agent-os/pull/276) is a
-separate Windows CI-shard correction based on the results-review UI branch;
-integrate it deliberately when advancing that part of the stack.
+remain gates. The reviewed Windows CI-shard correction in
+[PR #276](https://github.com/hazeion/agent-os/pull/276) is integrated into
+PRs #285–#290; hosted reruns remain the timeout acceptance gate.
 
 - [Baseline and fresh-install readiness](https://github.com/hazeion/agent-os/issues/235):
   PRs [#243](https://github.com/hazeion/agent-os/pull/243)–[#245](https://github.com/hazeion/agent-os/pull/245)
@@ -90,8 +90,13 @@ integrate it deliberately when advancing that part of the stack.
   owner-selected Project lead role with context-bound readiness; selection
   alone cannot produce a proposal or start work.
   [PR #288](https://github.com/hazeion/agent-os/pull/288) retains schema-39
-  private Project planning-input evidence. The next slice adds exact owner
-  publication and lost-response receipts; neither grants a proposal Run or Apply.
+  private Project planning-input evidence.
+  [PR #289](https://github.com/hazeion/agent-os/pull/289) adds exact owner
+  publication and lost-response receipts; neither grants a proposal Run or
+  Apply. [PR #290](https://github.com/hazeion/agent-os/pull/290) reserves a
+  distinct proposal Run source behind a no-dispatch database guard. A separate
+  receipt, generated-output provenance and qualified Linux adapter still gate
+  actual lead proposal execution.
 - [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):
   PRs [#275](https://github.com/hazeion/agent-os/pull/275) and
   [#277](https://github.com/hazeion/agent-os/pull/277)–[#281](https://github.com/hazeion/agent-os/pull/281)
