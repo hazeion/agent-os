@@ -57,10 +57,18 @@ holds questions, approvals, failures and results.
 Active evidence: [owner workflow review](reviews/2026-09-21-owner-workflow.md).
 The readable next-Run objective/review-feedback preview is reviewed and published
 in [PR 243](https://github.com/hazeion/agent-os/pull/243), pending CI/merge.
-The next slice is [Task/Run completion and navigation](https://github.com/hazeion/agent-os/issues/227),
-with evidence in [its review log](reviews/2026-09-21-task-run-completion.md).
+Task/Run completion and navigation is reviewed in
+[PR 244](https://github.com/hazeion/agent-os/pull/244); responsive header correction
+and the Stop/cancel investigation are reviewed in
+[PR 245](https://github.com/hazeion/agent-os/pull/245). All remain subject to CI and
+merge; integrated baseline acceptance is not yet closed.
 Google OIDC and runtime-candidate research are resolved; their implementation
 and real-provider qualification remain in the dependent work above.
+The independent [Google verifier component](https://github.com/hazeion/agent-os/issues/246)
+is implemented and reviewed without network, route, session or enrollment
+authority. Its evidence is in [the verifier log](reviews/2026-09-21-google-identity-verifier.md).
+Owner-principal/session migration and fixed-host exchange remain the next auth
+integration work after baseline acceptance.
 
 ### Implemented baseline and retained boundaries
 
