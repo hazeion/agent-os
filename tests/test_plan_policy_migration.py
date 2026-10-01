@@ -57,6 +57,9 @@ class PlanPolicyMigrationTests(unittest.TestCase):
         with closing(sqlite3.connect(mentat_db.database_path(fixture.root))) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("BEGIN IMMEDIATE")
+            for table in ("mentat_project_worker_calls", "mentat_project_worker_generations"):
+                self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
+                connection.execute(f"DROP TABLE {table}")
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0], 0)
             connection.execute("DROP VIEW mentat_retained_attachments")
             # The fixture saved Task inputs, never proposal Run inputs. Remove

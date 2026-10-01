@@ -116,6 +116,7 @@ PROJECT_INPUT_DATABASE_SCHEMA_VERSION = 39
 PROJECT_INPUT_ACTION_DATABASE_SCHEMA_VERSION = 40
 PROJECT_PROPOSAL_SOURCE_DATABASE_SCHEMA_VERSION = 41
 PROJECT_PROPOSAL_INPUT_DATABASE_SCHEMA_VERSION = 42
+PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION = 43
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -155,6 +156,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     PROJECT_INPUT_ACTION_DATABASE_SCHEMA_VERSION,
     PROJECT_PROPOSAL_SOURCE_DATABASE_SCHEMA_VERSION,
     PROJECT_PROPOSAL_INPUT_DATABASE_SCHEMA_VERSION,
+    PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -641,7 +643,7 @@ def _sqlite_run_history(path: Path) -> tuple[bytes, tuple[str, ...]]:
         if authority_count != 1:
             raise PrivateConsoleUnitError("private_run_repository_invalid")
         repository = RunRepository(connection)
-        repository.validate()
+        repository.validate(private_archival_proposals=True)
         canonical_identifiers = tuple(
             str(row[0])
             for row in connection.execute(
@@ -1045,9 +1047,19 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
         if schema_version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION:
             from run_attention import RunAttentionError, validate_run_attention_connection
+            from project_context import ProjectContextError
+            from project_worker_journal import WorkerJournalError, archival_proposal_ids
             try:
-                validate_run_attention_connection(connection)
-            except RunAttentionError as exc:
+                # sqlite.Row is needed only while validating the exact dormant
+                # Run shape; retain the surrounding validator's factory.
+                original_factory = connection.row_factory
+                connection.row_factory = sqlite3.Row
+                try:
+                    archived = archival_proposal_ids(connection)
+                finally:
+                    connection.row_factory = original_factory
+                validate_run_attention_connection(connection, archival_proposals=archived)
+            except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
                 raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
@@ -1228,9 +1240,17 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
         if schema_version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION:
             from run_attention import RunAttentionError, validate_run_attention_connection
+            from project_context import ProjectContextError
+            from project_worker_journal import WorkerJournalError, archival_proposal_ids
             try:
-                validate_run_attention_connection(connection)
-            except RunAttentionError as exc:
+                original_factory = connection.row_factory
+                connection.row_factory = sqlite3.Row
+                try:
+                    archived = archival_proposal_ids(connection)
+                finally:
+                    connection.row_factory = original_factory
+                validate_run_attention_connection(connection, archival_proposals=archived)
+            except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
                 raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)

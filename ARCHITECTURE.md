@@ -1168,6 +1168,27 @@ it makes no claim that an external provider stopped. This component adds no
 browser route, Run admission, input/broker grant, durable controller authority,
 or runtime qualification. Project dispatch guards remain intact.
 
+Schema 43 stores immutable Project proposal controller generations and one
+durable inference-call reservation per generation in the private database.
+The generation binds the exact schema-42 Run/input/binding graph, fixed policy,
+safe model snapshot and authority epoch. Reservation consumes one irrevocable
+work unit; an exact host-held settlement token records `unknown` before any
+future network send. Repeated identical requests retain the same outcome;
+changed requests conflict. Unknown calls cannot be retried or refunded.
+Only the token hash is persisted, and normalized retained text is capped at
+32 KiB. Metadata accounting reserves the largest possible terminal result
+before submission. Every mutation validates the shared graph and owns a
+savepoint inside the caller's transaction.
+
+New reservations revalidate the live Project, lead, Agent, context, grant,
+input head, binding and epoch. Restore fences new work while preserving spent
+reservations and truthful original-token late outcome accounting as history.
+Private backup validation may retain only the exact dormant proposal graph
+with no live leases, execution claims, events, attachments or attention item.
+Default live Run/Inbox validation and proposal SQL insertion guards remain
+closed. Journal evidence grants no Run admission, provider submission,
+generated-output registration, proposal Apply or runtime qualification.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

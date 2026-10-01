@@ -29,7 +29,7 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
                 connection.execute("PRAGMA foreign_keys=ON")
                 self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 42), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(validate_project_proposal_input_connection(connection), [[], []])
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "proposal_unqualified"):
@@ -141,7 +141,7 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
                 target / "private" / "console",
             )
             with closing(mentat_db.connect(target)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, 42), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) FROM mentat_project_proposal_input_receipts"
                 ).fetchone()[0], 0)

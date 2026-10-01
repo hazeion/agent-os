@@ -165,8 +165,13 @@ have clear independent reviews; hosted timing gains remain unverified.
    provides a fixed inert bootstrap, kernel-verified limits, owned-generation
    local Stop and an independent watchdog. All 13 actual Linux tests and
    wheel/sdist/install checks pass after two clear reviews. It grants no Run
-   or production handoff. Next integrate the fixed namespace bootstrap and
-   durable controller/broker receipts before any Project execution admission.
+   or production handoff. The [durable controller journal](reviews/2026-09-30-project-worker-journal.md)
+   adds schema-43 immutable generation evidence, one irrevocable inference
+   reservation, token-bound unknown/known outcome accounting and validated
+   private archival backup/restore. Both independent reviews are clear;
+   current migration/attention/journal checks pass. It grants no provider
+   submission or producing-Run authority. Next integrate the fixed namespace
+   bootstrap and qualified broker transport before Project execution admission.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
