@@ -152,6 +152,10 @@ implementation slice retains exact result-review attention generations and
 cross-device read/ack state in private SQLite. The owner Inbox screen, guarded
 review destination, existing Run failure/recovery producers and coordinated
 revision routing follow; issue #240 remains open until that scope is verified.
+The fixed item-bound website review path and Inbox page are reviewed on the
+schema-34 authority in
+[the Inbox UI review](reviews/2026-09-24-owner-inbox-ui.md). They preserve exact
+three-result review and stale/retained history without granting execution.
 
 ### Implemented baseline and retained boundaries
 

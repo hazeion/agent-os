@@ -31,6 +31,7 @@ class ContextFixtureHandler(local_bridge.BridgeRequestHandler):
         if (self.path == local_bridge.BRIDGE_HEALTH_PATH or self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT)
                 or self.path.startswith(local_bridge.PROJECT_DELIVERABLE_ROOT)
                 or self.path.startswith(local_bridge.PROJECT_PLAN_ROOT)
+                or self.path.startswith(local_bridge.OWNER_INBOX_ROOT)
                 or self.path.startswith(local_bridge.TASK_INPUT_ROOT)
                 or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASKS_PATH)
                 or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASK_DETAIL_PATH)
@@ -48,6 +49,7 @@ class ContextFixtureHandler(local_bridge.BridgeRequestHandler):
         if (self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT) or self.path.startswith(local_bridge.TASK_INPUT_ROOT)
                 or self.path.startswith(local_bridge.PROJECT_DELIVERABLE_ROOT)
                 or self.path.startswith(local_bridge.PROJECT_PLAN_ROOT)
+                or self.path.startswith(local_bridge.OWNER_INBOX_ROOT)
                 or self.path in {local_bridge.BRIDGE_PLANNING_DELETION_PREVIEW_PATH, local_bridge.BRIDGE_PLANNING_DELETION_CONFIRM_PATH}):
             return super().do_POST()
         return self._send_json({**ENVELOPE, 'status': 'unavailable'}, 503)

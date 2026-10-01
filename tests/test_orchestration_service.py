@@ -549,24 +549,21 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=dispatch)
             worker.start()
-            self.assertTrue(runtime.capacity_entered.wait(timeout=2))
+            probe = None
             acquired = threading.Event()
 
             def probe_lock():
                 with private_state_lock(root):
                     acquired.set()
 
-            probe = threading.Thread(target=probe_lock)
-            probe.start()
             try:
+                self.assertTrue(runtime.capacity_entered.wait(timeout=2))
+                probe = threading.Thread(target=probe_lock)
+                probe.start()
                 self.assertTrue(acquired.wait(timeout=1))
             finally:
-                runtime.capacity_release.set()
-            worker.join(timeout=5)
-            probe.join(timeout=5)
+                self.finish_discovery_workers(runtime.capacity_release, worker, probe)
 
-        self.assertFalse(worker.is_alive())
-        self.assertFalse(probe.is_alive())
         self.assertEqual(failures, [])
 
     def test_task_capability_discovery_never_holds_the_private_state_lock(self):
@@ -590,25 +587,105 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=dispatch)
             worker.start()
-            self.assertTrue(runtime.capabilities_entered.wait(timeout=2))
+            probe = None
             acquired = threading.Event()
 
             def probe_lock():
                 with private_state_lock(root):
                     acquired.set()
 
-            probe = threading.Thread(target=probe_lock)
-            probe.start()
             try:
+                self.assertTrue(runtime.capabilities_entered.wait(timeout=2))
+                probe = threading.Thread(target=probe_lock)
+                probe.start()
                 self.assertTrue(acquired.wait(timeout=1))
             finally:
-                runtime.capabilities_release.set()
-            worker.join(timeout=5)
-            probe.join(timeout=5)
+                self.finish_discovery_workers(runtime.capabilities_release, worker, probe)
 
-        self.assertFalse(worker.is_alive())
-        self.assertFalse(probe.is_alive())
         self.assertEqual(failures, [])
+
+    def finish_discovery_workers(self, release, *workers):
+        # Always release and drain before TemporaryDirectory removes SQLite,
+        # including failures at either ordering assertion. Keep those assertion
+        # deadlines unchanged; finishing a worker is not a throughput test.
+        release.set()
+        started = [worker for worker in workers if worker is not None and worker.ident is not None]
+        for worker in started:
+            worker.join(timeout=5)
+            if worker.is_alive():
+                frame = sys._current_frames().get(worker.ident)
+                stalled = "".join(traceback.format_stack(frame, limit=12))[:4096] if frame else "worker exited during capture"
+                print("Slow discovery worker:\n" + stalled, file=sys.stderr)
+                worker.join(timeout=25)
+        for worker in started:
+            self.assertFalse(worker.is_alive(), "Discovery worker did not release its temporary SQLite root")
+
+    def test_discovery_assertion_failures_drain_workers_before_sqlite_cleanup(self):
+        methods = (
+            "test_task_capacity_discovery_never_holds_the_private_state_lock",
+            "test_task_capability_discovery_never_holds_the_private_state_lock",
+        )
+        for method in methods:
+            for assertion in (1, 2):
+                with self.subTest(method=method, assertion=assertion):
+                    owned_threads = []
+                    runtimes = []
+                    cleanup_observations = []
+                    original_thread = threading.Thread
+                    original_runtime = FakeRuntime
+                    original_temporary = TemporaryDirectory
+
+                    def track_thread(*args, **kwargs):
+                        worker = original_thread(*args, **kwargs)
+                        owned_threads.append(worker)
+                        return worker
+
+                    def track_runtime(*args, **kwargs):
+                        runtime = original_runtime(*args, **kwargs)
+                        runtimes.append(runtime)
+                        return runtime
+
+                    class ObservedTemporaryDirectory(original_temporary):
+                        def __exit__(temporary, *args):
+                            cleanup_observations.append([worker.is_alive() for worker in owned_threads])
+                            # Keep this regression safe if the tested fixture
+                            # ever loses its finally again. Observe first, then
+                            # release/drain only its captured workers to avoid
+                            # leaking a thread or deleting an in-use database.
+                            for runtime in runtimes:
+                                for gate in (runtime.capacity_release, runtime.capabilities_release):
+                                    if gate is not None:
+                                        gate.set()
+                            for worker in owned_threads:
+                                if worker.ident is not None:
+                                    worker.join(timeout=30)
+                            return super().__exit__(*args)
+
+                    inner = OrchestrationServiceTests(method)
+                    original_assert = inner.assertTrue
+                    assertion_count = 0
+
+                    def fail_ordering_assertion(*args, **kwargs):
+                        nonlocal assertion_count
+                        assertion_count += 1
+                        if assertion_count == assertion:
+                            raise AssertionError("injected discovery assertion")
+                        return original_assert(*args, **kwargs)
+
+                    result = unittest.TestResult()
+                    with (
+                        patch.object(threading, "Thread", side_effect=track_thread),
+                        patch.object(sys.modules[__name__], "FakeRuntime", side_effect=track_runtime),
+                        patch.object(sys.modules[__name__], "TemporaryDirectory", ObservedTemporaryDirectory),
+                        patch.object(inner, "assertTrue", side_effect=fail_ordering_assertion),
+                    ):
+                        inner.run(result)
+                    self.assertEqual(len(result.failures), 1)
+                    self.assertEqual(result.errors, [])
+                    self.assertIn("injected discovery assertion", result.failures[0][1])
+                    self.assertEqual(len(cleanup_observations), 1)
+                    self.assertEqual(cleanup_observations[0], [False] * assertion)
+                    self.assertTrue(all(not worker.is_alive() for worker in owned_threads))
 
     def test_first_turn_never_replaces_a_manual_conversation_title(self):
         with TemporaryDirectory() as tmpdir:

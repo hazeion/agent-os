@@ -6286,6 +6286,33 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = dispatch_owner_inbox(DATA_DIR, 'list', {})
             self._send_json(payload, status)
             return
+        if parsed.path == OWNER_INBOX_ROOT + 'page' and len(parsed.query) <= 256:
+            from owner_inbox_http import dispatch_owner_inbox
+            from server import DATA_DIR
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) not in (1, 2) or len(pairs) != len(dict(pairs)) or set(dict(pairs)) not in ({'view'}, {'view', 'after'}):
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            query = dict(pairs)
+            payload, status = dispatch_owner_inbox(DATA_DIR, 'page', {'view': query['view'], 'after': query.get('after')})
+            self._send_json(payload, status)
+            return
+        if parsed.path == OWNER_INBOX_ROOT + 'open' and len(parsed.query) <= 128:
+            from owner_inbox_http import dispatch_owner_inbox
+            from server import DATA_DIR
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != 'item_id':
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            payload, status = dispatch_owner_inbox(DATA_DIR, 'open', {'item_id': pairs[0][1]})
+            self._send_json(payload, status)
+            return
         if parsed.path.startswith(TASK_INPUT_ROOT):
             from task_inputs_http import READ_OPERATIONS, dispatch_task_inputs
             from server import DATA_DIR
@@ -6850,6 +6877,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             from server import DATA_DIR
             body = self._action_json_body(MAX_ACTION_BYTES)
             payload, status = dispatch_owner_inbox(DATA_DIR, 'mark', body)
+            self._send_json(payload, status)
+            return
+        if parsed.path in {OWNER_INBOX_ROOT + 'preview', OWNER_INBOX_ROOT + 'confirm'} and not parsed.query:
+            from owner_inbox_http import MAX_ACTION_BYTES, dispatch_owner_inbox
+            from server import DATA_DIR
+            body = self._action_json_body(MAX_ACTION_BYTES)
+            operation = parsed.path[len(OWNER_INBOX_ROOT):]
+            payload, status = dispatch_owner_inbox(DATA_DIR, operation, body)
             self._send_json(payload, status)
             return
         if parsed.path.startswith(TASK_INPUT_ROOT) and not parsed.query:

@@ -1066,8 +1066,17 @@ revisions and a bounded repeated-action receipt. Acknowledgment cannot accept
 results, dispatch an Agent or resolve the underlying review. Project deletion
 retains the item as stale history, and another Project using the same public ID
 cannot inherit it. The owner-only fixed bridge exposes bounded safe list and
-mark operations; the item-bound review destination and additional producers
-remain separate capabilities.
+mark operations; additional producer kinds remain separate capabilities.
+
+The owner Inbox website opens an opaque item ID through a fixed bridge. Python
+binds that item to its original Project incarnation and exact three retained
+version IDs, rechecking the pending decision after loading safe result content.
+Preview and confirmation recheck the same item inside the Project review
+transaction, including the duplicate-confirmation path. A changed head,
+decision, deletion or reused public Project ID closes review controls instead
+of selecting another Project. Resolved and stale items may show only their
+three immutable source versions and retain exact Read/Acknowledge state; these
+actions never approve a plan, accept results or start Agent work.
 
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and

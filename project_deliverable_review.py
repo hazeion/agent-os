@@ -182,7 +182,7 @@ def _confirmation(epoch: bytes, project_id: str, incarnation: str, project_revis
 
 
 def preview_review(data_dir: Path, project_id: str, action: object, note: object,
-                   affected_slots: object) -> dict:
+                   affected_slots: object, *, inbox_item_id: str | None = None) -> dict:
     action, note, affected = _request(action, note, affected_slots)
     root = Path(data_dir)
     with private_state_lock(root):
@@ -191,6 +191,9 @@ def preview_review(data_dir: Path, project_id: str, action: object, note: object
                 from project_context import validate_project_context_connection
                 validate_project_context_connection(connection, require_available=False)
                 project, incarnation, heads, epoch, revision = _current(connection, project_id)
+                if inbox_item_id is not None:
+                    from owner_inbox import require_pending_result_item_connection
+                    require_pending_result_item_connection(connection, inbox_item_id, project_id, incarnation, heads)
                 if revision >= MAX_REVIEWS:
                     _fail("capacity")
                 if epoch == bytes(32):
@@ -211,7 +214,7 @@ def preview_review(data_dir: Path, project_id: str, action: object, note: object
 
 
 def confirm_review(data_dir: Path, project_id: str, action: object, note: object,
-                   affected_slots: object, confirmation_id: object) -> dict:
+                   affected_slots: object, confirmation_id: object, *, inbox_item_id: str | None = None) -> dict:
     action, note, affected = _request(action, note, affected_slots)
     if not isinstance(confirmation_id, str) or _HEX64.fullmatch(confirmation_id) is None:
         _fail("confirmation_invalid")
@@ -228,11 +231,17 @@ def confirm_review(data_dir: Path, project_id: str, action: object, note: object
                 if existing is not None:
                     if existing[1] != project_id or not hmac.compare_digest(existing[2], request_digest):
                         _fail("confirmation_conflict")
+                    if inbox_item_id is not None:
+                        from owner_inbox import require_duplicate_result_item_connection
+                        require_duplicate_result_item_connection(connection, inbox_item_id, existing[0], project_id)
                     return {"id": existing[0], "revision": existing[3], "action": action,
                             "project_id": project_id, "duplicate": True}
                 from project_context import validate_project_context_connection
                 validate_project_context_connection(connection, require_available=False)
                 project, incarnation, heads, epoch, revision = _current(connection, project_id)
+                if inbox_item_id is not None:
+                    from owner_inbox import require_pending_result_item_connection
+                    require_pending_result_item_connection(connection, inbox_item_id, project_id, incarnation, heads)
                 if epoch == bytes(32):
                     _fail("stale")
                 if revision >= MAX_REVIEWS:

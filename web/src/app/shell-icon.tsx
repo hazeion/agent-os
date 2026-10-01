@@ -27,6 +27,12 @@ export function ShellIcon({ name, size = 20 }: ShellIconProps) {
         <path d="m8 9 1.5 1.5L12 8M14 9h3M8 15h9" />
       </>
     ),
+    inbox: (
+      <>
+        <rect x="3" y="5" width="18" height="15" rx="2" />
+        <path d="M3 13h5l2 3h4l2-3h5" />
+      </>
+    ),
     runs: (
       <>
         <path d="M8 5v14l11-7Z" />
