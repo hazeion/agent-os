@@ -278,9 +278,13 @@ class LinuxRuntimeImageTests(unittest.TestCase):
         roots = namespaces.RuntimeRoots(*(Path(value) for value in values[:3]))
         lease = images.ImmutableRuntimeImage(Path(values[3]), values[4])
         self.addCleanup(lease.close)
-        prepared = namespaces.PreparedNamespace(roots, inputs.query, hashlib.sha256(inputs.query).hexdigest(),
-                    "mentat-probe", vision=True, image=inputs.image, image_digest=inputs.image_digest,
-                    image_extension=inputs.image_extension, runtime_image=lease)
+        sealed_libraries = os.environ.get("MENTAT_TEST_SEALED_LIBRARIES") == "1"
+        with patch.object(namespaces, "_open_directory", wraps=namespaces._open_directory) as opened:
+            prepared = namespaces.PreparedNamespace(roots, inputs.query, hashlib.sha256(inputs.query).hexdigest(),
+                        "mentat-probe", vision=True, image=inputs.image, image_digest=inputs.image_digest,
+                        image_extension=inputs.image_extension, runtime_image=lease, sealed_libraries=sealed_libraries)
+            if sealed_libraries:
+                self.assertFalse(any(call.args[0] in (Path("/usr/lib"), Path("/usr/lib64")) for call in opened.call_args_list))
         scope = scopes.LinuxWorkerScope(scopes.WorkerScopeLimits(wall_seconds=20))
         host, worker = socket.socketpair()
         actual_broker = None

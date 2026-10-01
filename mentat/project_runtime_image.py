@@ -213,20 +213,25 @@ class ImmutableRuntimeImage:
         child.close()
         descriptors = []
         try:
-            data, ancillary, flags, _ = parent.recvmsg(1024, socket.CMSG_SPACE(4 * 4), socket.MSG_CMSG_CLOEXEC)
+            data, ancillary, flags, _ = parent.recvmsg(16384, socket.CMSG_SPACE(6 * 4), socket.MSG_CMSG_CLOEXEC)
             for level, kind, contents in ancillary:
                 if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                     values = array.array("i")
                     values.frombytes(contents[:len(contents) - len(contents) % values.itemsize])
                     descriptors.extend(values)
             payload = json.loads(data)
-            expected = 1 if mode == "root" else 3
+            expected = 1 if mode == "root" else 5 if mode == "bundle" else 3
             if (flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(descriptors) != expected
-                    or not isinstance(payload, dict) or set(payload) != {"version", "identity"}
+                    or not isinstance(payload, dict) or set(payload) != {"version", "identity", "unreachable_paths"}
                     or payload["version"] != 1 or not isinstance(payload["identity"], list)
                     or len(payload["identity"]) != 3 or any(type(value) is not int or value < 0 for value in payload["identity"])
                     or any(_mount_id(descriptor) != payload["identity"][0] for descriptor in descriptors)):
+                    _fail("probe")
+            if (not isinstance(payload["unreachable_paths"], list) or len(payload["unreachable_paths"]) > 16
+                    or any(not isinstance(value, str) or len(value) > 512 for value in payload["unreachable_paths"])):
                 _fail("probe")
+            if mode == "bundle":
+                self._unreachable_paths = tuple(payload["unreachable_paths"])
             process.wait(timeout=1)
             if process.returncode != 0:
                 _fail("probe")
@@ -258,6 +263,10 @@ class ImmutableRuntimeImage:
     @property
     def image_sha256(self):
         return self._image_sha256
+
+    @property
+    def unreachable_paths(self):
+        return getattr(self, "_unreachable_paths", ())
 
     def _mount_current(self):
         """Kernel-only identity readback, including a disconnected FUSE daemon."""
@@ -326,12 +335,12 @@ class ImmutableRuntimeImage:
             finally:
                 os.close(descriptors[0])
 
-    def acquire_roots(self, *, check_bootstrap=False):
+    def acquire_roots(self, *, check_bootstrap=False, sealed_libraries=False):
         with self._lock:
-            if type(check_bootstrap) is not bool:
+            if type(check_bootstrap) is not bool or type(sealed_libraries) is not bool:
                 _fail("probe")
             self.verify()
-            descriptors, identity = self._probe("namespace" if check_bootstrap else "roots")
+            descriptors, identity = self._probe("bundle" if sealed_libraries else "namespace" if check_bootstrap else "roots")
             if identity != [self._mount, *self._identity]:
                 for descriptor in descriptors:
                     os.close(descriptor)

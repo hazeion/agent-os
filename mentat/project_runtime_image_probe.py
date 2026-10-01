@@ -37,13 +37,15 @@ def main():
         root = os.open("mount", flags, dir_fd=base)
         descriptors.append(root)
         identity = inspect(root)
-        if mode in {"roots", "namespace"}:
-            for name in ("source", "venv", "python"):
+        unreachable = []
+        if mode in {"roots", "namespace", "bundle"}:
+            names = ("source", "venv", "python", "system_lib", "system_lib64") if mode == "bundle" else ("source", "venv", "python")
+            for name in names:
                 child = os.open(name, flags, dir_fd=root)
                 descriptors.append(child)
                 if inspect(child)[0] != identity[0]:
                     raise ValueError("nested")
-            if mode == "namespace":
+            if mode in {"namespace", "bundle"}:
                 for base_fd, parts in ((descriptors[1], ("hermes_cli", "main.py")),
                                        (descriptors[2], ("pyvenv.cfg",))):
                     parent = os.dup(base_fd)
@@ -60,12 +62,25 @@ def main():
                             os.close(child)
                     finally:
                         os.close(parent)
+            if mode == "bundle":
+                report = os.open("runtime-libraries.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
+                try:
+                    payload = os.read(report, 32769)
+                finally:
+                    os.close(report)
+                if len(payload) > 32768: raise ValueError("report")
+                metadata = json.loads(payload)
+                if (not isinstance(metadata, dict) or metadata.get("format") != 1
+                        or not isinstance(metadata.get("unreachable_paths"), list) or len(metadata["unreachable_paths"]) > 16
+                        or any(not isinstance(value, str) or len(value) > 512 for value in metadata["unreachable_paths"])):
+                    raise ValueError("report")
+                unreachable = metadata["unreachable_paths"]
             output = descriptors[1:]
         elif mode == "root":
             output = descriptors[:1]
         else:
             raise ValueError("mode")
-        data = json.dumps({"version": 1, "identity": identity}).encode("ascii")
+        data = json.dumps({"version": 1, "identity": identity, "unreachable_paths": unreachable}).encode("ascii")
         endpoint.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", output))])
         return 0
     except (OSError, ValueError):

@@ -55,7 +55,12 @@ class FrontendContractTests(unittest.TestCase):
                                ("/v1/chat/completions", {**baseline, "model": "other"}),
                                ("/v1/chat/completions", {**baseline, "tools": [{"type": "function"}]})):
                 client = http.client.HTTPConnection(*service.server_address, timeout=2)
-                client.request("POST", path, json.dumps(body))
+                if path != "/v1/chat/completions":
+                    client.putrequest("POST", path)
+                    client.putheader("Content-Length", str(len(json.dumps(body).encode())))
+                    client.endheaders()  # Exact route refusal occurs before body read.
+                else:
+                    client.request("POST", path, json.dumps(body))
                 reply = client.getresponse()
                 self.assertEqual(reply.status, 400)
                 reply.read()
@@ -70,6 +75,21 @@ class FrontendContractTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
             host.close()
             worker.close()
+
+    def test_unsupported_path_refuses_before_any_body_read(self):
+        handler = object.__new__(front.CompletionHandler)
+        handler.path = "/api/show"
+        handler.server = MagicMock()
+        handler.server.attempts = 0
+        handler.server.deadline = time.monotonic() + 10
+        handler.headers = MagicMock()
+        handler.headers.get_all.return_value = ["1000000"]
+        handler.rfile = MagicMock()
+        handler.rfile.read.side_effect = AssertionError("unsupported route read body")
+        with patch.object(handler, "_reply") as reply:
+            handler.do_POST()
+        self.assertEqual(reply.call_args.args[0], 400)
+        handler.rfile.read.assert_not_called()
 
     def test_normalized_reply_becomes_bounded_sse_without_provider_headers(self):
         host, worker = socket.socketpair()
@@ -255,8 +275,24 @@ class LinuxNamespaceTests(unittest.TestCase):
         source, venv = root / "source", root / "venv"
         (source / "hermes_cli").mkdir(parents=True)
         (source / "hermes_cli/main.py").write_text("# inert synthetic runtime\n")
+        (source / "hermes_cli/config.py").write_text('''
+import json,os,pathlib
+def location():
+    path=pathlib.Path(os.environ['HERMES_HOME'])/'fixed.json'
+    path.parent.mkdir(parents=True,exist_ok=True)
+    return path
+def set_config_value(key,value):
+    path=location();data=json.loads(path.read_text()) if path.exists() else {}
+    data[key]=(value=='true') if value in ('true','false') else int(value) if value.isdigit() else value
+    path.write_text(json.dumps(data))
+def get_config_value(key,as_json=False):
+    print(json.dumps(json.loads(location().read_text())[key]))
+''')
         (venv / "bin").mkdir(parents=True)
         (venv / "pyvenv.cfg").write_text("home = " + str(self.python_root / "bin") + "\ninclude-system-site-packages = false\n")
+        site = venv / "lib" / ("python" + str(sys.version_info.major) + "." + str(sys.version_info.minor)) / "site-packages"
+        site.mkdir(parents=True)
+        (site / "synthetic-source.pth").write_text(str(source) + "\n")
         (venv / "bin/python").symlink_to(Path(sys.executable).resolve())
         cli = venv / "bin/hermes"
         cli.write_text("#!" + str(Path(sys.executable).resolve()) + "\n" + FAKE_CLI)
