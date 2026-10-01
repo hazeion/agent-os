@@ -1074,13 +1074,41 @@ class CodexAppServerClientTests(unittest.TestCase):
     def test_request_timeout_is_unknown_and_shutdown_is_bounded(self):
         with TemporaryDirectory() as temporary:
             client = self.client(Path(temporary), request_timeout=0.2)
+            process = None
             try:
+                # This case proves post-submission uncertainty. Establish the
+                # real inert fixture's handshake under its ordinary one-second
+                # startup budget before measuring the unchanged 0.2s request.
+                client._ensure_ready(timeout=1.0)
+                process = client._process
                 with self.assertRaises(CodexAppServerClientError) as raised:
                     client.request("test/timeout", {})
             finally:
                 client.close()
         self.assertEqual(raised.exception.code, "codex.request_timeout")
         self.assertTrue(raised.exception.uncertain)
+        self.assertIsNotNone(process)
+        self.assertIsNotNone(process.poll())
+
+    def test_startup_budget_expiry_is_certain_and_never_submits_target_request(self):
+        with TemporaryDirectory() as temporary:
+            client = CodexAppServerClient(command=("codex",), cwd=Path(temporary), request_timeout=0.2)
+            clock = [100.0]
+            def consume_startup(*, timeout):
+                self.assertEqual(timeout, 0.2)
+                clock[0] += timeout
+            try:
+                with patch.object(client, "_ensure_ready", side_effect=consume_startup), patch.object(
+                    client, "_request_started"
+                ) as submit, patch("codex_runtime.time", wraps=time) as codex_time:
+                    codex_time.monotonic.side_effect = lambda: clock[0]
+                    with self.assertRaises(CodexAppServerClientError) as raised:
+                        client.request("test/timeout", {})
+                    submit.assert_not_called()
+            finally:
+                client.close()
+        self.assertEqual(raised.exception.code, "codex.request_timeout")
+        self.assertFalse(raised.exception.uncertain)
 
     def test_request_timeout_is_one_end_to_end_startup_and_method_budget(self):
         with TemporaryDirectory() as temporary:
