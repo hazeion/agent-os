@@ -282,7 +282,7 @@ class OutputReservationTests(unittest.TestCase):
                     self.assertFalse(connection.in_transaction)
                     if not drift:
                         mentat_db.migrate(connection)
-                        self.assertEqual(mentat_db.schema_signature_state(connection,45),'expected')
+                        self.assertEqual(mentat_db.schema_signature_state(connection,46),'expected')
                         self.assertEqual(outputs.pending_capacity(connection),(0,0))
                         self.assertIn('mentat_project_output_reservations',{row[0] for row in mentat_db._run_source_migration_snapshot(connection)})
 
@@ -298,6 +298,8 @@ class OutputReservationTests(unittest.TestCase):
                 journal.record_submission(connection,call_id=call.call_id,generation=fixtures.GENERATION,
                     request_digest=fixtures.REQUEST,settlement_token=call.settlement_token)
             connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
+            from tests.producer_schema_support import remove_schema46
+            remove_schema46(connection)
             connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
             connection.execute('DROP TABLE mentat_project_output_reservations')
             connection.execute('DELETE FROM schema_migrations WHERE version=45')
@@ -318,7 +320,7 @@ class OutputReservationTests(unittest.TestCase):
                 self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_calls').fetchone()),prior_call)
                 self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_scopes').fetchone()),prior_scope)
         with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection,45),'expected')
+            self.assertEqual(mentat_db.schema_signature_state(connection,46),'expected')
             self.assertEqual(outputs.pending_capacity(connection),(0,0))
             self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_calls').fetchone()),prior_call)
             self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_scopes').fetchone()),prior_scope)

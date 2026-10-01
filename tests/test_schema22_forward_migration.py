@@ -32,7 +32,7 @@ class Schema22ForwardMigrationTests(unittest.TestCase):
             self._schema22(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 45)
+                self.assertEqual(SCHEMA_VERSION, 46)
                 self.assertEqual(schema_signature_state(connection, SCHEMA_VERSION), "expected")
                 connection.execute(
                     "INSERT INTO mentat_planning_deletion_receipts (confirmation_digest, target_kind, target_digest, closure_digest, project_count, task_count, conversation_count, run_count, artifact_count, state, created_at) VALUES (?, 'task', ?, ?, 0, 1, 0, 0, 0, 'deleted', ?)",

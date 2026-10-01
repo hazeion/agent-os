@@ -442,17 +442,18 @@ class LinuxWorkerScope:
                 raise WorkerScopeError("worker_scope.deadline")
             # Reserve before send: an ambiguous partial handoff must not retry.
             self._namespace_handed_off = True
+            original_deadline = self._deadline
             if prepared._runtime_image is not None:
                 prepared._runtime_image.retain_worker(self)
                 self._runtime_image = prepared._runtime_image
             parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             self._namespace_handles.append(parent)
             try:
-                prepared.handoff(self._control, broker, child, self.limits.wall_seconds, self._deadline)
-                exports = receive_ready(parent, min(self._deadline, time.monotonic() + 2))
+                prepared.handoff(self._control, broker, child, self.limits.wall_seconds, original_deadline)
+                exports = receive_ready(parent, min(original_deadline, time.monotonic() + 2))
                 self._namespace_handles.append(exports)
                 handle = NamespaceWorker(self, parent, exports, prepared._runtime_image,
-                                         handoff_context=prepared._handoff_context)
+                                         handoff_context=prepared._handoff_context, original_deadline=original_deadline)
                 self._namespace_worker = handle
                 return handle
             finally:

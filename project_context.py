@@ -233,6 +233,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'output_reservation.capacity':
                 _fail('capacity')
             _fail('output_reservation_invalid')
+    if schema_version >= 46:
+        from project_producers import validate_producer_graph
+        from project_worker_journal import WorkerJournalError
+        try:
+            producer_metadata=validate_producer_graph(connection)
+            if len(_encoded(producer_metadata)) > 128*128*1024:
+                _fail('capacity')
+        except WorkerJournalError as exc:
+            _fail('producer_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

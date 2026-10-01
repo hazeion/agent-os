@@ -1453,6 +1453,7 @@ class RunRepository:
                 37,
                 43,
                 44,
+                45,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)
@@ -2038,7 +2039,7 @@ class RunRepository:
         terminal = self.connection.execute(
             "SELECT id FROM mentat_runs WHERE status NOT IN ("
             + ",".join("?" for _ in _ACTIVE_STATUSES)
-            + ") AND NOT (source = 'console' AND conversation_id IS NOT NULL "
+            + ") AND source!='project_proposal' AND NOT (source = 'console' AND conversation_id IS NOT NULL "
             "AND runtime_type = 'hermes' AND terminal_finalized = 0) "
             "AND NOT EXISTS (SELECT 1 FROM mentat_runs AS successor "
             "WHERE successor.resume_of_run_id = mentat_runs.id "
@@ -7356,6 +7357,9 @@ class RunRepository:
         return expected_id
 
     def _compact_events(self, run_id: str) -> bool:
+        protected=self.connection.execute("SELECT 1 FROM mentat_runs WHERE id=? AND source='project_proposal'",(run_id,)).fetchone()
+        if protected is not None:
+            return False
         rows = self.connection.execute(
             "SELECT sequence, content_bytes FROM mentat_agent_events "
             "WHERE run_id = ? ORDER BY sequence DESC",
@@ -7412,7 +7416,7 @@ class RunRepository:
         terminal = self.connection.execute(
             "SELECT id FROM mentat_runs WHERE status NOT IN ("
             + ",".join("?" for _ in _ACTIVE_STATUSES)
-            + ") AND NOT (source = 'console' AND conversation_id IS NOT NULL "
+            + ") AND source!='project_proposal' AND NOT (source = 'console' AND conversation_id IS NOT NULL "
             "AND runtime_type = 'hermes' AND terminal_finalized = 0) "
             "AND NOT EXISTS (SELECT 1 FROM mentat_runs AS successor "
             "WHERE successor.resume_of_run_id = mentat_runs.id "
@@ -7467,6 +7471,7 @@ class RunRepository:
         rows = self.connection.execute(
             "SELECT e.run_id, e.sequence, e.content_bytes "
             "FROM mentat_agent_events e JOIN mentat_runs r ON r.id = e.run_id "
+            "WHERE r.source!='project_proposal' "
             "ORDER BY CASE WHEN r.status IN ("
             + ",".join("?" for _ in _ACTIVE_STATUSES)
             + ") THEN 1 ELSE 0 END, r.updated_at, e.sequence",
@@ -7512,16 +7517,22 @@ class RunRepository:
         return tuple(changed)
 
     def validate(self, *, private_archival_proposals: bool = False,
-                 private_qualification_proposals: bool = False) -> tuple[int, int, int]:
+                 private_qualification_proposals: bool = False,
+                 private_producer_proposals: bool = False) -> tuple[int, int, int]:
         if (type(private_archival_proposals) is not bool or type(private_qualification_proposals) is not bool
-                or private_archival_proposals and private_qualification_proposals):
+                or type(private_producer_proposals) is not bool
+                or sum((private_archival_proposals,private_qualification_proposals,private_producer_proposals)) > 1):
             raise RunRepositoryError("run_repository.corrupt")
         archival_ids = frozenset()
-        if private_archival_proposals or private_qualification_proposals:
+        if private_archival_proposals or private_qualification_proposals or private_producer_proposals:
             from project_context import ProjectContextError
             from project_worker_journal import WorkerJournalError, archival_proposal_ids, qualification_proposal_ids
             try:
-                validator = qualification_proposal_ids if private_qualification_proposals else archival_proposal_ids
+                if private_producer_proposals:
+                    from project_producers import producer_ids
+                    validator=producer_ids
+                else:
+                    validator = qualification_proposal_ids if private_qualification_proposals else archival_proposal_ids
                 archival_ids = validator(self.connection)
             except (ProjectContextError, WorkerJournalError) as exc:
                 raise RunRepositoryError("run_repository.corrupt") from exc
@@ -7583,7 +7594,8 @@ class RunRepository:
                 )
                 + (" AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
                    "WHERE mentat_run_input_receipts.run_id = mentat_runs.id)"
-                   if self.schema_version >= 30 else ""),
+                   if self.schema_version >= 30 else "")
+                + " AND source!='project_proposal'",
                 tuple(sorted(_ACTIVE_STATUSES)),
             ).fetchone()[0]
         )

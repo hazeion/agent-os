@@ -119,6 +119,7 @@ PROJECT_PROPOSAL_INPUT_DATABASE_SCHEMA_VERSION = 42
 PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION = 43
 PROJECT_SCOPE_JOURNAL_DATABASE_SCHEMA_VERSION = 44
 PROJECT_OUTPUT_RESERVATION_DATABASE_SCHEMA_VERSION = 45
+PROJECT_PRODUCER_DATABASE_SCHEMA_VERSION = 46
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -161,6 +162,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION,
     PROJECT_SCOPE_JOURNAL_DATABASE_SCHEMA_VERSION,
     PROJECT_OUTPUT_RESERVATION_DATABASE_SCHEMA_VERSION,
+    PROJECT_PRODUCER_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -660,7 +662,7 @@ def _sqlite_run_history(path: Path) -> tuple[bytes, tuple[str, ...]]:
         ):
             raise PrivateConsoleUnitError("private_run_repository_invalid")
         summaries = repository.list_summaries(limit=MAX_SOURCE_RUNS)
-        projected = [summarize_run(item) for item in summaries]
+        projected = [summarize_run(item) for item in summaries if item.get('source')!='project_proposal']
         history = _canonical_json(
             {"schema_version": HISTORY_SCHEMA_VERSION, "runs": projected}
         )
@@ -1451,6 +1453,7 @@ def capture_private_console_unit(
         blob_rows = _validate_and_filter_database(snapshot_path, run_ids)
         connection = sqlite3.connect(_sqlite_readonly_uri(snapshot_path), uri=True)
         try:
+            has_producers = schema_version>=46 and connection.execute('SELECT 1 FROM mentat_project_producer_bindings LIMIT 1').fetchone() is not None
             database_references = {
                 (str(row[0]), str(row[1]))
                 for row in connection.execute("SELECT run_id, attachment_id FROM run_attachments")
@@ -1517,6 +1520,8 @@ def capture_private_console_unit(
         registry_database_raw=registry_database_raw,
         blobs=tuple(blobs),
     )
+    if has_producers:
+        _validate_producer_unit_inputs(unit)
     if readonly_identity is not None:
         inspected = inspect_console_root(data_root)
         if inspected is None or inspected[1] != readonly_identity:
@@ -1597,6 +1602,21 @@ def validate_private_console_stage_inventory(
         raise PrivateConsoleUnitError("private_stage_incomplete")
 
 
+def _validate_producer_unit_inputs(unit):
+    with TemporaryDirectory(prefix='mentat-producer-provenance-') as temporary:
+        database=Path(temporary)/'mentat.sqlite3'
+        database.write_bytes(unit.database_raw)
+        connection=sqlite3.connect(_sqlite_readonly_uri(database),uri=True)
+        try:
+            from project_producers import validate_input_bytes,ProducerError
+            by_digest={blob.sha256:blob.raw for blob in unit.blobs}
+            validate_input_bytes(connection,lambda digest:by_digest[digest])
+        except (ProducerError,KeyError) as exc:
+            raise PrivateConsoleUnitError('private_producer_inputs_invalid') from exc
+        finally:
+            connection.close()
+
+
 def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUnit:
     """Validate archive-supplied bytes and their complete relationship graph."""
 
@@ -1626,6 +1646,7 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         rows = _inspect_filtered_database(database, run_ids)
         connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
         try:
+            has_producers = schema_version>=46 and connection.execute('SELECT 1 FROM mentat_project_producer_bindings LIMIT 1').fetchone() is not None
             database_references = {
                 (str(row[0]), str(row[1]))
                 for row in connection.execute("SELECT run_id, attachment_id FROM run_attachments")
@@ -1664,6 +1685,8 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         digest, size = expected[key]
         if len(blob.raw) != size or blob.sha256 != digest:
             raise PrivateConsoleUnitError("private_blob_content_invalid")
+    if has_producers:
+        _validate_producer_unit_inputs(unit)
     return unit
 
 
