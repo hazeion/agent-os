@@ -2,7 +2,7 @@ import { ownerFetch } from "../../public/owner-session.js";
 import { DeliverableContractError, deliverableRequest, deliverableResult, type DeliverableOperation, type DeliverableResults } from "./project-deliverable-contract.ts";
 
 export class PublicDeliverableError extends Error { constructor(readonly code: string) { super(code); } }
-const FAILURES = new Set(["invalid", "revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable", "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable", "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid", "unavailable"]);
+const FAILURES = new Set(["invalid", "revision_conflict", "source_changed", "project_changed", "task_changed", "version_unavailable", "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable", "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid", "incomplete", "stale", "confirmation_conflict", "unavailable"]);
 const VERSION = /^deliverable_version_[0-9a-f]{32}$/u;
 export function deliverablePreviewUrl(versionId: string): string {
   if (!VERSION.test(versionId)) throw new PublicDeliverableError("invalid");
@@ -20,9 +20,12 @@ export async function projectDeliverables<K extends Exclude<DeliverableOperation
   try { request = deliverableRequest(operation, input); } catch { throw new PublicDeliverableError("invalid"); }
   const projectId = request.project_id as string | undefined, versionId = request.version_id as string | undefined;
   const route = operation === "project" || operation === "publish" ? `/api/projects/${encodeURIComponent(projectId!)}/deliverables`
+    : operation === "review-status" ? `/api/projects/${encodeURIComponent(projectId!)}/deliverables/review`
+    : operation === "review-preview" ? `/api/projects/${encodeURIComponent(projectId!)}/deliverables/review/preview`
+    : operation === "review-confirm" ? `/api/projects/${encodeURIComponent(projectId!)}/deliverables/review/confirm`
     : operation === "version" ? `/api/projects/${encodeURIComponent(projectId!)}/deliverables/${encodeURIComponent(versionId!)}`
     : operation === "retired-history" ? `/api/deliverables/history${"offset" in request ? `?offset=${request.offset}` : ""}` : `/api/deliverables/${encodeURIComponent(versionId!)}`;
-  const method = operation === "publish" ? "POST" : "GET";
+  const method = operation === "publish" || operation === "review-preview" || operation === "review-confirm" ? "POST" : "GET";
   const body = { ...request }; delete body.project_id; delete body.version_id;
   try {
     const response = await ownerFetch(route, { method, cache: "no-store", credentials: "same-origin", redirect: "error",

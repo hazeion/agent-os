@@ -38,3 +38,26 @@ test("retired history and preview metadata stay exact and bounded", () => {
   assert.equal(preview.byte_size, 3);
   assert.throws(() => deliverableResult("preview", { ...preview, byte_size: 3 * 1024 * 1024 }, { version_id: versionId }), DeliverableContractError);
 });
+
+test("review contracts bind an exact three-result preview and bounded owner decision", () => {
+  const heads = (["layout", "products", "steps"] as const).map((slot, index) => ({ slot,
+    version_id: `deliverable_version_${String(index + 1).repeat(32)}`, revision: 1, origin: "owner_edit" as const }));
+  const request = { project_id: projectId, action: "request_changes", note: "Check shelf capacity.", affected_slots: ["products"] };
+  assert.deepEqual(deliverableRequest("review-preview", request), request);
+  const preview = { project_id: projectId, project_name: "Garage", project_revision: 1, action: "request_changes", note: request.note,
+    affected_slots: ["products"], heads, confirmation_id: "f".repeat(64) };
+  assert.equal(deliverableResult("review-preview", preview, request).heads.length, 3);
+  const confirm = { ...request, confirmation_id: preview.confirmation_id };
+  assert.deepEqual(deliverableRequest("review-confirm", confirm), confirm);
+  const id = `deliverable_review_${"d".repeat(32)}`;
+  assert.equal(deliverableResult("review-confirm", { id, revision: 1, action: request.action, project_id: projectId, duplicate: false }, confirm).id, id);
+  assert.equal(deliverableResult("review-status", { project_id: projectId, project_name: "Garage", status: "request_changes",
+    latest: { id, revision: 1, action: request.action, note: request.note, affected_slots: ["products"], created_at: 1790035200, current: true } }, { project_id: projectId }).status, "request_changes");
+  for (const invalid of [
+    { ...request, affected_slots: ["products", "layout"] },
+    { ...request, affected_slots: [] },
+    { ...request, note: "" },
+    { ...request, source_run_id: "private" },
+  ]) assert.throws(() => deliverableRequest("review-preview", invalid), DeliverableContractError);
+  assert.throws(() => deliverableResult("review-preview", { ...preview, heads: [heads[0], heads[1], { ...heads[2], runtime_ref: "private" }] }, request), DeliverableContractError);
+});

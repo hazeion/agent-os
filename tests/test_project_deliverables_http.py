@@ -59,6 +59,40 @@ class DeliverableCapabilityTests(unittest.TestCase):
                 self.assertEqual(status, 400)
             write.assert_not_called()
 
+    def test_review_requires_three_heads_and_exact_confirmation(self):
+        project = {"project_id": "project_mentat"}
+        status_payload, status = api.dispatch_project_deliverables(self.root, "review-status", project)
+        self.assertEqual((status, status_payload["data"]["status"]), (200, "incomplete"))
+        request = {**project, "action": "accept", "note": "", "affected_slots": ["layout", "products", "steps"]}
+        _, status = api.dispatch_project_deliverables(self.root, "review-preview", request)
+        self.assertEqual(status, 409)
+        self.publish()
+        publish_owner_edit(self.root, "project_mentat", "products", {"items": [], "notes": "Sources"},
+                           expected_project_revision=1, expected_slot_revision=0)
+        publish_owner_edit(self.root, "project_mentat", "steps", {"steps": [], "notes": "Order"},
+                           expected_project_revision=1, expected_slot_revision=0)
+        preview, status = api.dispatch_project_deliverables(self.root, "review-preview", request)
+        self.assertEqual(status, 200)
+        confirmation = {**request, "confirmation_id": preview["data"]["confirmation_id"]}
+        accepted, status = api.dispatch_project_deliverables(self.root, "review-confirm", confirmation)
+        self.assertEqual((status, accepted["data"]["duplicate"]), (200, False))
+        again, status = api.dispatch_project_deliverables(self.root, "review-confirm", confirmation)
+        self.assertEqual((status, again["data"]["duplicate"]), (200, True))
+        current, status = api.dispatch_project_deliverables(self.root, "review-status", project)
+        self.assertEqual((status, current["data"]["status"]), (200, "accept"))
+        self.assertEqual(current["data"]["latest"]["affected_slots"], ["layout", "products", "steps"])
+        self.assertNotIn("confirmation_epoch", json.dumps(current))
+
+    def test_review_rejects_widened_body_and_wrong_confirmation(self):
+        for operation, body in (
+            ("review-status", {"project_id": "project_mentat", "runtime_ref": "default"}),
+            ("review-preview", {"project_id": "project_mentat", "action": "accept", "note": "", "affected_slots": [], "path": "private"}),
+            ("review-confirm", {"project_id": "project_mentat", "action": "accept", "note": "", "affected_slots": [], "confirmation_id": []}),
+        ):
+            with self.subTest(operation=operation):
+                _, status = api.dispatch_project_deliverables(self.root, operation, body)
+                self.assertEqual(status, 400)
+
     def test_history_accepts_only_bounded_page_offsets(self):
         for value in ({"offset": "1"}, {"offset": "-50"}, {"offset": 300}, {"offset": []}, {"offset": "50", "path": "private"}):
             _, status = api.dispatch_project_deliverables(self.root, "retired-history", value)
@@ -115,4 +149,8 @@ class DeliverableBridgeAdmissionTests(unittest.TestCase):
             dispatch.reset_mock()
             status, _, _ = bridge.request(path="/bridge/v1/project-deliverables/project?project_id=x&project_id=y", headers=headers)
             self.assertEqual(status, 404)
+            dispatch.assert_not_called()
+            status, _, _ = bridge.request(method="POST", path="/bridge/v1/project-deliverables/review-confirm",
+                                          headers={**headers, "Content-Type": "application/json"}, body=b"{}")
+            self.assertEqual(status, 401)
             dispatch.assert_not_called()

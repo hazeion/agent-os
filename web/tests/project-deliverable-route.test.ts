@@ -56,3 +56,18 @@ test("retained history accepts only a fixed bounded page selector", async () => 
   }
   assert.equal(seen.length, 1);
 });
+
+test("review preview and confirmation bind the Project route with owner CSRF", async () => {
+  const seen: unknown[] = [];
+  const capability = (async (operation: string, value: unknown) => { seen.push([operation, value]); return { id: `deliverable_review_${"d".repeat(32)}`, revision: 1, action: "accept", project_id: "project_garage", duplicate: false }; }) as typeof projectDeliverableCapability;
+  const handler = createProjectDeliverableHandler("review-confirm", { capability, gatewayPort: "8890" });
+  const path = "/api/projects/project_garage/deliverables/review/confirm";
+  const body = { action: "accept", note: "", affected_slots: ["layout", "products", "steps"], confirmation_id: "f".repeat(64) };
+  assert.equal((await handler(request(path, "POST", body), params)).status, 200);
+  assert.deepEqual(seen, [["review-confirm", { project_id: "project_garage", ...body }]]);
+  for (const invalid of [{ ...body, project_id: "project_other" }, { ...body, runtime_method: "exec" }, { ...body, confirmation_id: "bad" }]) {
+    assert.equal((await handler(request(path, "POST", invalid), params)).status, 400);
+  }
+  assert.equal((await handler(new Request(`${origin}${path}`, { method: "POST", headers: { ...headers, Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" }, body: JSON.stringify(body) }), params)).status, 403);
+  assert.equal(seen.length, 1);
+});
