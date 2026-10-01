@@ -46,7 +46,7 @@ class RunIdentityTests(unittest.TestCase):
             self.assertEqual(mentat_db.schema_signature_state(connection, 34), "expected")
             connection.commit()
             mentat_db.migrate(connection)
-            self.assertEqual(mentat_db.schema_signature_state(connection, 36), "expected")
+            self.assertEqual(mentat_db.schema_signature_state(connection, 37), "expected")
             original = connection.execute(
                 "SELECT incarnation,created_at FROM mentat_run_identities WHERE run_id='run_existing'"
             ).fetchone()
@@ -260,7 +260,7 @@ class RunIdentityTests(unittest.TestCase):
                 target, unit, target / "private" / "console"
             )
             with closing(mentat_db.connect(target)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, 36), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 37), "expected")
                 self.assertRegex(connection.execute(
                     "SELECT incarnation FROM mentat_run_identities WHERE run_id='run_schema34_backup'"
                 ).fetchone()[0], r"^[0-9a-f]{32}$")
