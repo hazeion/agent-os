@@ -84,7 +84,7 @@ GLOBAL_EVENT_COUNT_RETENTION = 50_000
 GLOBAL_EVENT_CONTENT_RETENTION_BYTES = 16 * 1024 * 1024
 RUN_DETAILS_LIMIT = 1024 * 1024
 TASK_SNAPSHOT_LIMIT = 128 * 1024
-RUN_STORE_DATABASE_BUDGET = 48 * 1024 * 1024
+RUN_STORE_DATABASE_BUDGET = 56 * 1024 * 1024
 IDEMPOTENCY_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -393,6 +393,8 @@ def _run_schema_objects(schema_version: int) -> frozenset[str]:
         objects |= _TASK_EXECUTION_SCHEMA_OBJECTS
     if schema_version >= 22:
         objects |= _CODEX_TASK_CREATE_SCHEMA_OBJECTS
+    if schema_version >= 35:
+        objects |= frozenset({"mentat_run_identities"})
     return objects
 
 
@@ -1438,6 +1440,8 @@ class RunRepository:
                 30,
                 31,
                 32,
+                33,
+                34,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)
@@ -1491,6 +1495,7 @@ class RunRepository:
             self._require_schema()
             yield
             self._validate_temporal_integrity()
+            self._validate_run_identities()
             self._enforce_store_budget()
         except Exception:
             if nested:
@@ -1539,6 +1544,25 @@ class RunRepository:
                     _timestamp(row[0])
         except (TypeError, ValueError, sqlite3.Error, RunRepositoryError) as exc:
             raise RunRepositoryValidationError("run.timestamp_invalid") from exc
+
+    def _validate_run_identities(self) -> None:
+        if self.schema_version < 35:
+            return
+        rows = self.connection.execute(
+            "SELECT r.id,r.created_at,s.incarnation,s.created_at "
+            "FROM mentat_runs r LEFT JOIN mentat_run_identities s ON s.run_id=r.id"
+        ).fetchall()
+        slot_count = int(self.connection.execute(
+            "SELECT COUNT(*) FROM mentat_run_identities"
+        ).fetchone()[0])
+        if slot_count != len(rows) or slot_count > MAX_SOURCE_RUNS:
+            raise RunRepositoryValidationError("run.identity_invalid")
+        for row in rows:
+            incarnation = row[2]
+            if (not isinstance(incarnation, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", incarnation) is None
+                    or row[1] != row[3]):
+                raise RunRepositoryValidationError("run.identity_invalid")
 
     def _enforce_store_budget(self) -> None:
         page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
@@ -7476,6 +7500,10 @@ class RunRepository:
         )
         if run_count > MAX_SOURCE_RUNS:
             raise RunRepositoryError("run_repository.corrupt")
+        try:
+            self._validate_run_identities()
+        except RunRepositoryValidationError as exc:
+            raise RunRepositoryError("run_repository.corrupt") from exc
         page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
         page_count = int(self.connection.execute("PRAGMA page_count").fetchone()[0])
         if page_size * page_count > RUN_STORE_DATABASE_BUDGET:
@@ -8046,14 +8074,15 @@ def ensure_run_sqlite_authority(data_dir: Path, history_path: Path) -> RunAuthor
             raw, runs, source_count, source_identity = _read_legacy_history(source_path)
             digest = hashlib.sha256(raw).hexdigest()
             with repository.mutation():
+                empty_tables = (
+                    "mentat_runs",
+                    "mentat_agent_events",
+                    "mentat_dispatch_reservations",
+                    "mentat_task_dispatch_heads",
+                ) + (("mentat_run_identities",) if repository.schema_version >= 35 else ())
                 if any(
                     int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-                    for table in (
-                        "mentat_runs",
-                        "mentat_agent_events",
-                        "mentat_dispatch_reservations",
-                        "mentat_task_dispatch_heads",
-                    )
+                    for table in empty_tables
                 ):
                     raise RunRepositoryConflict("run_migration.destination_not_empty")
                 for run in runs:

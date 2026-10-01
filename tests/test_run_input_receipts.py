@@ -32,7 +32,7 @@ class RunInputReceiptStorageTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=29)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 34)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 35)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_run_input_receipts").fetchone()[0], 0)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_run_input_files").fetchone()[0], 0)
         with TemporaryDirectory() as temporary:
