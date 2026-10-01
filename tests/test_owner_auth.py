@@ -64,7 +64,7 @@ class OwnerAuthAuthorityTests(unittest.TestCase):
     def test_migration_is_empty_and_private_until_the_local_bootstrap(self) -> None:
         connection = connect(self.root)
         try:
-            self.assertEqual(SCHEMA_VERSION, 25)
+            self.assertEqual(SCHEMA_VERSION, 26)
             self.assertEqual(
                 connection.execute("SELECT state FROM mentat_owner_auth_state").fetchone()[0],
                 "unbootstrapped",
