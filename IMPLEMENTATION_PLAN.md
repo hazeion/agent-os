@@ -76,8 +76,9 @@ authority, and covers private restore/export. Its evidence is in
 [Durable one-use callback transactions](https://github.com/hazeion/agent-os/issues/251)
 are the active slice; see [the transaction review](reviews/2026-09-21-google-login-transactions.md).
 [One-use Google session issuance](https://github.com/hazeion/agent-os/issues/253)
-and verified CLI owner enrollment, conversion and recovery are next; gateway
-wiring and Linux activation follow their verification. Remote serving remains disabled.
+is implemented for review; see [the session review](reviews/2026-09-21-google-session-issuance.md).
+Verified CLI owner enrollment, conversion and recovery are next; gateway wiring
+and Linux activation follow their verification. Remote serving remains disabled.
 
 ### Implemented baseline and retained boundaries
 

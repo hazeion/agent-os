@@ -22,6 +22,7 @@ from hermes_browser_events import HermesBrowserEventBroker
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_webhook_store import WebhookDeliveryStore
 from hermes_webhooks import PerBindingRateLimiter
+from mentat_db import connect
 from delegation_artifacts import binding_ids as delegation_artifact_binding_ids
 from task_repository import ensure_task_sqlite_authority, mutate_authoritative_tasks
 
@@ -325,6 +326,9 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.assertIn(("webhook_error", "webhook_store_unavailable"), result.responses)
 
     def test_older_queued_hint_waits_for_newer_delivery_transaction_to_close(self):
+        # This test measures the transaction barrier, not cold schema setup.
+        database = connect(self.data_dir)
+        database.close()
         snapshot_started = threading.Event()
         transaction_open = threading.Event()
         release_transaction = threading.Event()
@@ -361,26 +365,30 @@ class HermesWebhookRouteTests(unittest.TestCase):
             delivery_results.append(
                 server.HERMES_WEBHOOK_DELIVERIES.claim_and_admit(
                     verified,
-                    lambda: transaction_open.set() or release_transaction.wait(2),
+                    lambda: transaction_open.set() or release_transaction.wait(10),
                 )
             )
 
         delivery_thread = Thread(target=pause_newer_delivery)
         delivery_thread.start()
-        self.assertTrue(transaction_open.wait(1))
-        with patch.object(server, "read_task_snapshot", return_value=[]):
-            server.HERMES_EVENT_REFRESH.start()
-            try:
+        try:
+            self.assertTrue(transaction_open.wait(5))
+            with patch.object(server, "read_task_snapshot", return_value=[]):
+                server.HERMES_EVENT_REFRESH.start()
                 self.assertFalse(snapshot_started.wait(0.1))
-            finally:
                 release_transaction.set()
-                delivery_thread.join(timeout=2)
-            self.assertTrue(snapshot_started.wait(1))
+                delivery_thread.join(timeout=5)
+                self.assertTrue(snapshot_started.wait(5))
+        finally:
+            release_transaction.set()
+            delivery_thread.join(timeout=10)
         self.assertFalse(delivery_thread.is_alive())
         self.assertEqual(delivery_results, ["accepted"])
         self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(1))
 
     def test_reconciliation_waits_for_delivery_transaction_to_close(self):
+        database = connect(self.data_dir)
+        database.close()
         snapshot_started = threading.Event()
         transaction_open = threading.Event()
         release_transaction = threading.Event()
@@ -408,21 +416,23 @@ class HermesWebhookRouteTests(unittest.TestCase):
             delivery_results.append(
                 server.HERMES_WEBHOOK_DELIVERIES.claim_and_admit(
                     verified,
-                    lambda: transaction_open.set() or release_transaction.wait(2),
+                    lambda: transaction_open.set() or release_transaction.wait(10),
                 )
             )
 
         delivery_thread = Thread(target=pause_delivery)
         delivery_thread.start()
-        self.assertTrue(transaction_open.wait(1))
-        with patch.object(server, "read_task_snapshot", return_value=[]):
-            server.HERMES_EVENT_REFRESH.start()
-            try:
+        try:
+            self.assertTrue(transaction_open.wait(5))
+            with patch.object(server, "read_task_snapshot", return_value=[]):
+                server.HERMES_EVENT_REFRESH.start()
                 self.assertFalse(snapshot_started.wait(0.1))
-            finally:
                 release_transaction.set()
-                delivery_thread.join(timeout=2)
-            self.assertTrue(snapshot_started.wait(1))
+                delivery_thread.join(timeout=5)
+                self.assertTrue(snapshot_started.wait(5))
+        finally:
+            release_transaction.set()
+            delivery_thread.join(timeout=10)
         self.assertFalse(delivery_thread.is_alive())
         self.assertEqual(delivery_results, ["accepted"])
 
