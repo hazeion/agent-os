@@ -1078,6 +1078,15 @@ of selecting another Project. Resolved and stale items may show only their
 three immutable source versions and retain exact Read/Acknowledge state; these
 actions never approve a plan, accept results or start Agent work.
 
+Home's right activity rail reads the fixed owner Inbox `needs_me` projection.
+It shows the server's bounded unresolved count and at most three opaque
+item-bound links, with no mark or review mutation. A visible Home tab refreshes
+at a bounded interval, on return from hidden state, or by explicit action;
+requests never overlap, and an in-flight hidden/visible transition gets one
+trailing read. During background checks, the last verified links remain
+mounted; a failed refresh labels them last-checked. This navigation does not
+assert that Run failure or recovery Inbox producers already exist.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains

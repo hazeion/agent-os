@@ -65,7 +65,13 @@ try {
   await click('Add step'); await page.type('section[aria-label="Project results"] .project-deliverable-row input', 'Measure the walls');
   await click('Save result version'); await waitText('Implementation order saved as a new version.');
   await click('Download implementation document');
-  await page.goto(`http://127.0.0.1:${port}/inbox`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
+  const homeItem = 'section[aria-label="Inbox attention"] a[href^="/inbox?item="]';
+  await page.waitForSelector(homeItem, { visible: true });
+  assert((await page.$eval('section[aria-label="Inbox attention"] h3', node => node.textContent)).includes('1'));
+  if (width === 390) assert((await page.$eval(homeItem, node => node.getBoundingClientRect().height)) >= 44);
+  await page.click(homeItem);
+  await page.waitForFunction(() => location.pathname === '/inbox');
   await click('Review Garage results', 'section[aria-label="Inbox items"]');
   await waitText('These exact saved results need your decision.');
   const reviewed = await page.$eval('[aria-label="Inbox item detail"]', node => node.innerText);
