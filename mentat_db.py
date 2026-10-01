@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2530,6 +2530,36 @@ MIGRATIONS += ((37, """
         BEGIN SELECT RAISE(ABORT,'plan.retained'); END;
 """),)
 
+MIGRATIONS += ((38, """
+    CREATE TABLE mentat_project_lead_versions (
+        id TEXT NOT NULL PRIMARY KEY CHECK(length(id)=42 AND id GLOB 'lead_role_[0-9a-f]*'),
+        project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 80),
+        project_incarnation TEXT NOT NULL CHECK(length(project_incarnation)=32),
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 32),
+        action TEXT NOT NULL CHECK(action IN ('select','clear')),
+        agent_id TEXT CHECK(agent_id IS NULL OR length(agent_id) BETWEEN 1 AND 128),
+        agent_incarnation TEXT CHECK(agent_incarnation IS NULL OR length(agent_incarnation)=32),
+        agent_revision INTEGER CHECK(agent_revision IS NULL OR typeof(agent_revision)='integer' AND agent_revision>=1),
+        binding_digest TEXT CHECK(binding_digest IS NULL OR length(binding_digest)=64),
+        context_id TEXT CHECK(context_id IS NULL OR length(context_id)=48),
+        grant_revision INTEGER CHECK(grant_revision IS NULL OR typeof(grant_revision)='integer' AND grant_revision>=1),
+        created_at REAL NOT NULL CHECK(created_at>0),
+        UNIQUE(project_incarnation,revision),
+        CHECK((action='clear' AND agent_id IS NULL AND agent_incarnation IS NULL
+               AND agent_revision IS NULL AND binding_digest IS NULL
+               AND context_id IS NULL AND grant_revision IS NULL)
+           OR (action='select' AND agent_id IS NOT NULL AND agent_incarnation IS NOT NULL
+               AND agent_revision IS NOT NULL AND binding_digest IS NOT NULL
+               AND ((context_id IS NULL AND grant_revision IS NULL)
+                    OR (context_id IS NOT NULL AND grant_revision IS NOT NULL))))
+    );
+    CREATE INDEX mentat_project_lead_project ON mentat_project_lead_versions(project_id,project_incarnation,revision DESC);
+    CREATE TRIGGER mentat_project_lead_immutable BEFORE UPDATE ON mentat_project_lead_versions
+        BEGIN SELECT RAISE(ABORT,'project_lead.immutable'); END;
+    CREATE TRIGGER mentat_project_lead_no_delete BEFORE DELETE ON mentat_project_lead_versions
+        BEGIN SELECT RAISE(ABORT,'project_lead.retained'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2908,7 +2938,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3046,6 +3076,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 35 cannot be safely upgraded")
                 if version == 37 and schema_signature_state(connection, 36) != "expected":
                     raise MentatDatabaseError("Mentat schema 36 cannot be safely upgraded")
+                if version == 38 and schema_signature_state(connection, 37) != "expected":
+                    raise MentatDatabaseError("Mentat schema 37 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)
