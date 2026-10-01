@@ -155,10 +155,14 @@ async function setViewport(client, viewport) {
   });
 }
 
+let navigationSequence = 0;
 async function navigate(client, path, label) {
-  await client.call("Page.navigate", { url: new URL(path, baseUrl).href });
+  const marker = `mentat-smoke-${++navigationSequence}`;
+  const url = new URL(path, baseUrl).href;
+  await client.eval(`document.documentElement.dataset.smokeNavigation = ${JSON.stringify(marker)}`);
+  await client.call("Page.navigate", { url });
   await waitFor(
-    () => client.eval("document.readyState === 'complete' && document.querySelector('.app-shell') !== null"),
+    () => client.eval(`document.readyState === 'complete' && document.querySelector('.app-shell') !== null && location.href === ${JSON.stringify(url)} && document.documentElement.dataset.smokeNavigation !== ${JSON.stringify(marker)}`),
     `${label} shell load`,
   );
 }
@@ -1516,6 +1520,10 @@ async function inspectTwoHundredPercentReflow(client) {
   // A 720 x 360 CSS viewport represents a 1440 x 720 window at 200% browser zoom.
   await setViewport(client, { width: 720, height: 360, mobile: false });
   await navigate(client, "/", "200 percent reflow");
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
+    "zoom interaction readiness",
+  );
   await client.eval("document.querySelector('[data-nav-open][aria-controls]').click()");
   await waitFor(() => client.eval("document.documentElement.dataset.navOpen === 'true'"), "zoom drawer open");
   const result = await client.eval(`(() => {
