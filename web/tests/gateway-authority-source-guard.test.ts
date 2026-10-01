@@ -59,6 +59,7 @@ const APPROVED_WRAPPER_BACKED_ROUTE_FACTORIES = new Set([
   "@/lib/project-deliverable-route",
   "@/lib/project-plan-route",
   "@/lib/project-lead-route",
+  "@/lib/project-planning-input-route",
   "@/lib/owner-inbox-route",
   "@/lib/task-input-route",
 ]);

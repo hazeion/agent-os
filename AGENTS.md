@@ -426,6 +426,15 @@ restore; future admission must recheck current authority. This storage grants
 no proposal Run, generated-output intake, Task write or owner Apply. Registered
 generated outputs need their own provenance and retention authority first.
 
+Schema 40 adds a bounded immutable action receipt for each owner-published
+Project planning-input version. The browser carries one random action ID and
+exact request through uncertain delivery; same-ID/same-body replay returns the
+historical committed result before fresh admission, while a changed body
+conflicts. A private HMAC scope token lets local drafts distinguish Project
+incarnations without exposing that identity. Save requires the current active
+Project revision, context, lead, Agent binding and grant and verifies every
+selected file. Neither the receipt nor saved input grants a proposal Run.
+
 Home planning selectors stage locally until explicit Apply or Clear and remain
 blocked by active/finalizing Runs or queue-active Turns. Planning suggestions
 may fill an empty draft but never Send. The right rail shows only a capped safe

@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2615,6 +2615,45 @@ MIGRATIONS += ((39, """
         UNION SELECT attachment_id FROM mentat_project_planning_input_files;
 """),)
 
+MIGRATIONS += ((40, """
+    CREATE TABLE mentat_project_planning_input_legacy (
+        input_id TEXT NOT NULL PRIMARY KEY REFERENCES mentat_project_planning_input_versions(id) ON DELETE RESTRICT
+    );
+    INSERT INTO mentat_project_planning_input_legacy(input_id)
+        SELECT id FROM mentat_project_planning_input_versions;
+    CREATE TRIGGER mentat_project_planning_input_legacy_sealed
+        BEFORE INSERT ON mentat_project_planning_input_legacy
+        BEGIN SELECT RAISE(ABORT,'project_input_legacy.sealed'); END;
+    CREATE TRIGGER mentat_project_planning_input_legacy_immutable
+        BEFORE UPDATE ON mentat_project_planning_input_legacy
+        BEGIN SELECT RAISE(ABORT,'project_input_legacy.immutable'); END;
+    CREATE TRIGGER mentat_project_planning_input_legacy_retained
+        BEFORE DELETE ON mentat_project_planning_input_legacy
+        BEGIN SELECT RAISE(ABORT,'project_input_legacy.retained'); END;
+    CREATE TABLE mentat_project_planning_input_actions (
+        action_id TEXT NOT NULL PRIMARY KEY CHECK(length(action_id)=53 AND action_id GLOB 'project_input_action_[0-9a-f]*'),
+        input_id TEXT NOT NULL UNIQUE REFERENCES mentat_project_planning_input_versions(id) ON DELETE RESTRICT,
+        scope_token TEXT NOT NULL CHECK(length(scope_token)=64),
+        selection_token TEXT NOT NULL CHECK(length(selection_token)=64),
+        request_digest TEXT NOT NULL CHECK(length(request_digest)=64),
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('legacy','owner')),
+        created_at REAL NOT NULL CHECK(created_at>0)
+    );
+    INSERT INTO mentat_project_planning_input_actions
+        (action_id,input_id,scope_token,selection_token,request_digest,source_kind,created_at)
+        SELECT 'project_input_action_' || substr(id,15),id,
+               '0000000000000000000000000000000000000000000000000000000000000000',
+               '0000000000000000000000000000000000000000000000000000000000000000',
+               files_digest,'legacy',created_at
+        FROM mentat_project_planning_input_versions;
+    CREATE TRIGGER mentat_project_planning_input_action_immutable
+        BEFORE UPDATE ON mentat_project_planning_input_actions
+        BEGIN SELECT RAISE(ABORT,'project_input_action.immutable'); END;
+    CREATE TRIGGER mentat_project_planning_input_action_retained
+        BEFORE DELETE ON mentat_project_planning_input_actions
+        BEGIN SELECT RAISE(ABORT,'project_input_action.retained'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2993,7 +3032,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3135,6 +3174,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 37 cannot be safely upgraded")
                 if version == 39 and schema_signature_state(connection, 38) != "expected":
                     raise MentatDatabaseError("Mentat schema 38 cannot be safely upgraded")
+                if version == 40 and schema_signature_state(connection, 39) != "expected":
+                    raise MentatDatabaseError("Mentat schema 39 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)

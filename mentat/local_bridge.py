@@ -50,6 +50,7 @@ PROJECT_CONTEXT_ROOT = "/bridge/v1/project-context/"
 PROJECT_DELIVERABLE_ROOT = "/bridge/v1/project-deliverables/"
 PROJECT_PLAN_ROOT = "/bridge/v1/project-plans/"
 PROJECT_LEAD_ROOT = "/bridge/v1/project-leads/"
+PROJECT_INPUT_ROOT = "/bridge/v1/project-planning-inputs/"
 OWNER_INBOX_ROOT = "/bridge/v1/owner-inbox/"
 TASK_INPUT_ROOT = "/bridge/v1/task-inputs/"
 OWNER_GATEWAY_OPERATIONS = frozenset({'login-start', 'login-callback', 'login-cancel', 'session', 'validate', 'sign-out', 'sign-out-all', 'sse-reserve', 'sse-check', 'sse-release'})
@@ -6300,6 +6301,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = dispatch_project_leads(DATA_DIR, operation, dict(pairs))
             self._send_json(payload, status)
             return
+        if parsed.path.startswith(PROJECT_INPUT_ROOT):
+            from project_planning_inputs_http import READ_OPERATIONS, dispatch_project_planning_inputs
+            from server import DATA_DIR
+
+            operation = parsed.path[len(PROJECT_INPUT_ROOT):]
+            if operation not in READ_OPERATIONS or len(parsed.query) > 512:
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+                operation = ''
+            if len(pairs) != len(dict(pairs)):
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            payload, status = dispatch_project_planning_inputs(DATA_DIR, operation, dict(pairs))
+            self._send_json(payload, status)
+            return
         if parsed.path == OWNER_INBOX_ROOT + 'list' and not parsed.query:
             from owner_inbox_http import dispatch_owner_inbox
             from server import DATA_DIR
@@ -6902,6 +6922,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self._action_json_body(MAX_ACTION_BYTES)
             payload, status = dispatch_project_leads(DATA_DIR, operation, body)
+            self._send_json(payload, status)
+            return
+        if parsed.path.startswith(PROJECT_INPUT_ROOT) and not parsed.query:
+            from project_planning_inputs_http import WRITE_OPERATIONS, MAX_ACTION_BYTES, dispatch_project_planning_inputs
+            from server import DATA_DIR
+
+            operation = parsed.path[len(PROJECT_INPUT_ROOT):]
+            if operation not in WRITE_OPERATIONS:
+                self._send_json({'error': 'bridge_route_not_found'}, 404)
+                return
+            body = self._action_json_body(MAX_ACTION_BYTES)
+            payload, status = dispatch_project_planning_inputs(DATA_DIR, operation, body)
             self._send_json(payload, status)
             return
         if parsed.path == OWNER_INBOX_ROOT + 'mark' and not parsed.query:

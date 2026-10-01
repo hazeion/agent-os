@@ -52,6 +52,8 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                 "FROM mentat_project_lead_versions WHERE id=?", (self.lead["id"],)
             ).fetchone()
             entries = []
+            selected_context = context_id or role[7]
+            instructions = "Plan the garage using supplied dimensions."
             if attachment:
                 item = connection.execute(
                     "SELECT a.id,a.blob_id,b.sha256,a.byte_size,a.kind,a.mime_type "
@@ -59,18 +61,32 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                     (self.fixture.attachment,),
                 ).fetchone()
                 entries.append(list(item))
+            created = time.time()
             connection.execute(
                 "INSERT INTO mentat_project_planning_input_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (identifier, role[0], role[1], revision, self.lead["project_revision"],
                  self.lead["id"], role[2], role[3], role[4], role[5], role[6],
-                 context_id or role[7], role[8], "Plan the garage using supplied dimensions.",
-                 _digest(entries), time.time()),
+                 selected_context, role[8], instructions,
+                 _digest(entries), created),
             )
             for ordinal, item in enumerate(entries):
                 connection.execute(
                     "INSERT INTO mentat_project_planning_input_files VALUES(?,?,?,?,?,?,?,?)",
                     (identifier, ordinal, *item),
                 )
+            action_id = "project_input_action_" + f"{revision:032x}"
+            scope_token, selection_token = "1" * 64, "2" * 64
+            request_digest = _digest([
+                action_id, role[0], self.lead["project_revision"], self.lead["id"],
+                role[2], selected_context, role[8], revision - 1,
+                scope_token, selection_token, instructions,
+                [item[0] for item in entries],
+            ])
+            connection.execute(
+                "INSERT INTO mentat_project_planning_input_actions VALUES(?,?,?,?,?,?,?)",
+                (action_id, identifier, scope_token, selection_token,
+                 request_digest, "owner", created),
+            )
             connection.commit()
         return identifier
 
@@ -225,15 +241,60 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                     "FROM mentat_project_planning_input_versions WHERE revision=1"
                 )
 
+    def test_populated_schema39_upgrade_backfills_explicit_legacy_receipt(self):
+        identifier = self.insert_version()
+        with closing(sqlite3.connect(mentat_db.database_path(self.root))) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE mentat_project_planning_input_actions")
+            connection.execute("DROP TABLE mentat_project_planning_input_legacy")
+            connection.execute("DELETE FROM schema_migrations WHERE version=40")
+            connection.commit()
+            self.assertEqual(mentat_db.schema_signature_state(connection, 39), "expected")
+            mentat_db.migrate(connection)
+            self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
+            row = connection.execute(
+                "SELECT action_id,input_id,request_digest,source_kind "
+                "FROM mentat_project_planning_input_actions"
+            ).fetchone()
+            self.assertEqual(row, (
+                "project_input_action_" + identifier[14:], identifier,
+                connection.execute("SELECT files_digest FROM mentat_project_planning_input_versions").fetchone()[0],
+                "legacy",
+            ))
+
 
 class ProjectPlanningInputMigrationTests(unittest.TestCase):
+    def test_deterministic_empty_private_unit_accepts_virtual_migration_cutoff(self):
+        unit = private_console_unit.empty_private_console_unit()
+        private_console_unit.validate_private_console_unit(unit)
+
+    def test_exact_schema39_action_upgrade_and_drift_rejection(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "old.sqlite3"
+            private_console_unit._initialize_database(path, schema_version=39)
+            with closing(sqlite3.connect(path)) as connection:
+                mentat_db.migrate(connection)
+                self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "drift.sqlite3"
+            private_console_unit._initialize_database(path, schema_version=39)
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute("DROP TRIGGER mentat_project_planning_input_immutable")
+                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 39"):
+                    mentat_db.migrate(connection)
+                self.assertEqual(connection.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0], 39)
+
     def test_exact_schema38_upgrade_and_drift_rejection(self):
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "old.sqlite3"
             private_console_unit._initialize_database(path, schema_version=38)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 39), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 40), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"
