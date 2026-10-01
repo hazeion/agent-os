@@ -42,6 +42,10 @@ PLAN_MAX_METADATA_BYTES = DELIVERABLE_REVIEW_MAX_METADATA_BYTES + 8 * 1024 * 102
 # Schema 38 retains bounded owner-selected lead-role history separately from
 # Project context and plan authority.
 LEAD_MAX_METADATA_BYTES = PLAN_MAX_METADATA_BYTES + 256 * 1024
+# Schema 39 allows 256 retained Project planning inputs with 16 KiB briefs
+# and up to eight frozen file records each. Validate prospective writes
+# against this entire shared private-backup graph before committing them.
+PROJECT_INPUT_MAX_METADATA_BYTES = LEAD_MAX_METADATA_BYTES + 6 * 1024 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -165,6 +169,17 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'project_lead.capacity':
                 _fail('capacity')
             _fail('project_leads_invalid')
+    if schema_version >= 39:
+        budget = PROJECT_INPUT_MAX_METADATA_BYTES
+        from project_planning_inputs import (ProjectPlanningInputError,
+                                             validate_project_planning_input_connection)
+        try:
+            metadata.extend(validate_project_planning_input_connection(
+                connection, require_available=require_available))
+        except ProjectPlanningInputError as exc:
+            if str(exc) == 'project_input.capacity':
+                _fail('capacity')
+            _fail('project_inputs_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}
