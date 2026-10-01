@@ -17,6 +17,13 @@ from typing import Callable
 LOGGER = logging.getLogger(__name__)
 
 
+# One fixed current upstream owner. Older/unsupported installations expose no
+# model-switch capability and cannot select another writer.
+HERMES_PROFILE_MODEL_WRITER_IMPORT = (
+    "from hermes_cli.web_routers.profiles import _write_profile_model"
+)
+
+
 HERMES_PROVIDER_INVENTORY_SCRIPT = r"""
 import json
 import os
@@ -42,7 +49,7 @@ payload = build_models_payload(
 )
 providers = []
 try:
-    from hermes_cli.web_server import _write_profile_model
+__MENTAT_PROFILE_MODEL_WRITER_IMPORT__
     switch_supported = callable(_write_profile_model)
 except Exception:
     switch_supported = False
@@ -71,7 +78,10 @@ print(json.dumps({
     "providers": providers,
     "switch_supported": switch_supported,
 }))
-""".strip()
+""".strip().replace(
+    "__MENTAT_PROFILE_MODEL_WRITER_IMPORT__",
+    "    " + HERMES_PROFILE_MODEL_WRITER_IMPORT,
+)
 
 
 HERMES_PROVIDER_SWITCH_SCRIPT = r"""
@@ -86,11 +96,13 @@ profile_id, provider, model = sys.argv[1:4]
 profile_home = resolve_profile_env(profile_id)
 os.environ["HERMES_HOME"] = profile_home
 
-from hermes_cli.web_server import _write_profile_model
+__MENTAT_PROFILE_MODEL_WRITER_IMPORT__
 
 _write_profile_model(Path(profile_home), provider, model)
 print(json.dumps({"ok": True, "profile_id": profile_id, "provider": provider, "model": model}))
-""".strip()
+""".strip().replace(
+    "__MENTAT_PROFILE_MODEL_WRITER_IMPORT__", HERMES_PROFILE_MODEL_WRITER_IMPORT,
+)
 
 
 def _run_json(
