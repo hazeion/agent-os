@@ -32,7 +32,7 @@ The older foundation is merged through [PR #231](https://github.com/hazeion/agen
 and [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow remains a stack of full, open PRs starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243), most recently
-[PR #320](https://github.com/hazeion/agent-os/pull/320). The subsequent coupled
+[PR #321](https://github.com/hazeion/agent-os/pull/321). The coupled
 [private producer/output slice](reviews/2026-09-30-private-proposal-lifecycle.md)
 has completed independent review and qualification; hosted CI and integration
 remain pending. It does not grant production admission.
