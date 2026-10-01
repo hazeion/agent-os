@@ -460,6 +460,9 @@ class OrchestrationService:
                     )
                     if planning_execution:
                         self._require_planning_execution_eligibility(snapshot.document)
+                    from task_inputs import task_has_saved_inputs
+                    if task_has_saved_inputs(connection, task_id):
+                        raise OrchestrationServiceError("dispatch.project_inputs_unavailable")
                     agent, binding = self._agent_and_binding(
                         task.assigned_agent_id or ""
                     )
@@ -515,6 +518,9 @@ class OrchestrationService:
                         self._require_planning_execution_eligibility(
                             current_snapshot.document
                         )
+                    from task_inputs import task_has_saved_inputs
+                    if task_has_saved_inputs(connection, task_id):
+                        raise OrchestrationServiceError("dispatch.project_inputs_unavailable")
                     current_agent, current_binding = self._agent_and_binding(
                         current_task.assigned_agent_id or ""
                     )
@@ -610,6 +616,13 @@ class OrchestrationService:
             connection = self._connect()
             try:
                 repository = RunRepository(connection)
+                from task_inputs import task_has_saved_inputs
+                if task_has_saved_inputs(connection, reservation.task_id):
+                    run = repository.reject_reserved_dispatch(
+                        dispatch_id=reservation.dispatch_id,
+                        failure_code="dispatch.project_inputs_unavailable",
+                    )
+                    raise OrchestrationServiceError("dispatch.project_inputs_unavailable", run=run)
                 task_creation_enabled = RuntimeCapability.TASK_CREATE.value in current_agent.capabilities
                 if task_creation_enabled and (
                     current_binding.runtime_type != "codex"

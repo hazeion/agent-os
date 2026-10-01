@@ -102,6 +102,11 @@ The owner editor and grants are implemented with two clean reviews and built
 desktop/mobile acceptance in [the editor review](reviews/2026-09-22-project-context-editor.md).
 Published in [PR 266](https://github.com/hazeion/agent-os/pull/266), pending CI
 and merge; approved Task inputs are the next product slice.
+The [Task-input and plan-admission contract](reviews/2026-09-22-project-task-inputs.md)
+has two clean reviews, including explicit bounded conditional transfers so
+approved Agents can coordinate between owner checkpoints. Runtime feasibility
+must be checked early; no local Hermes command was discovered on the current
+development machine's Windows/Ubuntu WSL PATHs. This is not live qualification.
 Project execution remains
 unavailable until exact admission and runtime qualification are implemented;
 the contract is not completion evidence.

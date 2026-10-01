@@ -86,6 +86,7 @@ class DeletionPlan:
     artifact_binding_ids: tuple[str, ...]
     attachment_ids: tuple[str, ...]
     retained_context_versions: int = 0
+    retained_input_versions: int = 0
 
 
 def _canonical(value: object) -> bytes:
@@ -217,7 +218,9 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     task_sql, task_args = _placeholders(task_ids)
     project_sql, project_args = _placeholders(project_ids)
 
-    task_rows = _rows(connection, f"SELECT id, project_id, revision FROM mentat_tasks WHERE id IN {task_sql} ORDER BY id", task_args)
+    has_task_inputs = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mentat_task_input_versions'").fetchone() is not None
+    task_identity_column = ',input_incarnation' if has_task_inputs else ''
+    task_rows = _rows(connection, f"SELECT id, project_id, revision{task_identity_column} FROM mentat_tasks WHERE id IN {task_sql} ORDER BY id", task_args)
     project_rows = _rows(connection, f"SELECT id, revision FROM mentat_projects WHERE id IN {project_sql} ORDER BY id", project_args)
     if len(task_rows) != len(task_ids) or len(project_rows) != len(project_ids):
         raise PlanningDeletionError("planning.deletion_stale")
@@ -303,10 +306,16 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     grant_rows = _rows(connection,
         'SELECT scope_id,agent_id,agent_incarnation,context_id,revision,state,reason,updated_at '
         f'FROM mentat_project_context_grants WHERE scope_id IN {context_scope_sql} ORDER BY scope_id,agent_id', context_scope_args)
+    input_rows = _rows(connection,
+        'SELECT s.id,s.task_id,s.task_incarnation,s.project_scope_id,s.revision,s.retired_at,'
+        'v.id,v.revision,v.context_id,v.files_digest FROM mentat_task_input_scopes s '
+        'JOIN mentat_task_input_versions v ON v.scope_id=s.id '
+        f'WHERE s.task_id IN {task_sql} ORDER BY s.id,v.revision', task_args) if has_task_inputs else []
     snapshot = {
         "target": [target_kind, target_id],
         "projects": [(str(row["id"]), int(row["revision"])) for row in project_rows],
         "tasks": [(str(row["id"]), str(row["project_id"]), int(row["revision"])) for row in task_rows],
+        "task_incarnations": [(row['id'], row['input_incarnation']) for row in task_rows] if has_task_inputs else [],
         "edges": [(str(row["task_id"]), str(row["dependency_task_id"])) for row in incident_edges],
         "conversations": [(str(row["id"]), int(row["revision"])) for row in conversation_rows],
         "runs": [
@@ -320,6 +329,7 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         "retained_project_context": [tuple(row) for row in context_rows],
         "project_context_grants": [tuple(row) for row in grant_rows],
         "staged_project_context": [tuple(row) for row in staged_context_rows],
+        "retained_task_inputs": [tuple(row) for row in input_rows],
     }
     # A delegated artifact commonly has both its task mapping and a synthetic
     # run attachment. The public preview reports distinct affected items, not
@@ -328,7 +338,8 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     target_digest = _digest([target_kind, target_id])
     closure_digest = _digest(snapshot)
     confirmation_id = _digest(["mentat.planning.delete.v1", target_digest, closure_digest])
-    return DeletionPlan(target_kind, target_id, confirmation_id, target_digest, closure_digest, snapshot, counts, active_runs, run_ids, conversation_ids, task_ids, project_ids, artifact_binding_ids, attachment_ids, len(context_rows))
+    retained_inputs = sum(row[5] is None for row in input_rows)
+    return DeletionPlan(target_kind, target_id, confirmation_id, target_digest, closure_digest, snapshot, counts, active_runs, run_ids, conversation_ids, task_ids, project_ids, artifact_binding_ids, attachment_ids, len(context_rows), retained_inputs)
 
 
 class PlanningDeletionService:

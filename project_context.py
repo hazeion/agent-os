@@ -26,7 +26,10 @@ MAX_VERSIONS = 256
 LEGACY_MAX_METADATA_BYTES = 4 * 1024 * 1024
 # Schema 28 reserves bounded migration/control overhead for 128 Agent
 # incarnations, up to 256 scope retirement fields, and the approval epoch.
-MAX_METADATA_BYTES = LEGACY_MAX_METADATA_BYTES + 64 * 1024
+ACCESS_MAX_METADATA_BYTES = LEGACY_MAX_METADATA_BYTES + 64 * 1024
+# Schema 29 reserves every supported Task identity slot plus empty input graph
+# framing. Full schema-28 roots must remain valid after the identity migration.
+MAX_METADATA_BYTES = ACCESS_MAX_METADATA_BYTES + 512 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -87,7 +90,7 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
     metadata = [[list(row) for row in rows] for rows in (scopes, versions, files)]
     budget = LEGACY_MAX_METADATA_BYTES
     if schema_version >= 28:
-        budget = MAX_METADATA_BYTES
+        budget = ACCESS_MAX_METADATA_BYTES
         metadata[0] = [list(row[:4]) + ['0' * 32] for row in scopes]
         from project_context_access import ProjectContextAccessError, validate_access_connection
         try:
@@ -96,6 +99,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'project_context_access.capacity':
                 _fail('capacity')
             _fail('invalid')
+    if schema_version >= 29:
+        budget = MAX_METADATA_BYTES
+        from task_inputs import TaskInputError, validate_input_connection
+        try:
+            metadata.extend(validate_input_connection(connection, require_available=require_available))
+        except TaskInputError as exc:
+            if str(exc) == 'task_input.capacity':
+                _fail('capacity')
+            _fail('task_inputs_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

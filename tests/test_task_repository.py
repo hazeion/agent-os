@@ -249,7 +249,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 28)
+            self.assertEqual(SCHEMA_VERSION, 29)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -864,6 +864,35 @@ class TaskRepositoryTests(unittest.TestCase):
             write_tasks(root, [task("stale")])
             ensure_task_sqlite_authority(root)
             self.assertEqual(read_authoritative_tasks(root), [])
+
+    def test_collection_edits_and_reordering_preserve_rows_and_delete_only_removed_tasks(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task('task_a'), task('task_b')])
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            connection = connect(root)
+            try:
+                connection.executescript('''
+                    CREATE TEMP TABLE task_row_events(kind TEXT,id TEXT);
+                    CREATE TEMP TRIGGER observe_task_delete AFTER DELETE ON main.mentat_tasks
+                    BEGIN INSERT INTO task_row_events VALUES('delete',OLD.id); END;
+                    CREATE TEMP TRIGGER observe_task_insert AFTER INSERT ON main.mentat_tasks
+                    BEGIN INSERT INTO task_row_events VALUES('insert',NEW.id); END;
+                ''')
+                repository = TaskRepository(connection)
+                repository.mutate_collection(lambda rows: ([{**rows[1], 'title': 'Updated'}, rows[0], task('task_c')], None))
+                self.assertEqual([tuple(row) for row in connection.execute('SELECT * FROM task_row_events')], [('insert','task_c')])
+                self.assertEqual([item['id'] for item in repository.list_tasks()], ['task_b','task_a','task_c'])
+                before = repository.list_tasks()
+                with patch.object(repository, '_insert_children', side_effect=RuntimeError('injected rollback')):
+                    with self.assertRaisesRegex(RuntimeError, 'injected rollback'):
+                        repository.mutate_collection(lambda rows: ([rows[2], rows[0]], None))
+                self.assertEqual(repository.list_tasks(), before)
+                self.assertEqual([tuple(row) for row in connection.execute('SELECT * FROM task_row_events')], [('insert','task_c')])
+                repository.mutate_collection(lambda rows: ([rows[2], rows[0]], None))
+                self.assertEqual([tuple(row) for row in connection.execute('SELECT * FROM task_row_events')], [('insert','task_c'),('delete','task_a')])
+            finally:
+                connection.close()
 
     def test_collection_mutation_preserves_revisions_and_rolls_back_invalid_state(self):
         with TemporaryDirectory() as tmpdir:
@@ -1539,6 +1568,33 @@ class TaskRepositoryTests(unittest.TestCase):
             self.assertEqual(upgraded.raw, exported.raw)
             self.assertEqual(len(upgraded.raw), maximum)
 
+    def test_maximum_size_new_task_identity_uses_one_database_write(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [])
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert(task_with_export_size(task_repository.MAX_EXPORT_BYTES))
+            finally:
+                connection.close()
+            self.assertLess(database_path(root).stat().st_size, task_repository.MAX_DATABASE_BYTES)
+            self.assertEqual(len(export_tasks(root, require_authority=True).raw), task_repository.MAX_EXPORT_BYTES)
+
+    def test_maximum_size_task_remains_exportable_after_edit(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [])
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert(task_with_export_size(task_repository.MAX_EXPORT_BYTES))
+            finally:
+                connection.close()
+            mutate_authoritative_tasks(root, lambda rows: ([{**rows[0], 'title':'X' + rows[0]['title'][1:]}], None))
+            self.assertLess(database_path(root).stat().st_size, task_repository.MAX_DATABASE_BYTES)
+            self.assertEqual(len(export_tasks(root, require_authority=True).raw), task_repository.MAX_EXPORT_BYTES)
+
     def test_plain_export_rejects_post_write_trailing_byte_drift(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
@@ -2068,36 +2124,18 @@ class TaskRepositoryTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             write_tasks(root, [task("source")])
-            connection = connect(root)
+            from mentat_db import ensure_private_console_dir
+            ensure_private_console_dir(root)
+            private_console_unit._initialize_database(database_path(root), schema_version=5)
+            connection = sqlite3.connect(database_path(root))
             try:
-                TaskRepository(connection).insert_collection([task("occupied")])
-                with transaction(connection, immediate=True):
-                    connection.execute("DROP INDEX idx_mentat_tasks_project_id_order")
-                    connection.execute("ALTER TABLE mentat_tasks DROP COLUMN project_id")
-                    connection.execute("DROP TABLE mentat_project_store_state")
-                    connection.execute("DROP TABLE mentat_projects")
-                    connection.execute(
-                        "DROP TABLE mentat_conversation_run_attempts"
-                    )
-                    connection.execute(
-                        "DROP TABLE mentat_conversation_submission_results"
-                    )
-                    connection.execute("DROP TABLE mentat_conversation_messages")
-                    connection.execute("DROP TABLE mentat_conversation_turns")
-                    connection.execute("DROP TABLE mentat_conversations")
-                    connection.execute("DROP TABLE mentat_agent_events")
-                    connection.execute("DROP TABLE mentat_dispatch_reservations")
-                    connection.execute("DROP TABLE mentat_task_dispatch_heads")
-                    connection.execute("DROP TABLE mentat_runs")
-                    connection.execute("DROP TABLE mentat_run_store_state")
-                    connection.execute("DROP TABLE mentat_task_store_state")
-                    connection.execute("DROP TABLE mentat_agent_registry_state")
-                    connection.execute("DROP TABLE mentat_agents")
-                    connection.execute("DROP TABLE agent_runtime_configs")
-                    connection.execute("DROP TABLE provider_connections")
-                    connection.execute(
-                        "DELETE FROM schema_migrations WHERE version > 5"
-                    )
+                connection.execute(
+                    "INSERT INTO mentat_tasks(id,sort_order,title,description,project,status,priority,source,"
+                    "review_required,needs_attention,created_at,updated_at) VALUES(?,0,?,?,?,?,?,?,0,0,?,?)",
+                    ("occupied", "Task occupied", "", "Mentat", "todo", "medium", "test",
+                     "2026-08-18T09:00:00-07:00", "2026-08-18T09:05:00-07:00"),
+                )
+                connection.commit()
             finally:
                 connection.close()
             preview = preview_task_sqlite_migration(root)
