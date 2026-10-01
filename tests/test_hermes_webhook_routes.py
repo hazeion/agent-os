@@ -64,6 +64,9 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.original_limiter = server.HERMES_WEBHOOK_RATE_LIMITER
         self.temporary = TemporaryDirectory()
         self.data_dir = Path(self.temporary.name) / "data"
+        self.data_patch = patch.object(server, "DATA_DIR", self.data_dir)
+        self.data_patch.start()
+        self.addCleanup(self.data_patch.stop)
         server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(self.data_dir)
         server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
         server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
@@ -78,6 +81,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         server.HERMES_WEBHOOK_RATE_LIMITER = self.original_limiter
         server.HERMES_EVENT_REFRESH = self.original_coordinator
         server.HERMES_WEBHOOK_HINT_CAPACITY = self.original_capacity
+        self.data_patch.stop()
         self.temporary.cleanup()
 
     def request(self, *, event="on_session_end", delivery="delivery-1", body_overrides=None, content_type="application/json"):
