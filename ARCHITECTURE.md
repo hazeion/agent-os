@@ -671,6 +671,11 @@ binding-derived slot. The qualified Codex adapter declares two slots for its
 one owned App Server and workspace; all nonterminal Task and Conversation Runs
 using that scope consume the same transactional capacity. Capacity scope,
 digest, limit, and runtime references remain private.
+Admission also counts nonterminal Runs for the same canonical Agent even when
+their binding or private capacity scope differs. Count each overlapping Run
+once. A wider ceiling requires every counted Run to carry the exact incoming
+capacity scope; historical missing-scope evidence stays conservative. Changing
+an adapter scope never releases unknown work or creates another Agent slot.
 
 The Home Agent picker selects the immutable Agent binding for a new
 Conversation. Changing the picker does not retarget an existing Conversation;

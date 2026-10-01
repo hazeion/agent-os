@@ -1461,14 +1461,16 @@ class RunRepository:
             raise RunRepositoryError("run_repository.schema_unsupported")
         self.schema_version = version
 
-    def _active_capacity_count(
+    def _capacity_available(
         self,
         *,
+        agent_id: str,
         runtime_type: str,
         binding_digest: str,
         capacity_scope_digest: str,
-    ) -> int:
-        """Count active work that consumes the same conservative adapter slot."""
+        capacity_limit: int,
+    ) -> bool:
+        """Keep one Agent's unresolved work bound across private scope changes."""
 
         placeholders = ",".join("?" for _ in _ACTIVE_STATUSES)
         legacy_runtime_clause = (
@@ -1478,21 +1480,28 @@ class RunRepository:
             else ""
         )
         row = self.connection.execute(
-            "SELECT COUNT(*) FROM mentat_runs WHERE status IN ("
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN "
+            "capacity_scope_digest IS NULL OR capacity_scope_digest != ? "
+            "THEN 1 ELSE 0 END), 0) FROM mentat_runs WHERE status IN ("
             + placeholders
-            + ") AND (capacity_scope_digest = ? OR "
+            + ") AND (agent_id = ? OR capacity_scope_digest = ? OR "
             "(capacity_scope_digest IS NULL AND runtime_type = ? "
             "AND runtime_binding_digest = ?) "
             + legacy_runtime_clause
             + ")",
             (
+                capacity_scope_digest,
                 *tuple(sorted(_ACTIVE_STATUSES)),
+                agent_id,
                 capacity_scope_digest,
                 runtime_type,
                 binding_digest,
             ),
         ).fetchone()
-        return int(row[0])
+        # A qualified wider scope cannot consume a second slot while this Agent
+        # still has work admitted under a missing or different scope, including
+        # an overlapping historical binding whose Agent identity is missing.
+        return int(row[0]) < capacity_limit and (capacity_limit == 1 or int(row[1]) == 0)
 
     @contextmanager
     def mutation(self) -> Iterator[None]:
@@ -3206,11 +3215,13 @@ class RunRepository:
                     "conversation.continuation_changed"
                 )
         documents = self._conversation_admission_documents(admission, text=text)
-        if self._active_capacity_count(
+        if not self._capacity_available(
+            agent_id=admission.agent_id,
             runtime_type=admission.runtime_type,
             binding_digest=admission.runtime_binding_digest,
             capacity_scope_digest=admission.capacity_scope_digest,
-        ) >= admission.capacity_limit:
+            capacity_limit=admission.capacity_limit,
+        ):
             if head["state"] != "blocked" or head["blocked_reason"] != "capacity":
                 updated = self.connection.execute(
                     "UPDATE mentat_conversation_turns SET state = 'blocked', "
@@ -3532,11 +3543,13 @@ class RunRepository:
                 != admission.runtime_binding_digest
             ):
                 raise RunRepositoryConflict("conversation.binding_changed")
-            if self._active_capacity_count(
+            if not self._capacity_available(
+                agent_id=admission.agent_id,
                 runtime_type=admission.runtime_type,
                 binding_digest=admission.runtime_binding_digest,
                 capacity_scope_digest=admission.capacity_scope_digest,
-            ) >= admission.capacity_limit:
+                capacity_limit=admission.capacity_limit,
+            ):
                 raise RunRepositoryConflict("conversation.capacity_unavailable")
             try:
                 content = _decode_json(
@@ -3973,12 +3986,14 @@ class RunRepository:
                     turn_state = "blocked"
                     blocked_reason = "partial"
             elif queue_head is None:
-                capacity_used = self._active_capacity_count(
+                capacity_available = self._capacity_available(
+                    agent_id=agent_identifier,
                     runtime_type=runtime_type,
                     binding_digest=binding_digest,
                     capacity_scope_digest=capacity_scope_digest,
+                    capacity_limit=capacity_limit,
                 )
-                if capacity_used >= capacity_limit:
+                if not capacity_available:
                     create_run = False
                     turn_state = "blocked"
                     blocked_reason = "capacity"
@@ -4308,11 +4323,13 @@ class RunRepository:
             ).fetchone()
             if active is not None:
                 raise RunRepositoryConflict("dispatch.task_active")
-            if self._active_capacity_count(
+            if not self._capacity_available(
+                agent_id=agent_identifier,
                 runtime_type=runtime_type,
                 binding_digest=binding_digest,
                 capacity_scope_digest=capacity_scope_digest,
-            ) >= capacity_limit:
+                capacity_limit=capacity_limit,
+            ):
                 raise RunRepositoryConflict("dispatch.capacity_unavailable")
             details = {
                 "agent_id": "",
