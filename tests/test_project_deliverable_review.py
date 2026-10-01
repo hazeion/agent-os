@@ -47,7 +47,7 @@ class DeliverableReviewTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=31)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 32)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
                 self.assertEqual(validate_review_connection(connection)[0][2], 0)
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"

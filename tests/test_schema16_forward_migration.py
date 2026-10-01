@@ -144,9 +144,9 @@ class Schema16ForwardMigrationTests(unittest.TestCase):
                 version = connection.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
-                self.assertEqual(version, 32)
-                self.assertEqual(SCHEMA_VERSION, 32)
-                self.assertEqual(schema_signature_state(connection, 32), "expected")
+                self.assertEqual(version, 33)
+                self.assertEqual(SCHEMA_VERSION, 33)
+                self.assertEqual(schema_signature_state(connection, 33), "expected")
                 self.assertIsNone(connection.execute("PRAGMA foreign_key_check").fetchone())
                 self.assertEqual(
                     connection.execute(

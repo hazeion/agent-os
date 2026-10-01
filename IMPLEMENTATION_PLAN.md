@@ -127,6 +127,10 @@ The fixed browser review workflow is reviewed and published in
 [PR 272](https://github.com/hazeion/agent-os/pull/272), pending CI and merge.
 Trusted generated promotion is still separate work; no Project Agent
 execution is enabled by owner review alone.
+The [plan preparation authority](reviews/2026-09-23-project-plan-authority.md)
+is reviewed and published in [PR 273](https://github.com/hazeion/agent-os/pull/273),
+pending CI and merge. It records exact owner-edited Task/Agent/input/checkpoint
+graphs and requested limits without approval or dispatch.
 The next Project-execution step is exact owner approval and atomic Run/receipt
 reservation against the retained evidence. The current Kanban adapter has no
 qualified operation binding

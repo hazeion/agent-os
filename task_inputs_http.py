@@ -25,7 +25,7 @@ _SAFE_ERRORS = frozenset({'invalid', 'revision_invalid', 'instructions_invalid',
     'task_changed', 'grant_changed', 'file_scope', 'files_unavailable', 'revision_conflict',
     'capacity', 'image_limit', 'version_unavailable', 'adapter_limits_invalid',
     'project_unavailable', 'context_unavailable', 'agent_unavailable', 'file_unavailable',
-    'current_version', 'stale'})
+    'current_version', 'retained_plan', 'stale'})
 
 
 def _failure(status: str, code: int) -> tuple[dict, int]:

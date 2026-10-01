@@ -8,7 +8,7 @@ import { BridgePlanningError } from "../src/lib/bridge-planning.ts";
 
 const envelope = { runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
 const counts = { artifacts: 2, conversations: 1, projects: 1, runs: 1, tasks: 3 };
-const preview = { ...envelope, affected: counts, confirmation_id: "a".repeat(64), has_active_runs: true, retained_context_versions: 0, retained_input_versions: 0, retained_deliverable_versions: 0, retained_deliverable_reviews: 0, target_id: "task_alpha", target_kind: "task" as const };
+const preview = { ...envelope, affected: counts, confirmation_id: "a".repeat(64), has_active_runs: true, retained_context_versions: 0, retained_input_versions: 0, retained_deliverable_versions: 0, retained_deliverable_reviews: 0, retained_plan_versions: 0, target_id: "task_alpha", target_kind: "task" as const };
 const deletion = { ...envelope, action: "delete" as const, deletion: counts, target_id: "task_alpha", target_kind: "task" as const };
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "a".repeat(43) };
 const headers = { Host: "127.0.0.1:8890", Origin: "http://127.0.0.1:8890", "Sec-Fetch-Site": "same-origin" };
@@ -32,6 +32,9 @@ test("deletion parsers accept only exact content-free count projections", () => 
     { ...preview, retained_deliverable_reviews: -1 },
     { ...preview, retained_deliverable_reviews: 257 },
     { ...preview, retained_deliverable_reviews: undefined },
+    { ...preview, retained_plan_versions: -1 },
+    { ...preview, retained_plan_versions: 257 },
+    { ...preview, retained_plan_versions: undefined },
     { ...preview, task_title: "private" },
     { ...preview, affected: { ...counts, tasks: 0 } },
     { ...preview, target_id: "task_other" },
