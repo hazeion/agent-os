@@ -1434,6 +1434,7 @@ class RunRepository:
                 26,
                 27,
                 28,
+                29,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)
@@ -1441,6 +1442,7 @@ class RunRepository:
             != _expected_run_schema_fingerprint(version)
         ):
             raise RunRepositoryError("run_repository.schema_unsupported")
+        self.schema_version = version
 
     def _active_capacity_count(
         self,
@@ -1992,7 +1994,10 @@ class RunRepository:
             "AND successor.dispatch_state = 'reserved') "
             "AND NOT EXISTS (SELECT 1 FROM mentat_task_execution_attempts "
             "WHERE mentat_task_execution_attempts.run_id = mentat_runs.id) "
-            "ORDER BY completed_at, created_at, id LIMIT ?",
+            + ("AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
+               "WHERE mentat_run_input_receipts.run_id = mentat_runs.id) "
+               if self.schema_version >= 30 else "")
+            + "ORDER BY completed_at, created_at, id LIMIT ?",
             (*tuple(sorted(_ACTIVE_STATUSES)), excess),
         ).fetchall()
         for row in terminal:
@@ -7355,7 +7360,10 @@ class RunRepository:
             "AND successor.dispatch_state = 'reserved') "
             "AND NOT EXISTS (SELECT 1 FROM mentat_task_execution_attempts "
             "WHERE mentat_task_execution_attempts.run_id = mentat_runs.id) "
-            "ORDER BY completed_at DESC, created_at DESC, id DESC",
+            + ("AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
+               "WHERE mentat_run_input_receipts.run_id = mentat_runs.id) "
+               if self.schema_version >= 30 else "")
+            + "ORDER BY completed_at DESC, created_at DESC, id DESC",
             tuple(sorted(_ACTIVE_STATUSES)),
         ).fetchall()
         terminal_ids = tuple(str(row[0]) for row in terminal)
@@ -7488,7 +7496,10 @@ class RunRepository:
                     "AND successor.dispatch_state = 'reserved')"
                     if has_terminal_finalized
                     else ""
-                ),
+                )
+                + (" AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
+                   "WHERE mentat_run_input_receipts.run_id = mentat_runs.id)"
+                   if self.schema_version >= 30 else ""),
                 tuple(sorted(_ACTIVE_STATUSES)),
             ).fetchone()[0]
         )

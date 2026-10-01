@@ -412,6 +412,9 @@ def _prune_snapshot(connection, input_id: str):
     ).fetchone()
     if row is None:
         _fail('version_unavailable')
+    if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] >= 30:
+        if connection.execute('SELECT 1 FROM mentat_run_input_receipts WHERE input_id=? LIMIT 1', (input_id,)).fetchone():
+            _fail('retained_run')
     if row[6] is None and row[2] == row[5]:
         _fail('current_version')
     files = tuple(item[0] for item in connection.execute(

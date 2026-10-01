@@ -343,3 +343,49 @@ execution; Run-input receipts and runtime qualification remain in issue 262.
 Both follow-up reviews are clean. Focused Python and rendered browser tests
 cover the guard, including inputs appearing during Hermes readback and before
 revision creation.
+
+## Run-input qualification inventory (2026-09-22)
+
+The current Mentat Kanban adapter's create operation accepts a title, body,
+assignee, priority, workspace kind and idempotency key. It has no operation
+that atomically binds the exact prepared files, allowed tools or enforced
+per-attempt work limits to creation. Its capability discovery consequently
+advertises no Project-execution qualification. This remains true even though
+upstream Hermes documents separate attachment upload and a `--max-runtime`
+task option. Upstream's documented default worker reads absolute attachment
+paths with full file and terminal tools and runs under the host user's
+authority; those defaults cannot prove isolation from unrelated Projects or
+credentials. A Docker terminal backend is described as an option, but its
+Kanban tools still run in the agent process, and the exact deployed setup must
+be tested before it could qualify.
+
+Sources: [Hermes Kanban guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/kanban.md),
+[Hermes CLI Kanban implementation](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/kanban.py).
+No local Hermes executable was available for live qualification. Until the
+fixed adapter can prove input binding, containment, limits and Stop on the
+actual host, preparing inputs must continue to confer no dispatch authority.
+
+## Schema-30 Run-input evidence foundation
+
+The next storage slice adds immutable private Run-input receipts with exact
+ordered file/blob identities, grants, incarnations, runtime and approval
+digests. Receipts are bounded to 128 and charged to the shared retained
+metadata budget. They pin referenced Task-input versions, Runs and files
+through ordinary pruning and backup/restore. This is evidence storage only:
+the migration creates no approval, Run or runtime dispatch path, and it does
+not qualify Hermes or any other runtime. The approved execution and
+reservation work in #262 remains open. That future reservation must bind the
+live Task incarnation to the Run and receipt in the same transaction; existing
+generic Run rows have no independent incarnation anchor. The 128-receipt
+lifetime ceiling fails closed and needs an explicit, reviewed retention policy
+before broad execution rollout.
+
+Two independent read-only reviews found and then cleared the direct-delete
+gap; receipt and file rows now reject both updates and deletes. The affected
+Python groups pass 167 and 143 tests respectively (23 platform skips total),
+including schema-29 upgrade/drift, schema-5 compatible export, receipt
+backup/restore with grant revocation, retention, pruning, and corrupt file
+evidence. The rebuilt wheel and source package pass artifact verification;
+an isolated wheel import resolves schema 30. The staged Windows-normalized
+secret diagnostic reports no new candidates. Cross-platform CI and real
+runtime qualification are still separate gates.

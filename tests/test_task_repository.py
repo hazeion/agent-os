@@ -249,7 +249,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 29)
+            self.assertEqual(SCHEMA_VERSION, 30)
             self.assertTrue(
                 {
                     "mentat_tasks",

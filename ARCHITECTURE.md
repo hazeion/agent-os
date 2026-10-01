@@ -981,6 +981,18 @@ bounded owner editor and retention through backup/restore. The owner action is
 Approval, qualified adapter isolation, Run-input receipts and conditional
 handoff resolution described below are still to be implemented.
 
+Schema 30 provides a private, immutable Run-input evidence graph only. Its
+receipt binds one canonical Run to the exact Task-input version, Task/Project/
+Agent incarnations, context/grant revisions, runtime and approval digests, and
+ordered file content identities. Receipt files are additional retained blob
+roots, and a receipt-bearing Run is excluded from ordinary terminal pruning.
+At most 128 receipts fit within a separate bounded retained class and the
+shared context metadata budget. Backup and restore validate this graph; old
+input versions and Runs cannot be pruned while referenced. No browser action,
+approval grant or adapter dispatch is added by this migration. Exact approval,
+atomic Run/receipt reservation and runtime qualification remain prerequisites
+before Project execution can be exposed.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains

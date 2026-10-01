@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2089,6 +2089,64 @@ MIGRATIONS += ((29, """
         SELECT attachment_id FROM run_attachments
         UNION SELECT attachment_id FROM mentat_project_context_files
         UNION SELECT attachment_id FROM mentat_task_input_files;
+"""),
+    (30, """
+    CREATE TABLE mentat_run_input_receipts (
+        run_id TEXT NOT NULL PRIMARY KEY REFERENCES mentat_runs(id) ON DELETE RESTRICT,
+        input_id TEXT NOT NULL REFERENCES mentat_task_input_versions(id) ON DELETE RESTRICT,
+        task_scope_id TEXT NOT NULL REFERENCES mentat_task_input_scopes(id) ON DELETE RESTRICT,
+        task_id TEXT NOT NULL,
+        task_incarnation TEXT NOT NULL CHECK(length(task_incarnation)=32),
+        task_revision INTEGER NOT NULL CHECK(typeof(task_revision)='integer' AND task_revision>0),
+        project_scope_id TEXT NOT NULL REFERENCES mentat_project_context_scopes(id) ON DELETE RESTRICT,
+        project_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_incarnation TEXT NOT NULL CHECK(length(agent_incarnation)=32),
+        runtime_type TEXT NOT NULL CHECK(length(runtime_type) BETWEEN 1 AND 32),
+        runtime_config_id TEXT NOT NULL CHECK(length(runtime_config_id) BETWEEN 1 AND 128),
+        context_id TEXT NOT NULL REFERENCES mentat_project_context_versions(id) ON DELETE RESTRICT,
+        context_revision INTEGER NOT NULL CHECK(typeof(context_revision)='integer' AND context_revision>0),
+        grant_revision INTEGER NOT NULL CHECK(typeof(grant_revision)='integer' AND grant_revision>0),
+        runtime_binding_digest TEXT NOT NULL CHECK(length(runtime_binding_digest)=64),
+        input_binding_digest TEXT NOT NULL CHECK(length(input_binding_digest)=64),
+        capabilities_digest TEXT NOT NULL CHECK(length(capabilities_digest)=64),
+        qualification_digest TEXT NOT NULL CHECK(length(qualification_digest)=64),
+        approval_digest TEXT NOT NULL CHECK(length(approval_digest)=64),
+        objective_digest TEXT NOT NULL CHECK(length(objective_digest)=64),
+        allowed_tools_digest TEXT NOT NULL CHECK(length(allowed_tools_digest)=64),
+        limits_digest TEXT NOT NULL CHECK(length(limits_digest)=64),
+        manifest_digest TEXT NOT NULL CHECK(length(manifest_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0)
+    );
+    CREATE TRIGGER mentat_run_input_receipt_immutable
+        BEFORE UPDATE ON mentat_run_input_receipts
+        BEGIN SELECT RAISE(ABORT,'run_input.immutable'); END;
+    CREATE TRIGGER mentat_run_input_receipt_no_delete
+        BEFORE DELETE ON mentat_run_input_receipts
+        BEGIN SELECT RAISE(ABORT,'run_input.retained'); END;
+    CREATE TABLE mentat_run_input_files (
+        run_id TEXT NOT NULL REFERENCES mentat_run_input_receipts(run_id) ON DELETE RESTRICT,
+        ordinal INTEGER NOT NULL CHECK(typeof(ordinal)='integer' AND ordinal BETWEEN 0 AND 7),
+        attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE RESTRICT,
+        blob_id TEXT NOT NULL REFERENCES blobs(id) ON DELETE RESTRICT,
+        sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+        byte_size INTEGER NOT NULL CHECK(typeof(byte_size)='integer' AND byte_size>=0),
+        kind TEXT NOT NULL CHECK(kind IN ('image','text')),
+        mime_type TEXT NOT NULL,
+        PRIMARY KEY(run_id,ordinal), UNIQUE(run_id,attachment_id)
+    );
+    CREATE TRIGGER mentat_run_input_file_immutable
+        BEFORE UPDATE ON mentat_run_input_files
+        BEGIN SELECT RAISE(ABORT,'run_input.immutable'); END;
+    CREATE TRIGGER mentat_run_input_file_no_delete
+        BEFORE DELETE ON mentat_run_input_files
+        BEGIN SELECT RAISE(ABORT,'run_input.retained'); END;
+    DROP VIEW mentat_retained_attachments;
+    CREATE VIEW mentat_retained_attachments AS
+        SELECT attachment_id FROM run_attachments
+        UNION SELECT attachment_id FROM mentat_project_context_files
+        UNION SELECT attachment_id FROM mentat_task_input_files
+        UNION SELECT attachment_id FROM mentat_run_input_files;
 """),)
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
@@ -2427,7 +2485,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2549,6 +2607,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 27 cannot be safely upgraded")
                 if version == 29 and schema_signature_state(connection, 28) != "expected":
                     raise MentatDatabaseError("Mentat schema 28 cannot be safely upgraded")
+                if version == 30 and schema_signature_state(connection, 29) != "expected":
+                    raise MentatDatabaseError("Mentat schema 29 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.
