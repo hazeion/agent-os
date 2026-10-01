@@ -97,6 +97,7 @@ TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION = 21
 CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION = 22
 PLANNING_DELETION_DATABASE_SCHEMA_VERSION = 23
 OWNER_AUTH_DATABASE_SCHEMA_VERSION = 24
+OWNER_METHOD_DATABASE_SCHEMA_VERSION = 25
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -118,6 +119,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION,
     PLANNING_DELETION_DATABASE_SCHEMA_VERSION,
     OWNER_AUTH_DATABASE_SCHEMA_VERSION,
+    OWNER_METHOD_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -1565,6 +1567,7 @@ def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsole
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state = 'active'").fetchone()[0])
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_ceremonies WHERE state = 'pending'").fetchone()[0])
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_recovery_codes WHERE state = 'reserved'").fetchone()[0])
+                or version >= OWNER_METHOD_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_configuration").fetchone()[0])
             )
             if not live:
                 return unit

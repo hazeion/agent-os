@@ -174,9 +174,9 @@ The server-only `owner_auth_google.py` component constructs fixed Google OIDC
 authorization-code requests and verifies bounded RS256 assertions against a
 trusted JWKS snapshot. It returns only private issuer/subject/email evidence;
 it has no network, enrollment, session, database or route authority. Its presence
-does not enable Google login or remote serving. The future exchange must own
-fixed-host key retrieval and one-use transaction/nonce binding; owner enrollment
-and session migration remain separate reviewed capabilities. Google login must
+does not enable Google login or remote serving. The exchange owns fixed-host
+key retrieval; durable one-use transaction/nonce binding and owner enrollment
+remain separate reviewed capabilities. Google login must
 not grant Calendar or other integration access, and an email is not owner identity.
 
 `owner_auth_google_transport.py` owns the private fixed Google token/JWKS
@@ -191,6 +191,24 @@ This remains unwired to browser login; callers must consume a durable one-use
 transaction first and perform owner matching/session issuance afterward. Frozen
 native executables cannot launch this worker and fail closed; the first hosting
 profile uses installed Python on Linux.
+
+Schema 25 records the owner's authentication method and generation explicitly.
+Existing schema-24 passkey sessions and SSE references survive migration with
+their original evidence. Google sessions have no fabricated passkey device:
+they bind the exact issuer/subject principal digest and owner generation.
+Authentication also requires reconciled configuration matching the principal's
+configuration revision. Authentication and security mutations revalidate these
+conditions transactionally. Passkey ceremonies bind their starting generation and
+cannot complete after a method or generation change, including one during
+external signature verification.
+
+Google configuration stores only the client ID, canonical origin and credential
+source kind; it never stores a client secret. Migration enrolls no Google owner
+and issues no Google session. Private backup validation accepts both historical
+schema 24 and current schema 25. Restore revokes all sessions, keeps terminal
+history bounded, and marks Google configuration as requiring host reconciliation.
+Schema-5 compatible export omits all owner authentication authority. Browser
+login, CLI enrollment/conversion and remote activation remain unwired.
 
 - A Mentat **Agent** is the target canonical worker identity.
 - A runtime identity, such as a Hermes profile, is an adapter-owned execution
