@@ -1197,8 +1197,10 @@ async function inspectRuntimeCoexistence(client) {
     if (initial.summary !== "3 current Runs across 3 runtimes." || initial.cards !== 3 || initial.overflow > 1 || !initial.articlesNamed || initial.uniqueControls !== expectedControls.length || JSON.stringify(initial.controls) !== JSON.stringify(expectedControls) || JSON.stringify(initial.hermes) !== JSON.stringify({ heading: "Hermes Researcher", runtime: "Hermes", status: "Running" }) || JSON.stringify(initial.codex) !== JSON.stringify({ heading: "Codex Engineer", runtime: "Codex", status: "Running" }) || JSON.stringify(initial.vercel) !== JSON.stringify({ heading: "Vercel Generator", runtime: "Vercel", status: "Completed" })) throw new Error(`Runtime coexistence display contract failed: ${JSON.stringify(initial)}`);
     await client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-timeline-open]').click()");
     await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 1 && document.querySelectorAll('[data-run-timeline]').length === 1"), "Hermes Run timeline isolation");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"]')?.dataset.runChecking === undefined && document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-message-open]')?.disabled === false"), "Hermes canonical timeline readback");
     await client.eval("document.querySelector('[data-run-timeline-close]').click(); document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-timeline-open]').click()");
     await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 2 && document.querySelector('[data-run-timeline]')?.closest('.run-card')?.dataset.runId === 'run_codex'"), "Codex Run timeline isolation");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"]')?.dataset.runChecking === undefined && document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-stop-open]')?.disabled === false"), "Codex canonical timeline readback");
     await client.eval("document.querySelector('[data-run-timeline-close]').click(); document.querySelector('.run-card[data-run-id=\"run_vercel\"] [data-run-timeline-open]').click()");
     await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 3 && document.querySelector('[data-run-timeline]')?.closest('.run-card')?.dataset.runId === 'run_vercel' && document.querySelector('.run-event-message')?.textContent.includes('Vercel result <script>')"), "Vercel result timeline isolation");
     if (await client.eval("window.__vercelMessageExecuted === true")) throw new Error("Vercel result message executed as markup");
@@ -1306,8 +1308,11 @@ async function inspectRunProjection(client) {
     await client.eval("document.querySelector('[data-run-timeline-open]').focus(); document.querySelector('[data-run-timeline-open]').click()");
     await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline-list] [data-run-event-sequence]').length === 1"), "Runs timeline event");
     const timelineText = await client.eval("document.querySelector('[data-run-timeline]')?.textContent || ''");
-    await client.eval("document.querySelector('[data-run-timeline-open]').click()");
-    await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline]').length === 1"), "single selected Runs timeline");
+    await waitFor(() => client.eval("document.querySelector('.run-card')?.dataset.runChecking === undefined && document.querySelector('[data-run-stop-open]')?.disabled === false && document.querySelector('.run-status')?.textContent === 'Running'"), "Runs canonical timeline readback");
+    await client.eval("document.querySelector('[data-run-timeline-open]').click(); queueMicrotask(() => document.querySelector('[data-run-timeline-close]').click())");
+    await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline]').length === 0 && document.querySelector('[data-run-status-retry]') instanceof HTMLButtonElement && document.querySelector('[data-run-stop-open]')?.disabled === true"), "Runs early-close safe status recovery");
+    await client.eval("document.querySelector('[data-run-status-retry]').click()");
+    await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline]').length === 1 && document.querySelector('.run-card')?.dataset.runChecking === undefined && document.querySelector('[data-run-stop-open]')?.disabled === false"), "single selected Runs timeline after status recovery");
     await client.eval("document.querySelector('[data-run-timeline-close]').click()");
     await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline]').length === 0"), "Runs timeline close");
     await client.eval("document.querySelector('[data-run-stop-open]').click()");

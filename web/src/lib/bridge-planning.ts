@@ -288,7 +288,7 @@ export async function refreshBridgePlanningTaskExecution(taskId: string, expecte
   if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BridgePlanningError("planning_request_invalid");
   const current = await fetchBridgePlanningTaskExecution(taskId);
   if (current.task.revision !== expectedRevision) throw new BridgePlanningError("planning_conflict");
-  const active = current.execution.attempts.filter((attempt) => ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(attempt.status));
+  const active = current.execution.attempts.filter((attempt) => !attempt.terminal_finalized);
   for (const attempt of active) await refreshBridgeRun(attempt.run_id);
   return fetchBridgePlanningTaskExecution(taskId);
 }

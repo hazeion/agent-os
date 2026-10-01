@@ -215,12 +215,25 @@ class LocalBridgeTests(unittest.TestCase):
             (f"{root}/calendar", b'{"expected_revision":1,"path":"Plans/Alpha.md"}', 405, {"error": "method_not_allowed"}),
         ):
             with self.subTest(path=path):
-                status, payload, _headers = self.request(
-                    method="POST",
-                    path=path,
-                    body=body,
-                    headers={"Content-Type": "application/json"},
-                )
+                if expected_status == 405:
+                    # These non-capability routes reject headers before any
+                    # body read. Unread bytes can reset Winsock while the
+                    # handler closes, hiding the actual refusal response.
+                    with patch.object(
+                        local_bridge.BridgeRequestHandler,
+                        "_read_exact_body",
+                        side_effect=AssertionError("rejected route read a body"),
+                    ) as read:
+                        status, payload, _headers = self.request(
+                            method="POST", path=path, body=None,
+                            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+                        )
+                    read.assert_not_called()
+                else:
+                    status, payload, _headers = self.request(
+                        method="POST", path=path, body=body,
+                        headers={"Content-Type": "application/json"},
+                    )
                 self.assertEqual((status, payload), (expected_status, expected_payload))
 
     def test_planning_calendar_routes_are_named_and_exact(self):

@@ -1137,6 +1137,15 @@ browser receives at most 20,000 characters through the fixed bridge projection,
 with explicit redaction and truncation indicators; displayed text is never
 accepted back as execution authority. A changed revision requires a new preview.
 
+The selected Task refreshes unfinished execution through the fixed, revision-bound
+reconciliation route, with one in-flight refresh and selection/generation guards.
+Background reads preserve drafts and never resubmit execution. Selected Run
+timeline lifecycle hints trigger bounded canonical card readback; event text is
+not status authority. Pending readback disables retained action confirmations
+and invalidates late previews without discarding input. Closing an uncertain
+timeline offers explicit status recovery. Task/Run navigation carries only safe
+canonical IDs; remembered browser selection remains optional presentation state.
+
 Browser reminders are advisory UI behavior over Mentat-owned timestamps. The
 browser asks for notification permission only after an explicit operator action
 and locally deduplicates delivered notifications. No reminder mutates Hermes or

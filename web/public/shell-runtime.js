@@ -17,6 +17,7 @@ let activeRunStop = null;
 let activeRunMessage = null;
 let activeRunResponse = null;
 let renderedRuns = new Map();
+let renderedRunAgents = [];
 let pendingRunsSummaryNotice = "";
 let navigationOwnsFocus = false;
 let observedPath = "";
@@ -639,8 +640,12 @@ function runAgentIndex(agents) {
 }
 function renderRuns(runs, agents = []) {
   const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
-  const indexedAgents = runAgentIndex(agents);
-  for (const [index, run] of runs.entries()) {
+  renderedRunAgents = agents;
+  for (const [index, run] of runs.entries()) elements.list.append(createRunCard(run, agents, index));
+  openRequestedRun();
+}
+function createRunCard(run, agents, index) {
+    const indexedAgents = runAgentIndex(agents);
     const card = document.createElement("article"); card.className = "run-card"; card.dataset.runId = run.id; card.dataset.runtimeType = run.runtime_type;
     const header = document.createElement("div"); header.className = "run-card-header";
     const identity = document.createElement("div"); identity.className = "run-identity";
@@ -660,8 +665,8 @@ function renderRuns(runs, agents = []) {
     if (run.status === "running" && supports("run.message")) { const message = document.createElement("button"); message.className = "run-message-open"; message.dataset.runMessageOpen = ""; message.dataset.runId = run.id; message.setAttribute("aria-expanded", "false"); message.setAttribute("aria-label", `Send message to ${runLabel}`); message.type = "button"; message.textContent = "Send message"; actions.append(message); }
     if (["waiting_for_approval", "waiting_for_clarification"].includes(run.status) && supports("run.approval_response")) { const response = document.createElement("button"); response.className = "run-response-open"; response.dataset.runResponseOpen = ""; response.dataset.runId = run.id; response.setAttribute("aria-expanded", "false"); response.setAttribute("aria-label", `Respond to ${runLabel}`); response.type = "button"; response.textContent = "Respond"; actions.append(response); }
     if (["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status) && supports("run.stop")) { const stop = document.createElement("button"); stop.className = "run-stop-open"; stop.dataset.runStopOpen = ""; stop.dataset.runId = run.id; stop.setAttribute("aria-expanded", "false"); stop.setAttribute("aria-label", `Stop run for ${runLabel}`); stop.type = "button"; stop.textContent = "Stop run"; actions.append(stop); }
-    card.append(primary, detail, lifecycle, actions); elements.list.append(card);
-  }
+    if (run.task_id) { const task = document.createElement("a"); task.href = `/tasks?task=${encodeURIComponent(run.task_id)}`; task.textContent = "Open Task and result"; actions.append(task); }
+    card.append(primary, detail, lifecycle, actions); return card;
 }
 function applyRunsState(state, detail, runs = null, agents = []) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs, agents); else { closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
 function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); }
@@ -706,11 +711,20 @@ function readTimelineEnvelope(value, runId) {
 
 function closeActiveRunTimeline({ restoreFocus = true } = {}) {
   if (!activeRunTimeline) return;
+  const current = activeRunTimeline;
+  window.clearTimeout(activeRunTimeline.refreshTimer);
+  activeRunTimeline.refreshController?.abort();
   activeRunTimeline.source?.close();
   activeRunTimeline.panel.remove();
   activeRunTimeline.trigger.setAttribute("aria-expanded", "false");
   if (restoreFocus && activeRunTimeline.trigger.isConnected) activeRunTimeline.trigger.focus();
   activeRunTimeline = null;
+  if (current.card.dataset.runChecking && current.card.isConnected && !current.card.querySelector("[data-run-status-retry]")) {
+    const status = current.card.querySelector(".run-status"); if (status) status.textContent = "Status unavailable";
+    const retry = document.createElement("button"); retry.type = "button"; retry.dataset.runStatusRetry = ""; retry.textContent = "Refresh status";
+    retry.addEventListener("click", () => { const run = renderedRuns.get(current.runId); if (run) { openRunTimeline(run, current.card, current.trigger); scheduleTimelineReadback(activeRunTimeline, 0); } });
+    current.card.querySelector(".run-card-actions")?.append(retry);
+  }
 }
 
 function closeActiveRunStop({ restoreFocus = true } = {}) {
@@ -749,8 +763,10 @@ function messageStateMessage(response) {
 }
 
 async function reviewRunStop(current) {
+  if (current.readbackBlocked) return;
+  const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.confirmationId = null; current.notice.textContent = "Reviewing the current Run state…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel) return; if (response.status !== 200) { current.notice.textContent = stopStateMessage(response); return; } if (!payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) throw new Error("stop_preview_invalid"); current.confirmationId = payload.confirmation_id; delete current.confirm.dataset.runStopReview; current.confirm.dataset.runStopConfirm = ""; current.confirm.textContent = "Confirm stop"; current.notice.textContent = "Stopping asks the selected runtime to cancel this active Run."; current.confirm.disabled = false; } catch { if (activeRunStop?.panel !== current.panel) return; current.notice.textContent = "Mentat could not safely review Stop."; }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200) { current.notice.textContent = stopStateMessage(response); return; } if (!payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) throw new Error("stop_preview_invalid"); current.confirmationId = payload.confirmation_id; delete current.confirm.dataset.runStopReview; current.confirm.dataset.runStopConfirm = ""; current.confirm.textContent = "Confirm stop"; current.notice.textContent = "Stopping asks the selected runtime to cancel this active Run."; current.confirm.disabled = false; } catch { if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; current.notice.textContent = "Mentat could not safely review Stop."; }
 }
 
 async function openRunStop(run, card, trigger) {
@@ -766,21 +782,24 @@ async function openRunStop(run, card, trigger) {
 }
 
 async function confirmRunStop() {
-  const current = activeRunStop; if (!current?.confirmationId) return;
+  const current = activeRunStop; if (current?.readbackBlocked || !current?.confirmationId) return;
+  const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.notice.textContent = "Requesting Stop…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.disposition !== "requested") { current.notice.textContent = stopStateMessage(response); if (response.status === 409) { current.confirmationId = null; delete current.confirm.dataset.runStopConfirm; current.confirm.dataset.runStopReview = ""; current.confirm.textContent = "Review Stop again"; } current.confirm.disabled = false; return; } current.notice.textContent = "Stop requested. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunStop?.panel === current.panel) { current.notice.textContent = "Mentat could not safely process Stop."; current.confirm.disabled = false; } }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.disposition !== "requested") { current.notice.textContent = stopStateMessage(response); if (response.status === 409) { current.confirmationId = null; delete current.confirm.dataset.runStopConfirm; current.confirm.dataset.runStopReview = ""; current.confirm.textContent = "Review Stop again"; } current.confirm.disabled = false; return; } current.notice.textContent = "Stop requested. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunStop?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely process Stop."; current.confirm.disabled = false; } }
 }
 
 async function reviewRunMessage() {
-  const current = activeRunMessage; if (!current) return;
+  const current = activeRunMessage; if (!current || current.readbackBlocked) return;
+  const epoch = current.readbackEpoch || 0;
   const text = current.input.value.trim(); if (!text) { current.notice.textContent = "Enter a message to review."; return; } current.input.value = text; current.review.disabled = true; current.notice.textContent = "Reviewing the current Run state…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel) return; if (response.status !== 200 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) { current.notice.textContent = messageStateMessage(response); current.review.disabled = false; return; } current.confirmationId = payload.confirmation_id; current.input.disabled = true; current.confirm.hidden = false; current.notice.textContent = "Confirm this message for the current Run."; } catch { if (activeRunMessage?.panel === current.panel) { current.notice.textContent = "Mentat could not safely review this message."; current.review.disabled = false; } }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) { current.notice.textContent = messageStateMessage(response); current.review.disabled = false; return; } current.confirmationId = payload.confirmation_id; current.input.disabled = true; current.confirm.hidden = false; current.notice.textContent = "Confirm this message for the current Run."; } catch { if (activeRunMessage?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely review this message."; current.review.disabled = false; } }
 }
 
 async function confirmRunMessage() {
-  const current = activeRunMessage; if (!current?.confirmationId) return;
+  const current = activeRunMessage; if (current?.readbackBlocked || !current?.confirmationId) return;
+  const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.notice.textContent = "Sending message…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text: current.input.value, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { current.notice.textContent = messageStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.input.disabled = false; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Message accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunMessage?.panel === current.panel) { current.notice.textContent = "Mentat could not safely send this message."; current.confirm.disabled = false; } }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text: current.input.value, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { current.notice.textContent = messageStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.input.disabled = false; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Message accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunMessage?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely send this message."; current.confirm.disabled = false; } }
 }
 
 function openRunMessage(run, card, trigger) {
@@ -818,21 +837,22 @@ function selectedRunResponse(current) {
 }
 
 async function reviewRunResponse() {
-  const current = activeRunResponse; const responseValue = current && selectedRunResponse(current); if (!current || !responseValue) { if (current) current.notice.textContent = "Choose or enter a response to review."; return; }
+  const current = activeRunResponse; if (current?.readbackBlocked) return; const epoch = current?.readbackEpoch || 0; const responseValue = current && selectedRunResponse(current); if (!current || !responseValue) { if (current) current.notice.textContent = "Choose or enter a response to review."; return; }
   current.review.disabled = true; current.notice.textContent = "Reviewing the current Run state…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: responseValue }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, current.run.id, true) || payload.request.kind !== current.request.kind || JSON.stringify(payload.request) !== JSON.stringify(current.request)) { current.notice.textContent = responseStateMessage(response); current.review.disabled = false; return; } current.responseValue = responseValue; current.confirmationId = payload.confirmation_id; current.confirm.hidden = false; current.notice.textContent = "Confirm this response for the current Run."; current.confirm.focus(); } catch { if (activeRunResponse?.panel === current.panel) { current.notice.textContent = "Mentat could not safely review this response."; current.review.disabled = false; } }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: responseValue }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, current.run.id, true) || payload.request.kind !== current.request.kind || JSON.stringify(payload.request) !== JSON.stringify(current.request)) { current.notice.textContent = responseStateMessage(response); current.review.disabled = false; return; } current.responseValue = responseValue; current.confirmationId = payload.confirmation_id; current.confirm.hidden = false; current.notice.textContent = "Confirm this response for the current Run."; current.confirm.focus(); } catch { if (activeRunResponse?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely review this response."; current.review.disabled = false; } }
 }
 
 async function confirmRunResponse() {
-  const current = activeRunResponse; if (!current?.confirmationId || !current.responseValue) return;
+  const current = activeRunResponse; if (current?.readbackBlocked || !current?.confirmationId || !current.responseValue) return;
+  const epoch = current.readbackEpoch || 0;
   current.confirm.disabled = true; current.notice.textContent = "Sending response…";
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: current.responseValue, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "respond" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { if (response.status === 502 && payload?.schema_version === 1 && payload?.status === "partial") { pendingRunsSummaryNotice = "Mentat could not verify the response. Check the refreshed Run before trying again."; current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = true; refreshRuns(); return; } current.notice.textContent = responseStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Response accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunResponse?.panel === current.panel) { current.notice.textContent = "Mentat could not safely send this response."; current.confirm.disabled = false; } }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: current.responseValue, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel || current.readbackBlocked || (current.readbackEpoch || 0) !== epoch) return; if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "respond" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { if (response.status === 502 && payload?.schema_version === 1 && payload?.status === "partial") { pendingRunsSummaryNotice = "Mentat could not verify the response. Check the refreshed Run before trying again."; current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = true; refreshRuns(); return; } current.notice.textContent = responseStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Response accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunResponse?.panel === current.panel && !current.readbackBlocked && (current.readbackEpoch || 0) === epoch) { current.notice.textContent = "Mentat could not safely send this response."; current.confirm.disabled = false; } }
 }
 
 async function openRunResponse(run, card, trigger) {
   closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false });
   const panel = document.createElement("section"); panel.className = "run-response"; const heading = document.createElement("h4"); heading.textContent = "Respond to this Run"; const detail = document.createElement("p"); detail.className = "run-response-detail"; const form = document.createElement("div"); form.className = "run-response-form"; const notice = document.createElement("p"); notice.className = "run-stop-notice"; notice.setAttribute("aria-live", "polite"); notice.textContent = "Loading the current request…"; const actions = document.createElement("div"); actions.className = "run-stop-actions"; const cancel = document.createElement("button"); cancel.type = "button"; cancel.dataset.runResponseCancel = ""; cancel.textContent = "Cancel"; const review = document.createElement("button"); review.type = "button"; review.dataset.runResponseReview = ""; review.textContent = "Review response"; review.disabled = true; const confirm = document.createElement("button"); confirm.type = "button"; confirm.dataset.runResponseConfirm = ""; confirm.textContent = "Confirm response"; confirm.hidden = true; actions.append(cancel, review, confirm); panel.append(heading, detail, form, notice, actions); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunResponse = { trigger, panel, run, request: null, input: null, notice, review, confirm, confirmationId: null, responseValue: null };
-  try { const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunResponse?.panel !== panel) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, run.id, false)) { notice.textContent = responseStateMessage(response); return; } const request = payload.request; activeRunResponse.request = request; if (request.kind === "approval") { detail.textContent = `${request.title}${request.summary ? `: ${request.summary}` : ""}`; } else { detail.textContent = request.question; }
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunResponse?.panel !== panel || activeRunResponse.readbackBlocked) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, run.id, false)) { notice.textContent = responseStateMessage(response); return; } const request = payload.request; activeRunResponse.request = request; if (request.kind === "approval") { detail.textContent = `${request.title}${request.summary ? `: ${request.summary}` : ""}`; } else { detail.textContent = request.question; }
     if (request.kind === "approval" || request.prompt_type === "choice") { for (const choice of request.choices) { const label = document.createElement("label"); const input = document.createElement("input"); input.type = "radio"; input.name = "run-response-choice"; input.value = choice.id; input.addEventListener("change", () => { review.disabled = false; confirm.hidden = true; activeRunResponse.confirmationId = null; }); label.append(input, document.createTextNode(choice.label)); form.append(label); } } else { const label = document.createElement("label"); label.className = "run-response-text-label"; const input = document.createElement("textarea"); input.id = `run-response-${run.id}`; input.rows = 3; label.htmlFor = input.id; label.textContent = "Response"; input.addEventListener("input", () => { const characters = Array.from(input.value); if (characters.length > 2000) input.value = characters.slice(0, 2000).join(""); review.disabled = !input.value.trim(); confirm.hidden = true; activeRunResponse.confirmationId = null; }); form.append(label, input); activeRunResponse.input = input; }
     notice.textContent = "Review your response before sending it."; if (activeRunResponse.input) activeRunResponse.input.focus();
   } catch { if (activeRunResponse?.panel === panel) notice.textContent = "Mentat could not safely load this request."; }
@@ -855,6 +875,103 @@ function appendTimelineEvents(list, events) {
   while (list.children.length > 100) list.firstElementChild?.remove();
 }
 
+function openRequestedRun() {
+  const parameters = [...new URL(window.location.href).searchParams];
+  if (parameters.length !== 1 || parameters[0][0] !== "run" || !/^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/.test(parameters[0][1])) return;
+  const run = renderedRuns.get(parameters[0][1]);
+  const card = [...document.querySelectorAll(".run-card")].find((item) => item.dataset.runId === parameters[0][1]);
+  if (!run || !card) { const elements = runsElements(); if (elements) elements.summary.textContent = "The requested Run is not in the current history. Return to its Task to inspect retained results."; return; }
+  card.tabIndex = -1; card.focus({ preventScroll: true }); card.scrollIntoView?.({ block: "nearest" });
+  const trigger = card.querySelector("[data-run-timeline-open]");
+  if (trigger) openRunTimeline(run, card, trigger);
+}
+
+function checkingTimelineCard(current) {
+  current.card.dataset.runChecking = "true";
+  const status = current.card.querySelector(".run-status");
+  if (status) status.textContent = "Checking";
+  for (const button of current.card.querySelectorAll("[data-run-stop-open], [data-run-message-open], [data-run-response-open]")) button.disabled = true;
+  for (const control of [activeRunStop, activeRunMessage, activeRunResponse]) {
+    if (!control || control.run.id !== current.runId) continue;
+    control.readbackBlocked = true; control.readbackEpoch = (control.readbackEpoch || 0) + 1; control.confirmationId = null;
+    if (control.responseValue) control.responseValue = null;
+    for (const field of control.panel.querySelectorAll("input, textarea, button")) if (!field.matches("[data-run-stop-cancel], [data-run-message-cancel], [data-run-response-cancel]")) field.disabled = true;
+    control.notice.textContent = "Checking the current Run. Your input is retained.";
+  }
+}
+
+function scheduleTimelineReadback(current, delay = 250) {
+  if (activeRunTimeline !== current || !runsElements()) return;
+  checkingTimelineCard(current);
+  if (current.refreshController) { current.trailingRefresh = true; return; }
+  if (current.refreshTimer) return;
+  current.refreshTimer = window.setTimeout(() => { current.refreshTimer = null; void refreshTimelineCard(current); }, delay);
+}
+
+async function refreshTimelineCard(current) {
+  if (activeRunTimeline !== current || !current.card.isConnected) return;
+  if (document.hidden) { scheduleTimelineReadback(current, 3000); return; }
+  const controller = new AbortController(); current.refreshController = controller;
+  const timeout = window.setTimeout(() => controller.abort(), 5000);
+  let retry = false;
+  try {
+    const response = await fetch("/api/runs", { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, signal: controller.signal });
+    if (response.status !== 200 || !response.body) throw new Error("runs_unavailable");
+    const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8", { fatal: true }); let size = 0; let text = "";
+    try { for (;;) { const next = await reader.read(); if (next.done) break; size += next.value.byteLength; if (size > 131072) { await reader.cancel(); throw new Error("runs_oversized"); } text += decoder.decode(next.value, { stream: true }); } text += decoder.decode(); } finally { reader.releaseLock(); }
+    const runs = readRunsPayload(JSON.parse(text));
+    const run = runs?.find((item) => item.id === current.runId);
+    if (!run) throw new Error("run_unavailable");
+    if (activeRunTimeline !== current || !current.card.isConnected) return;
+    const index = [...current.card.parentElement.children].indexOf(current.card);
+    const replacement = createRunCard(run, renderedRunAgents, index);
+    const trigger = replacement.querySelector("[data-run-timeline-open]");
+    if (!trigger) throw new Error("timeline_unavailable");
+    trigger.setAttribute("aria-expanded", "true");
+    const focused = document.activeElement;
+    const focusedCard = current.card.contains(focused);
+    const terminal = ["completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status);
+    replacement.append(current.panel);
+    for (const [control, selector, available] of [
+      [activeRunStop, "[data-run-stop-open]", ["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status)],
+      [activeRunMessage, "[data-run-message-open]", run.status === "running"],
+      [activeRunResponse, "[data-run-response-open]", ["waiting_for_approval", "waiting_for_clarification"].includes(run.status)],
+    ]) {
+      if (!control || control.run.id !== current.runId || control.panel.parentElement !== current.card) continue;
+      replacement.append(control.panel); control.run = run;
+      control.trigger = replacement.querySelector(selector) || trigger;
+      if (!available || current.terminalHint && !terminal) {
+        control.readbackBlocked = true;
+        control.confirmationId = null; control.notice.textContent = "This Run no longer accepts this action. Your input is retained until you close it.";
+        for (const field of control.panel.querySelectorAll("input, textarea, button")) if (!field.matches("[data-run-stop-cancel], [data-run-message-cancel], [data-run-response-cancel]")) field.disabled = true;
+      } else if (control.readbackBlocked) {
+        control.readbackBlocked = false;
+        for (const field of control.panel.querySelectorAll("input, textarea")) field.disabled = false;
+        control.confirmationId = null;
+        if (control === activeRunStop) { delete control.confirm.dataset.runStopConfirm; control.confirm.dataset.runStopReview = ""; control.confirm.textContent = "Review Stop again"; control.confirm.disabled = false; }
+        else { control.confirm.hidden = true; control.confirm.disabled = false; control.review.disabled = control === activeRunResponse && !control.request; }
+        control.notice.textContent = "Run status refreshed. Review this action again before sending.";
+      }
+    }
+    current.card.replaceWith(replacement);
+    if (focusedCard && focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
+    current.card = replacement; current.trigger = trigger; renderedRuns.set(run.id, run);
+    retry = current.terminalHint && !terminal;
+    if (retry) checkingTimelineCard(current);
+  } catch {
+    if (activeRunTimeline === current) { checkingTimelineCard(current); retry = true; }
+  } finally {
+    window.clearTimeout(timeout);
+    if (current.refreshController === controller) current.refreshController = null;
+    if (activeRunTimeline === current && (retry || current.trailingRefresh)) { current.trailingRefresh = false; scheduleTimelineReadback(current, retry ? 3000 : 250); }
+  }
+}
+
+function timelineReadbackHint(current, events) {
+  if (events.some((event) => ["run.completed", "run.failed", "run.stopped", "run.interrupted"].includes(event.type))) current.terminalHint = true;
+  if (events.some((event) => ["run.created", "dispatch.reserved", "run.started", "submission.unknown", "run.interrupted", "approval.required", "run.stopped", "run.completed", "run.failed"].includes(event.type))) scheduleTimelineReadback(current);
+}
+
 function openRunTimeline(run, card, trigger) {
   closeActiveRunTimeline({ restoreFocus: false });
   const panel = document.createElement("section"); panel.className = "run-timeline"; panel.dataset.runTimeline = run.id;
@@ -864,7 +981,8 @@ function openRunTimeline(run, card, trigger) {
   header.append(heading, close);
   const notice = document.createElement("p"); notice.className = "run-timeline-notice"; notice.dataset.runTimelineNotice = ""; notice.setAttribute("aria-live", "polite"); notice.textContent = "Connecting to the live timeline…";
   const list = document.createElement("ol"); list.className = "run-timeline-list"; list.dataset.runTimelineList = "";
-  panel.append(header, notice, list); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunTimeline = { source: null, trigger, panel };
+  panel.append(header, notice, list); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunTimeline = { source: null, trigger, panel, card, runId: run.id, refreshTimer: null, refreshController: null, trailingRefresh: false, terminalHint: false };
+  const current = activeRunTimeline;
   if (!("EventSource" in window)) { notice.textContent = "Live timelines are not supported in this browser."; return; }
   const source = new EventSource(`/api/runs/${encodeURIComponent(run.id)}/events`);
   activeRunTimeline.source = source;
@@ -874,12 +992,13 @@ function openRunTimeline(run, card, trigger) {
     if (!envelope) { notice.textContent = "Mentat could not safely read this timeline."; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; return; }
     if (envelope.reset) { list.replaceChildren(); notice.textContent = resetText; }
     appendTimelineEvents(list, envelope.events);
+    timelineReadbackHint(current, envelope.events);
     if (!envelope.reset && !envelope.events.length && !list.children.length) notice.textContent = "No events yet. Watching this Run.";
     else if (!envelope.reset) notice.textContent = "Watching live events.";
   };
   source.addEventListener("snapshot", (message) => applyEnvelope(message, "Earlier timeline events are no longer available. Showing retained events."));
   source.addEventListener("reset", (message) => applyEnvelope(message, "Earlier timeline events are no longer available. Showing retained events."));
-  source.addEventListener("timeline", (message) => { let value; try { value = JSON.parse(message.data); } catch { value = null; } if (!value || typeof value !== "object" || Object.keys(value).join(",") !== "event" || !runEventIsSafe(value.event, run.id)) { notice.textContent = "Mentat could not safely read this timeline."; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; return; } appendTimelineEvents(list, [value.event]); notice.textContent = "Watching live events."; });
+  source.addEventListener("timeline", (message) => { let value; try { value = JSON.parse(message.data); } catch { value = null; } if (!value || typeof value !== "object" || Object.keys(value).join(",") !== "event" || !runEventIsSafe(value.event, run.id)) { notice.textContent = "Mentat could not safely read this timeline."; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; return; } appendTimelineEvents(list, [value.event]); timelineReadbackHint(current, [value.event]); notice.textContent = "Watching live events."; });
   source.addEventListener("error", (message) => { if (!(message instanceof MessageEvent)) return; let code = "bridge_error"; try { const value = JSON.parse(message.data); if (value && typeof value === "object" && Object.keys(value).join(",") === "code" && ["bridge_unavailable", "bridge_unsupported", "run_not_found", "bridge_error"].includes(value.code)) code = value.code; } catch {} const messages = { bridge_unavailable: "Timeline data is temporarily unavailable.", bridge_unsupported: "This Python bridge does not support Run timelines yet.", run_not_found: "This Run is no longer available.", bridge_error: "Mentat could not safely read this timeline." }; notice.textContent = messages[code]; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; });
   source.onerror = () => { if (activeRunTimeline?.source === source && source.readyState === EventSource.CONNECTING) notice.textContent = "Reconnecting to the live timeline…"; };
 }
