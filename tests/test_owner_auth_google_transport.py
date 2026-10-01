@@ -270,12 +270,25 @@ class GoogleTransportTests(unittest.TestCase):
             for thread in threads:
                 thread.start()
             self.assertTrue(both_started.wait(3))
+            # spawn() reports before the runner has registered ownership.
+            # Wait for that exact state so close() must prove immediate worker
+            # termination rather than letting each 5-second call time out.
+            for _ in range(100):
+                with runner._lock:
+                    registered = len(runner._workers) == 2 and runner._starting == 0
+                if registered:
+                    break
+                time.sleep(0.05)
+            self.assertTrue(registered)
             with self.assertRaisesRegex(transport.GoogleOidcTransportError, "capacity_unavailable"):
                 transport.GoogleWorkerRunner(_spawn=spawn)({"operation": "keys"}, time.monotonic() + 5)
         finally:
-            runner.close()
+            self.assertTrue(runner.close())
             for thread in threads:
-                thread.join(4)
+                # The worker processes are verified dead by close(), but the
+                # callers still need time to unwind communicate() on a loaded
+                # macOS runner before we assert their terminal state.
+                thread.join(10)
             self.assertTrue(runner.close())
         self.assertEqual(len(processes), 2)
         self.assertTrue(all(process.poll() is not None for process in processes))

@@ -3598,7 +3598,7 @@ def bridge_planning_deletion_preview_payload(payload: object) -> tuple[dict[str,
         source, status = preview_mentat_planning_deletion(payload)
         if status != 200:
             return _planning_failure("conflict" if status == 409 else "invalid" if status == 400 else "not_found" if status == 404 else "unavailable", status)
-        if not isinstance(source, dict) or set(source) != {"schema_version", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs", "retained_context_versions", "retained_input_versions", "retained_deliverable_versions"}:
+        if not isinstance(source, dict) or set(source) != {"schema_version", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs", "retained_context_versions", "retained_input_versions", "retained_deliverable_versions", "retained_deliverable_reviews"}:
             raise BridgeConversationProjectionError("planning_deletion_invalid")
         source_kind, source_identifier = _planning_deletion_target(source.get("target_kind"), source.get("target_id"))
         if type(source.get("retained_context_versions")) is not int or not 0 <= source["retained_context_versions"] <= 256:
@@ -3606,6 +3606,8 @@ def bridge_planning_deletion_preview_payload(payload: object) -> tuple[dict[str,
         if type(source.get("retained_input_versions")) is not int or not 0 <= source["retained_input_versions"] <= 256:
             raise BridgeConversationProjectionError("planning_deletion_invalid")
         if type(source.get("retained_deliverable_versions")) is not int or not 0 <= source["retained_deliverable_versions"] <= 256:
+            raise BridgeConversationProjectionError("planning_deletion_invalid")
+        if type(source.get("retained_deliverable_reviews")) is not int or not 0 <= source["retained_deliverable_reviews"] <= 256:
             raise BridgeConversationProjectionError("planning_deletion_invalid")
         if source.get("schema_version") != 1 or (source_kind, source_identifier) != (kind, identifier) or not isinstance(source.get("confirmation_id"), str) or _PLANNING_DELETION_CONFIRMATION.fullmatch(source["confirmation_id"]) is None or type(source.get("has_active_runs")) is not bool:
             raise BridgeConversationProjectionError("planning_deletion_invalid")
@@ -3617,6 +3619,7 @@ def bridge_planning_deletion_preview_payload(payload: object) -> tuple[dict[str,
             "retained_context_versions": source["retained_context_versions"],
             "retained_input_versions": source["retained_input_versions"],
             "retained_deliverable_versions": source["retained_deliverable_versions"],
+            "retained_deliverable_reviews": source["retained_deliverable_reviews"],
         }, 200
     except BridgeConversationProjectionError:
         return _planning_failure("error", 500)

@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2229,6 +2229,43 @@ MIGRATIONS += ((31, """
         UNION SELECT attachment_id FROM mentat_deliverable_files;
 """),)
 
+MIGRATIONS += ((32, """
+    CREATE TABLE mentat_deliverable_review_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        confirmation_epoch BLOB NOT NULL CHECK(length(confirmation_epoch)=32),
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 0 AND 9007199254740991)
+    );
+    INSERT INTO mentat_deliverable_review_state VALUES(1,randomblob(32),0);
+    CREATE TABLE mentat_deliverable_reviews (
+        id TEXT NOT NULL PRIMARY KEY CHECK(length(id)=51),
+        project_id TEXT NOT NULL,
+        project_incarnation TEXT NOT NULL CHECK(length(project_incarnation)=32),
+        project_revision INTEGER NOT NULL CHECK(typeof(project_revision)='integer' AND project_revision>0),
+        revision INTEGER NOT NULL UNIQUE CHECK(typeof(revision)='integer' AND revision>0),
+        action TEXT NOT NULL CHECK(action IN ('accept','request_changes')),
+        note TEXT NOT NULL CHECK(length(note)<=2000),
+        heads_digest TEXT NOT NULL CHECK(length(heads_digest)=64),
+        request_digest TEXT NOT NULL CHECK(length(request_digest)=64),
+        confirmation_digest TEXT NOT NULL UNIQUE CHECK(length(confirmation_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0)
+    );
+    CREATE TRIGGER mentat_deliverable_review_immutable BEFORE UPDATE ON mentat_deliverable_reviews
+        BEGIN SELECT RAISE(ABORT,'deliverable_review.immutable'); END;
+    CREATE TRIGGER mentat_deliverable_review_no_delete BEFORE DELETE ON mentat_deliverable_reviews
+        BEGIN SELECT RAISE(ABORT,'deliverable_review.retained'); END;
+    CREATE TABLE mentat_deliverable_review_versions (
+        review_id TEXT NOT NULL REFERENCES mentat_deliverable_reviews(id) ON DELETE RESTRICT,
+        slot TEXT NOT NULL CHECK(slot IN ('layout','products','steps')),
+        version_id TEXT NOT NULL REFERENCES mentat_deliverable_versions(id) ON DELETE RESTRICT,
+        affected INTEGER NOT NULL CHECK(affected IN (0,1)),
+        PRIMARY KEY(review_id,slot), UNIQUE(review_id,version_id)
+    );
+    CREATE TRIGGER mentat_deliverable_review_version_immutable BEFORE UPDATE ON mentat_deliverable_review_versions
+        BEGIN SELECT RAISE(ABORT,'deliverable_review.immutable'); END;
+    CREATE TRIGGER mentat_deliverable_review_version_no_delete BEFORE DELETE ON mentat_deliverable_review_versions
+        BEGIN SELECT RAISE(ABORT,'deliverable_review.retained'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2565,7 +2602,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2691,6 +2728,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 29 cannot be safely upgraded")
                 if version == 31 and schema_signature_state(connection, 30) != "expected":
                     raise MentatDatabaseError("Mentat schema 30 cannot be safely upgraded")
+                if version == 32 and schema_signature_state(connection, 31) != "expected":
+                    raise MentatDatabaseError("Mentat schema 31 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

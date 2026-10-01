@@ -22,6 +22,7 @@ export type PublicPlanningDeletionPreview = Readonly<{
   retained_context_versions: number;
   retained_input_versions: number;
   retained_deliverable_versions: number;
+  retained_deliverable_reviews: number;
 }>;
 
 export type PublicPlanningDeletionMutation = Readonly<{
@@ -44,7 +45,7 @@ const TASK = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const CONFIRMATION = /^[0-9a-f]{64}$/u;
 const COUNT_KEYS = "artifacts,conversations,projects,runs,tasks";
-const PREVIEW_KEYS = "affected,confirmation_id,has_active_runs,retained_context_versions,retained_deliverable_versions,retained_input_versions,runtime,schema_version,service,status,target_id,target_kind";
+const PREVIEW_KEYS = "affected,confirmation_id,has_active_runs,retained_context_versions,retained_deliverable_reviews,retained_deliverable_versions,retained_input_versions,runtime,schema_version,service,status,target_id,target_kind";
 const MUTATION_KEYS = "action,deletion,runtime,schema_version,service,status,target_id,target_kind";
 const MAXIMUM_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MILLISECONDS = 8_000;
@@ -71,7 +72,8 @@ export function parsePlanningDeletionPreview(value: unknown, targetKind?: Planni
     || !validCounts(value.affected, value.target_kind) || typeof value.has_active_runs !== "boolean"
     || !Number.isSafeInteger(value.retained_context_versions) || (value.retained_context_versions as number) < 0 || (value.retained_context_versions as number) > 256
     || !Number.isSafeInteger(value.retained_input_versions) || (value.retained_input_versions as number) < 0 || (value.retained_input_versions as number) > 256
-    || !Number.isSafeInteger(value.retained_deliverable_versions) || (value.retained_deliverable_versions as number) < 0 || (value.retained_deliverable_versions as number) > 256) throw new PublicPlanningDeletionError("response_invalid");
+    || !Number.isSafeInteger(value.retained_deliverable_versions) || (value.retained_deliverable_versions as number) < 0 || (value.retained_deliverable_versions as number) > 256
+    || !Number.isSafeInteger(value.retained_deliverable_reviews) || (value.retained_deliverable_reviews as number) < 0 || (value.retained_deliverable_reviews as number) > 256) throw new PublicPlanningDeletionError("response_invalid");
   return structuredClone(value) as PublicPlanningDeletionPreview;
 }
 

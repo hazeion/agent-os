@@ -1013,6 +1013,20 @@ bytes with no local path, blob key or digest in the browser. Markdown product
 and step downloads derive from validated saved content. Saving a version
 starts no Agent and grants no approval.
 
+Schema 32 retains one immutable owner decision over the exact current heads
+of all three deliverable slots. Accept covers the complete bundle; a change
+request names one or more affected slots and a bounded owner note. Preview
+confirmation binds the Project incarnation/revision, all three version IDs,
+revisions and content digests, the action, note, affected slots and review
+revision. A changed head or Project invalidates a pending preview. An exact
+repeated confirmation returns the same decision without another write.
+Review history survives confirmed Project deletion, while a new Project using
+the same ID has a distinct incarnation. Restore keeps decisions and rotates
+the private confirmation epoch. These decisions record owner review only;
+they do not certify generated provenance, dispatch an Agent, or create a Task.
+The review authority currently has no browser action; that fixed website
+workflow is a subsequent slice.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains
