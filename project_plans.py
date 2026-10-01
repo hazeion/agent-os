@@ -461,3 +461,52 @@ def read_project_plan(data_dir: Path, project_id: str) -> dict:
                         "versions": versions, "stale_reasons": stale_reasons,
                         "dependency_comparison": dependency_comparison,
                         "execution_available": False}
+
+
+def read_plan_version(data_dir: Path, project_id: str, version_id: str) -> dict:
+    """Read one immutable version of the current Project incarnation only."""
+    from project_context import validate_project_context_connection
+    if (not isinstance(project_id, str) or _PROJECT.fullmatch(project_id) is None
+            or not isinstance(version_id, str) or _VERSION.fullmatch(version_id) is None):
+        _fail("request_invalid")
+    root = Path(data_dir)
+    with private_state_lock(root):
+        with _open_repository_database(root) as (connection, guard):
+            with _guarded_transaction(connection, guard):
+                validate_project_context_connection(connection, require_available=False)
+                ProjectRepository(connection).get(project_id)
+                row = connection.execute(
+                    "SELECT v.revision,v.project_revision,v.content_json,v.created_at,s.head_revision "
+                    "FROM mentat_plan_versions v JOIN mentat_plan_scopes s ON s.id=v.scope_id "
+                    "JOIN mentat_projects p ON p.id=s.project_id "
+                    "AND p.deliverable_incarnation=s.project_incarnation "
+                    "WHERE v.id=? AND s.project_id=? AND s.retired_at IS NULL",
+                    (version_id, project_id),
+                ).fetchone()
+                if row is None:
+                    _fail("version_unavailable")
+                content = json.loads(row[2])
+                nodes = []
+                for node in content["nodes"]:
+                    task = connection.execute(
+                        "SELECT title,revision,project_id,input_incarnation FROM mentat_tasks WHERE id=?",
+                        (node["task_id"],),
+                    ).fetchone()
+                    agent = connection.execute(
+                        "SELECT name,context_incarnation FROM mentat_agents WHERE id=?",
+                        (node["agent_id"],),
+                    ).fetchone()
+                    task_state = "unavailable" if task is None else "current" if (
+                        task[1] == node["task_revision"] and task[2] == project_id
+                        and task[3] == node["task_incarnation"]) else "changed"
+                    agent_state = "unavailable" if agent is None else "current" if (
+                        agent[1] == node["agent_incarnation"]) else "changed"
+                    nodes.append({**{key: value for key, value in node.items()
+                                     if key not in {"task_incarnation", "agent_incarnation"}},
+                                  "task_state": task_state, "task_title": task[0] if task_state == "current" else None,
+                                  "agent_state": agent_state, "agent_name": agent[0] if agent_state == "current" else None})
+                return {"id": version_id, "project_id": project_id,
+                        "revision": row[0], "project_revision": row[1],
+                        "title": content["title"], "nodes": nodes,
+                        "created_at": row[3], "current": row[0] == row[4],
+                        "status": "unapproved"}

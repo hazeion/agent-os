@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -1318,7 +1318,23 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(len(runtime.calls), 2)
 
     def test_immediate_completion_commits_when_conversation_is_archived_in_flight(self):
-        with TemporaryDirectory() as tmpdir:
+        worker = None
+
+        @contextmanager
+        def owned_root():
+            temporary = TemporaryDirectory()
+            try:
+                yield temporary.name
+            finally:
+                if worker is not None and worker.is_alive():
+                    # Do not delete SQLite beneath an undrained worker. Its
+                    # active Thread keeps this owner alive until thread exit;
+                    # the normal TemporaryDirectory finalizer then reclaims it.
+                    worker._mentat_retained_test_root = temporary
+                else:
+                    temporary.cleanup()
+
+        with owned_root() as tmpdir:
             root = Path(tmpdir)
             runtime = FakeRuntime(root)
             runtime.return_completed = True
@@ -1340,20 +1356,34 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=submit_first)
             worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            repository = ConversationRepository(
-                root,
-                supported_runtime_types=(runtime.runtime_type,),
-            )
-            current = repository.read(conversation_id).conversation
-            repository.set_archived(
-                conversation_id,
-                expected_revision=current.revision,
-                archived=True,
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
-            self.assertFalse(worker.is_alive())
+            try:
+                self.assertTrue(runtime.submit_entered.wait(timeout=5))
+                repository = ConversationRepository(
+                    root,
+                    supported_runtime_types=(runtime.runtime_type,),
+                )
+                current = repository.read(conversation_id).conversation
+                repository.set_archived(
+                    conversation_id,
+                    expected_revision=current.revision,
+                    archived=True,
+                )
+            finally:
+                # Failed ordering assertions must release/drain their exact
+                # owned worker before the private SQLite root is removed.
+                runtime.submit_release.set()
+                worker.join(timeout=5)
+                finished_within_budget = not worker.is_alive()
+                stalled = ""
+                if not finished_within_budget:
+                    frame = sys._current_frames().get(worker.ident)
+                    stalled = "".join(traceback.format_stack(frame, limit=12))[:4096] if frame else "worker exited during capture"
+                    print("Slow archived completion worker:\n" + stalled, file=sys.stderr)
+                    worker.join(timeout=25)
+                self.assertFalse(worker.is_alive(), stalled)
+            # Keep the original five-second completion assertion; the longer
+            # diagnostic drain above is cleanup only and cannot make it pass.
+            self.assertTrue(finished_within_budget, stalled)
             if failures:
                 raise failures[0]
             detail = repository.read(conversation_id)
@@ -1363,6 +1393,93 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(detail.conversation.state, "archived")
         self.assertEqual(detail.current_run["status"], "finalizing")
         self.assertEqual(len(runtime.calls), 1)
+
+    def test_archived_completion_ordering_failure_drains_before_root_cleanup(self):
+        original_temporary, original_thread = TemporaryDirectory, threading.Thread
+        actual_prepare = self.prepare_conversation
+        workers, runtimes, cleanup_liveness, failure_liveness = [], [], [], []
+
+        class ObservedThread(original_thread):
+            def start(self):
+                super().start()
+                workers.append(self)
+
+        class ObservedTemporaryDirectory(original_temporary):
+            def cleanup(self):
+                cleanup_liveness.append(any(worker.is_alive() for worker in workers))
+                super().cleanup()
+
+        def prepare(root, runtime):
+            service, conversation_id = actual_prepare(root, runtime)
+            runtimes.append(runtime)
+            # Fail only the original ordering assertion. The actual dispatch,
+            # private root and release gate remain live and must be drained.
+            def fail_ordering(timeout):
+                failure_liveness.append(any(worker.is_alive() for worker in workers))
+                return False
+            runtime.submit_entered.wait = Mock(side_effect=fail_ordering)
+            return service, conversation_id
+
+        try:
+            with patch(__name__ + ".TemporaryDirectory", ObservedTemporaryDirectory), \
+                 patch.object(threading, "Thread", ObservedThread), \
+                 patch.object(self, "prepare_conversation", side_effect=prepare):
+                with self.assertRaisesRegex(AssertionError, "False is not true"):
+                    self.test_immediate_completion_commits_when_conversation_is_archived_in_flight()
+            self.assertTrue(workers)
+            self.assertEqual(failure_liveness, [True])
+            self.assertTrue(cleanup_liveness)
+            self.assertFalse(any(cleanup_liveness))
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            runtimes[0].submit_entered.wait.assert_called_once_with(timeout=5)
+        finally:
+            # Observe liveness above before this regression's safety drain.
+            for runtime in runtimes:
+                runtime.submit_release.set()
+            for worker in workers:
+                worker.join(timeout=5)
+                if worker.is_alive():
+                    worker.join(timeout=25)
+
+    def test_archived_completion_undrained_worker_retains_its_private_root(self):
+        workers, joins = [], []
+        actual_prepare = self.prepare_conversation
+
+        class UndrainedThread:
+            ident = None
+            def __init__(self, *args, **kwargs):
+                self.alive = True
+                workers.append(self)
+            def start(self):
+                pass  # Controlled liveness only; no real child can hang.
+            def join(self, timeout=None):
+                joins.append(timeout)
+            def is_alive(self):
+                return self.alive
+
+        def prepare(root, runtime):
+            result = actual_prepare(root, runtime)
+            runtime.submit_entered.wait = Mock(return_value=False)
+            return result
+
+        try:
+            with patch.object(threading, "Thread", UndrainedThread), \
+                 patch.object(self, "prepare_conversation", side_effect=prepare), \
+                 patch("sys.stderr"):
+                with self.assertRaisesRegex(AssertionError, "True is not false"):
+                    self.test_immediate_completion_commits_when_conversation_is_archived_in_flight()
+            self.assertEqual(joins, [5, 25])
+            self.assertEqual(len(workers), 1)
+            owner = workers[0]._mentat_retained_test_root
+            self.assertTrue(Path(owner.name).is_dir())
+            self.assertTrue(workers[0].is_alive())
+        finally:
+            # Reclaim only after the controlled fixture's liveness is resolved.
+            for worker in workers:
+                worker.alive = False
+                owner = getattr(worker, "_mentat_retained_test_root", None)
+                if owner is not None:
+                    owner.cleanup()
 
     def test_restart_interrupts_an_unattempted_retry_without_resubmission(self):
         with TemporaryDirectory() as tmpdir:
