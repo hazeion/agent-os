@@ -24,6 +24,7 @@ from types import MappingProxyType
 import uuid
 
 from mentat.process_identity import IS_LINUX, linux_process_start_ticks
+from mentat.project_scope_evidence import _issue
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP2_MAGIC = 0x63677270
@@ -131,6 +132,10 @@ class LinuxWorkerScope:
         if self._uid <= 0 or not isinstance(limits, WorkerScopeLimits):
             raise WorkerScopeError("worker_scope.unsupported")
         self._limits = limits
+        try:
+            self._boot_id = uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()).hex
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise WorkerScopeError("worker_scope.identity") from exc
         self._unit = "mentat-project-worker-" + uuid.uuid4().hex + ".scope"
         self._relative = f"/user.slice/user-{self._uid}.slice/user@{self._uid}.service/app.slice/{self.unit}"
         self._path = _CGROUP_ROOT / self._relative.lstrip("/")
@@ -162,6 +167,7 @@ class LinuxWorkerScope:
         self._namespace_handed_off = False
         self._namespace_handles: list[int | socket.socket] = []
         self._runtime_image = None
+        self._closed_witness = None
 
     @property
     def limits(self) -> WorkerScopeLimits:
@@ -178,6 +184,50 @@ class LinuxWorkerScope:
     @property
     def launch_prefix(self) -> tuple[str, ...]:
         return self._launch_prefix
+
+    def _journal_values(self, *, identity: bool = False) -> dict:
+        values = {"unit": self.unit, "boot_id": self._boot_id, "uid": self._uid,
+                  "memory_bytes": self.limits.memory_bytes, "processes": self.limits.processes,
+                  "cpu_percent": self.limits.cpu_percent, "wall_seconds": self.limits.wall_seconds}
+        if identity:
+            if self._identity is None or self._invocation is None or self._process is None or self._ticks is None:
+                raise WorkerScopeError("worker_scope.identity")
+            values.update(invocation=self._invocation, device=self._identity[0], inode=self._identity[1],
+                          pid=self._process.pid, start_ticks=self._ticks)
+        return values
+
+    def journal_plan(self):
+        """Private prelaunch facts; not Run, launch or kernel ownership authority."""
+        with self._lock:
+            if self._closed or self._process is not None or self._deadline is not None:
+                raise WorkerScopeError("worker_scope.identity")
+            return _issue("planned", self, self._journal_values())
+
+    def journal_owned_identity(self):
+        """Issue private historical identity only after exact current readback."""
+        with self._lock:
+            if (self._closed or self._descriptor is None or self._process is None
+                    or self._process.poll() is not None or self._deadline is None
+                    or self.deadline_hit or time.monotonic() >= self._deadline
+                    or linux_process_start_ticks(self._process.pid) != self._ticks):
+                raise WorkerScopeError("worker_scope.identity")
+            details = os.fstat(self._descriptor)
+            state = self._state()
+            if ((details.st_dev, details.st_ino) != self._identity or self._empty()
+                    or state["ActiveState"] != "active" or state["ControlGroup"] != self._relative
+                    or state["InvocationID"] != self._invocation):
+                raise WorkerScopeError("worker_scope.identity")
+            _effective_limits(self._descriptor, self.limits)
+            if self.deadline_hit or time.monotonic() >= self._deadline:
+                raise WorkerScopeError("worker_scope.deadline")
+            return _issue("owned", self, self._journal_values(identity=True))
+
+    def journal_closed_identity(self):
+        """Return only this object's previously verified whole-scope closure."""
+        with self._lock:
+            if not self._closed or self._closed_witness is None:
+                raise WorkerScopeError("worker_scope.cleanup_unknown")
+            return self._closed_witness
 
     def _state(self) -> dict[str, str]:
         result = subprocess.run(
@@ -436,3 +486,5 @@ class LinuxWorkerScope:
             if self._runtime_image is not None:
                 self._runtime_image.release_worker(self)
                 self._runtime_image = None
+            if self._identity is not None and self._invocation is not None and self._ticks is not None:
+                self._closed_witness = _issue("closed", self, self._journal_values(identity=True))

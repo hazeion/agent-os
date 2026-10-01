@@ -182,6 +182,8 @@ def archival_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
     if version < 43:
         return frozenset()
     _validate_shared_graph(connection)
+    from project_scope_journal import require_archival_scopes
+    require_archival_scopes(connection)
     runs = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_runs WHERE source='project_proposal'")}
     claims = {str(row[0]) for row in connection.execute("SELECT run_id FROM mentat_project_worker_generations")}
     if runs != claims or len(runs) > MAX_GENERATIONS:
