@@ -1,7 +1,7 @@
 """Private Linux execution-scope ownership for the Project worker controller.
 
-This component grants no Run, input, broker, or adapter authority. The trusted
-controller must admit a Run and construct its fixed sandbox command separately.
+This component grants no Run or adapter authority. A trusted controller must
+admit a Run separately before supplying its prepared namespace and broker.
 No browser or bridge route accepts commands, units, cgroup paths, or PIDs here.
 Local scope termination does not establish an external provider outcome.
 """
@@ -9,6 +9,7 @@ Local scope termination does not establish an external provider outcome.
 from __future__ import annotations
 
 import ctypes
+import errno
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -114,9 +115,9 @@ def _effective_limits(descriptor: int, requested: WorkerScopeLimits) -> KernelSc
 class LinuxWorkerScope:
     """Own one freshly generated user scope, pinned before worker handoff.
 
-    start_inert owns the fixed bootstrap and its control socket. The bootstrap
-    can receive no Agent, input or broker capability in this component; it
-    exits on startup-refusal EOF. Production namespace/Run handoff is separate.
+    start_inert owns the fixed bootstrap and its control socket. A separately
+    prepared namespace may be handed off once after kernel verification. No
+    browser route or Run-admission path grants that private capability.
     All observations are private controller evidence, not browser projections.
     """
 
@@ -158,6 +159,8 @@ class LinuxWorkerScope:
         self._deadline: float | None = None
         self.deadline_hit = False
         self.deadline_cleanup_verified = False
+        self._namespace_handed_off = False
+        self._namespace_handles: list[int | socket.socket] = []
 
     @property
     def limits(self) -> WorkerScopeLimits:
@@ -196,7 +199,7 @@ class LinuxWorkerScope:
         with self._lock:
             if self._process is not None or self._closed:
                 raise WorkerScopeError("worker_scope.launcher")
-            parent, child = socket.socketpair()
+            parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             parent.settimeout(2)
             self._control = parent
             self._deadline = time.monotonic() + self.limits.wall_seconds
@@ -294,9 +297,12 @@ class LinuxWorkerScope:
             if fields.get("populated") not in {"0", "1"}:
                 raise WorkerScopeError("worker_scope.events")
             return fields["populated"] == "0"
-        except FileNotFoundError:
-            # Kernel cgroup directories do not expose POSIX unlink counts.
-            # Removed control files on this held cgroup2 inode plus inactive
+        except OSError as exc:
+            if exc.errno not in {errno.ENOENT, errno.ENODEV}:
+                raise
+            # Kernel cgroup directories do not expose POSIX unlink counts;
+            # a removed open control file can also report ENODEV. Removed
+            # control files on this held cgroup2 inode plus inactive
             # original-unit readback establish removal, never a signal target.
             _require_cgroup2(self._descriptor)
             state = self._state()
@@ -333,8 +339,12 @@ class LinuxWorkerScope:
                         raise WorkerScopeError("worker_scope.stop")
                 else:
                     try:
-                        if os.write(killer, b"1\n") != 2:
-                            raise WorkerScopeError("worker_scope.stop")
+                        try:
+                            if os.write(killer, b"1\n") != 2:
+                                raise WorkerScopeError("worker_scope.stop")
+                        except OSError as exc:
+                            if exc.errno != errno.ENODEV or not self._empty():
+                                raise
                     finally:
                         os.close(killer)
             if self._process is not None:
@@ -362,6 +372,34 @@ class LinuxWorkerScope:
             if self._control.recv(64) != b"DETACHED\n":
                 raise WorkerScopeError("worker_scope.handoff")
 
+    def handoff_namespace(self, prepared, broker):
+        """One fixed, private descriptor handoff; no command or Run factory."""
+        from mentat.project_worker_namespace import PreparedNamespace, NamespaceWorker, receive_ready
+        with self._lock:
+            if (type(prepared) is not PreparedNamespace or self._namespace_handed_off
+                    or self._descriptor is None or self._control is None or self.deadline_hit
+                    or self._deadline is None or time.monotonic() >= self._deadline):
+                raise WorkerScopeError("worker_scope.handoff")
+            state = self._state()
+            if (state["InvocationID"] != self._invocation or state["ControlGroup"] != self._relative
+                    or state["ActiveState"] != "active" or self._empty()
+                    or time.monotonic() >= self._deadline):
+                raise WorkerScopeError("worker_scope.identity")
+            _effective_limits(self._descriptor, self.limits)
+            if self.deadline_hit or time.monotonic() >= self._deadline:
+                raise WorkerScopeError("worker_scope.deadline")
+            # Reserve before send: an ambiguous partial handoff must not retry.
+            self._namespace_handed_off = True
+            parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            self._namespace_handles.append(parent)
+            try:
+                prepared.handoff(self._control, broker, child, self.limits.wall_seconds, self._deadline)
+                exports = receive_ready(parent, min(self._deadline, time.monotonic() + 2))
+                self._namespace_handles.append(exports)
+                return NamespaceWorker(self, parent, exports)
+            finally:
+                child.close()
+
     def _deadline_stop(self) -> None:
         self.deadline_hit = True
         try:
@@ -384,4 +422,10 @@ class LinuxWorkerScope:
                 if descriptor is not None:
                     os.close(descriptor)
             self._descriptor = self._pidfd = None
+            for handle in self._namespace_handles:
+                if isinstance(handle, socket.socket):
+                    handle.close()
+                else:
+                    os.close(handle)
+            self._namespace_handles.clear()
             self._closed = True
