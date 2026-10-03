@@ -5,6 +5,30 @@ execution to capability-scoped Agent runtimes.
 
 ## Language
 
+**Owner**:
+The one person authorized to control a Mentat installation, with independent
+authenticated sessions across devices.
+_Avoid_: Team member, runtime account
+
+**Project brief**:
+The owner's shared goals, constraints and supplied context for a Project.
+Agent access requires an explicit grant; association alone is not access.
+_Avoid_: Hidden prompt, Conversation planning link
+
+**Lead Agent**:
+An Agent assigned to propose a Project plan, coordinate approved Task work and
+collect results for owner review. The role does not grant additional capabilities.
+_Avoid_: Unrestricted administrator, supervisor runtime
+
+**Review checkpoint**:
+A point in an approved plan where dependent work waits for an owner decision.
+_Avoid_: Automatic acceptance, completed Run
+
+**Deliverable**:
+A retained, versioned result of Task work that the owner can inspect and revise.
+Completion of a Run does not itself mean the owner accepted its deliverables.
+_Avoid_: Runtime payload, transient response
+
 **Agent**:
 A durable Mentat-owned worker identity with a private runtime configuration and
 declared capabilities.

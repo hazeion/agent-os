@@ -118,7 +118,7 @@ export type PublicPlanningTaskExecution = ServiceEnvelope & {
     recovery: { available: boolean; run_id: string | null; run_revision: number | null };
   };
 };
-export type PublicPlanningRunOncePreview = ServiceEnvelope & { action: "run_once"; task: PublicPlanningExecutionTask; requires_confirmation: true; confirmation_id: string };
+export type PublicPlanningRunOncePreview = ServiceEnvelope & { action: "run_once"; task: PublicPlanningExecutionTask; objective: { text: string; redacted: boolean; truncated: boolean }; requires_confirmation: true; confirmation_id: string };
 export type PublicPlanningTaskExecutionMutation = PublicPlanningTaskExecution & { action: "run_once" | "accept" | "request_changes"; duplicate: boolean };
 
 export type PublicPlanningAssociation = { project_id: string; task_id: string | null };

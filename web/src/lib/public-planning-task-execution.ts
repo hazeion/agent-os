@@ -71,7 +71,9 @@ export function parsePlanningTaskExecution(value: unknown, taskId?: string): Pub
 }
 
 export function parsePlanningRunOncePreview(value: unknown, taskId?: string, expectedRevision?: number): PublicPlanningRunOncePreview {
-  if (!record(value) || !keys(value, "action,confirmation_id,requires_confirmation,runtime,schema_version,service,status,task") || !validEnvelope(value) || value.action !== "run_once" || !validExecutionTask(value.task) || taskId !== undefined && value.task.id !== taskId || expectedRevision !== undefined && value.task.revision !== expectedRevision || value.requires_confirmation !== true || typeof value.confirmation_id !== "string" || !/^[0-9a-f]{64}$/u.test(value.confirmation_id)) throw new PublicPlanningError("response_invalid");
+  if (!record(value) || !keys(value, "action,confirmation_id,objective,requires_confirmation,runtime,schema_version,service,status,task") || !validEnvelope(value) || value.action !== "run_once" || !validExecutionTask(value.task) || taskId !== undefined && value.task.id !== taskId || expectedRevision !== undefined && value.task.revision !== expectedRevision || value.requires_confirmation !== true || typeof value.confirmation_id !== "string" || !/^[0-9a-f]{64}$/u.test(value.confirmation_id)) throw new PublicPlanningError("response_invalid");
+  const objective = value.objective;
+  if (!record(objective) || !keys(objective, "redacted,text,truncated") || typeof objective.text !== "string" || !objective.text || objective.text.trim() !== objective.text || [...objective.text].length > 20_000 || /\p{C}/u.test(objective.text.replace(/[\n\t]/gu, "")) || typeof objective.redacted !== "boolean" || typeof objective.truncated !== "boolean") throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningRunOncePreview;
 }
 

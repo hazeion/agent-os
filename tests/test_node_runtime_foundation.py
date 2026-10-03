@@ -27,7 +27,7 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertEqual(lock["packages"][""]["engines"]["node"], ">=24.19.0 <25")
         self.assertEqual(lock["packages"][""]["dependencies"], package["dependencies"])
         self.assertEqual(lock["packages"][""]["devDependencies"], package["devDependencies"])
-        self.assertEqual(package["dependencies"]["next"], "16.3.4")
+        self.assertEqual(package["dependencies"]["next"], "16.3.6")
         self.assertEqual(package["devDependencies"]["@types/node"], "24.13.3")
         self.assertEqual(package["devDependencies"]["@puppeteer/browsers"], "3.2.1")
         self.assertEqual(package["devDependencies"]["chrome-launcher"], "1.2.1")
@@ -159,9 +159,12 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn("npm --prefix web run lighthouse:gate", quality)
         self.assertIn('preview_data_dir="$RUNNER_TEMP/mentat-web-preview-data"', quality)
         self.assertIn(
-            'timeout --preserve-status --signal=INT --kill-after=10s 10s env MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port"',
+            'timeout --preserve-status --signal=INT --kill-after=10s 90s env PYTHONUNBUFFERED=1 MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port"',
             quality,
         )
+        self.assertIn('if [ "$bootstrap_ready" != true ]; then', quality)
+        self.assertIn('if ! wait "$bootstrap_pid"; then', quality)
+        self.assertIn("Bootstrap remained reachable after shutdown", quality)
         self.assertIn('test -f "$preview_data_dir/private/console/mentat.sqlite3"', quality)
         self.assertIn("python scripts/mentat_web_preview.py --port 8896", quality)
         self.assertIn(

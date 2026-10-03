@@ -1130,6 +1130,13 @@ unknown evidence or competing execution/delegation keeps recovery unavailable.
 Recovery records the operator decision and preserves Run/Event evidence. It
 neither accepts failed output nor starts another Run; Run once remains separate.
 
+Run once previews the server-derived execution objective, including only review
+feedback bound to the exact next Task revision. Confirmation binds the raw
+objective digest together with Task, attempt and Agent binding state. The
+browser receives at most 20,000 characters through the fixed bridge projection,
+with explicit redaction and truncation indicators; displayed text is never
+accepted back as execution authority. A changed revision requires a new preview.
+
 Browser reminders are advisory UI behavior over Mentat-owned timestamps. The
 browser asks for notification permission only after an explicit operator action
 and locally deduplicates delivered notifications. No reminder mutates Hermes or

@@ -13,6 +13,7 @@ from mentat_db import connect
 from private_state import history_path
 from run_repository import RunRepository, RunRepositoryConflict, RunRepositoryValidationError, runtime_binding_digest
 import server
+from mentat.local_bridge import bridge_planning_task_run_once_preview_payload
 from task_repository import TaskRepository
 from task_delegation_receipts import DelegationActionReceiptRepository
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
@@ -87,6 +88,65 @@ class TaskExecutionRecoveryTests(unittest.TestCase):
             self.assertNotEqual(second.run_id, before_run.id)
             self.assertEqual(repository.get_run(before_run.id), before_run)
             repository.validate()
+
+    def test_run_once_preview_shows_exact_revision_bound_feedback_and_drops_stale_feedback(self):
+        with self.fixture() as (root, connection, repository, task, _digest):
+            request = self.request(repository, task["id"])
+            repository.review_task_execution(**request)
+            planned = TaskRepository(connection).get(task["id"])
+            projects = [{"id": "project_mentat", "name": "Mentat", "status": "active"}]
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "_planning_projects_under_lock", return_value=projects), patch.object(server, "_planning_execution_binding_state", return_value="fixed-test-binding"):
+                preview, status = server.mentat_planning_task_run_once_preview(task["id"], {"expected_revision": planned.revision})
+                self.assertEqual(status, 200)
+                self.assertEqual(preview["objective"], {
+                    "text": "Perform bounded work.\n\nOperator-requested changes for this exact next attempt:\n" + request["note"],
+                    "redacted": False, "truncated": False,
+                })
+                bridged, bridge_status = bridge_planning_task_run_once_preview_payload(task["id"], {"expected_revision": planned.revision})
+                self.assertEqual(bridge_status, 200)
+                self.assertEqual(bridged["objective"], preview["objective"])
+                self.assertEqual(bridged["confirmation_id"], preview["confirmation_id"])
+                for objective in (None, {"text": "x", "redacted": False}, {"text": "x" * 20_001, "redacted": False, "truncated": False}, {"text": "x\u202ey", "redacted": False, "truncated": False}):
+                    with patch.object(server, "mentat_planning_task_run_once_preview", return_value=({**preview, "objective": objective}, 200)):
+                        rejected, rejected_status = bridge_planning_task_run_once_preview_payload(task["id"], {"expected_revision": planned.revision})
+                        self.assertEqual(rejected_status, 500)
+                        self.assertNotIn("objective", rejected)
+                before = preview["confirmation_id"]
+                changed = {**planned.document, "description": "Use revised garage measurements."}
+                updated = TaskRepository(connection).replace(changed, expected_revision=planned.revision)
+                _, status = server.mentat_planning_task_run_once_preview(task["id"], {"expected_revision": planned.revision})
+                self.assertEqual(status, 409)
+                preview, status = server.mentat_planning_task_run_once_preview(task["id"], {"expected_revision": updated.revision})
+                self.assertEqual(status, 200)
+                self.assertEqual(preview["objective"]["text"], changed["description"])
+                self.assertNotEqual(before, preview["confirmation_id"])
+                response, status = server.mentat_planning_task_run_once(task["id"], {
+                    "expected_revision": updated.revision, "confirmation_id": before,
+                    "idempotency_key": "stale-preview-must-not-dispatch",
+                })
+                self.assertEqual(status, 409)
+                self.assertEqual(response["error_code"], "planning_execution.confirmation_stale")
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0], 1)
+
+    def test_objective_projection_redacts_and_bounds_without_modifying_execution_text(self):
+        objective = "Read /home/operator/private/report.txt and keep API_KEY=private-canary secret.\nThen summarize."
+        projected = server._planning_execution_objective_projection(objective)
+        self.assertTrue(projected["redacted"])
+        self.assertNotIn("private-canary", projected["text"])
+        self.assertNotIn("/home/operator", projected["text"])
+        self.assertIn("\nThen summarize.", projected["text"])
+        self.assertEqual(server._planning_execution_objective_projection("x\u202ey")["text"], "x\ufffdy")
+        # Redaction markers can expand otherwise bounded source text.
+        expanded = server._planning_execution_objective_projection("/tmp/x " * 2800)
+        self.assertLessEqual(len(expanded["text"]), 20_000)
+        self.assertTrue(expanded["truncated"])
+
+    def test_confirmation_binds_raw_objective_even_when_public_redaction_is_identical(self):
+        safe = {"id": "task-a", "revision": 1, "workflow_stage": "planned", "assigned_agent_id": "agent-a"}
+        first = "Use API_KEY=first-secret"
+        second = "Use API_KEY=second-secret"
+        self.assertEqual(server._planning_execution_objective_projection(first), server._planning_execution_objective_projection(second))
+        self.assertNotEqual(server._planning_execution_confirmation(safe, (), "binding", first), server._planning_execution_confirmation(safe, (), "binding", second))
 
     def test_recovery_requires_exact_task_run_and_request_and_never_accepts_failure(self):
         with self.fixture() as (_root, connection, repository, task, _digest):
