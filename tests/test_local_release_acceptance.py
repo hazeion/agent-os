@@ -34,6 +34,26 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
         for key in ("OPENAI_API_KEY", "MENTAT_DATA_DIR", "MENTAT_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "HTTPS_PROXY"):
             self.assertNotIn(key, environment)
 
+    def test_offline_journey_requires_current_backup_name_before_restore_preview(self):
+        for version in (5, 4, 6):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                name = f"mentat-backup-v{version}-" + "a" * 24 + ".zip"
+                with patch.object(journey, "start"), patch.object(journey, "stop"), patch.object(
+                    journey, "read_back"
+                ), patch.object(journey, "request", side_effect=["Projects &amp; Tasks", {"project": {"id": "project_exact"}}, {"task": {"id": "task_exact"}}]), patch.object(
+                    journey, "cli", side_effect=[{"ok": True}, {"status": "created", "backup_name": name}, {"status": "ready", "issues": []}]
+                ) as cli:
+                    if version == 5:
+                        self.assertTrue(journey.run()["ok"])
+                        self.assertEqual(cli.call_args.args, ("restore", [str(journey.data / "backups" / name)]))
+                    else:
+                        with self.assertRaisesRegex(acceptance.AcceptanceFailure, "backup_name"):
+                            journey.run()
+                        self.assertEqual(cli.call_count, 2)
+                        self.assertNotIn("offline_backup_validated_by_restore_preview", journey.completed)
+
     def test_nonfixed_requests_fail_before_network(self):
         with TemporaryDirectory() as directory:
             journey = acceptance.Journey(Path(directory))

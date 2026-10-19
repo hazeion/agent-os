@@ -365,7 +365,7 @@ class Journey:
         backup = self.cli("backup")
         require(backup.get("status") in {"created", "existing"}, "backup_failed")
         name = backup.get("backup_name")
-        require(isinstance(name, str) and re.fullmatch(r"mentat-backup-v[1-5]-[0-9a-f]{24}\.zip", name), "backup_name")
+        require(isinstance(name, str) and re.fullmatch(r"mentat-backup-v5-[0-9a-f]{24}\.zip", name), "backup_name")
         preview = self.cli("restore", [str(self.data / "backups" / name)])
         require(preview.get("status") in {"ready", "not_required"} and not preview.get("issues"),
                 "backup_preview_failed")

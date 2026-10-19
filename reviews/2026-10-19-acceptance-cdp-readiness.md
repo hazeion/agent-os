@@ -50,3 +50,14 @@ syntax and git diff checks passed. Evidence:
 /private/tmp/mentat-acceptance-cdp-readiness-tests.log. Independent final
 reviews remain pending. No heavy build, app or
 browser has been launched from this branch.
+
+Root's final review identified an inherited permissive backup-name check. The
+runner now requires exact current format5 before calling restore preview. A
+Journey.run boundary regression preserves the actual restore-preview call for
+v5 and refuses v4 or futurev6 before preview or backup-scenario completion.
+The first new mock used an unescaped title and exhausted the existing two-read
+HTML branch; its fixture was corrected to the real escaped title. Final focused
+verification:22 Python methods PASS in1.732s, ResourceWarnings as errors,
+including all six Node cases. Compilation, Node syntax and diff checks pass.
+Root and peer independently cleared1f1df4a before this narrow followup; final
+followup review remains required. No actual app/browser run has occurred.
