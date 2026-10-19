@@ -46,3 +46,26 @@ the full real journey methods are independently AST-identical to frozen13a3.
 No actual app or browser has been relaunched. The failed journey, original
 report and read-only cleanup evidence remain preserved at their existing paths.
 This reporting fix requires two independent reviews before any controlled run.
+
+## One authorized controlled diagnostic run
+
+After root and an independent peer cleared10b5181, root authorized one fresh
+execution using that reporting source and the verified frozen13a3 standalone.
+All tracked source blobs and all2451runtime files matched; the normalized
+runtime manifest remainedffefc85397738902015943646ec78e3daea943b4983e33ab3593de7654412bbe.
+The prior failed state was preserved and no diagnostic port wait was used.
+
+This one run failed in browser with operation_timeout: the existing browser
+wait exceeded40seconds. Unlike the original masked report, all six exact owned
+cleanup observations were true and owned_state_removed was true. The harness
+process is absent and no disposable journey root remains. This establishes the
+diagnostic timeout, not its underlying browser/render cause or the lost primary
+error of the original run. No further attempt was made. It does not qualify all
+four scenarios or the future graph containing backend fixes.
+
+Report: /private/tmp/mentat-local-acceptance-diagnostic-10b5181-report.json.
+Read-only cleanup/provenance evidence:
+/private/tmp/mentat-local-acceptance-diagnostic-10b5181-cleanup-evidence.json.
+The frozen source tree and runtime manifest remain unchanged, stderr is empty,
+and no observer signals or deletions were performed. The original failed
+journey remains preserved.
