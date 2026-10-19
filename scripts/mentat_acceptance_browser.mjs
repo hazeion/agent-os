@@ -22,6 +22,7 @@ export function configuration(value) {
 }
 export function expression(config) {
   return `(() => {
+    const documentRoot = document.documentElement;
     const project = [...document.querySelectorAll('main button[data-project-id]')].find(row => row.dataset.projectId === ${JSON.stringify(config.project_id)});
     const task = [...document.querySelectorAll('main li[data-planning-task-id]')].find(row => row.dataset.planningTaskId === ${JSON.stringify(config.task_id)});
     const renderable = node => {
@@ -44,8 +45,8 @@ export function expression(config) {
     const taskText = task?.querySelector('strong');
     return {
       document_complete: document.readyState === 'complete' && location.origin === ${JSON.stringify(config.origin)} && location.pathname === '/tasks',
-      shell_hydrated: document.documentElement.dataset.shellHydrated === 'true',
-      shell_runtime_ready: document.documentElement.dataset.shellRuntime === 'ready',
+      shell_hydrated: documentRoot?.dataset?.shellHydrated === 'true',
+      shell_runtime_ready: documentRoot?.dataset?.shellRuntime === 'ready',
       bridge_ready: document.querySelector('[data-bridge-status]')?.dataset.state === 'ready',
       workspace_exists: Boolean(document.querySelector('.projects-tasks-workspace')),
       heading_correct: document.querySelector('#main-content h1')?.textContent.trim() === 'Projects & Tasks',
@@ -217,6 +218,9 @@ export async function observe(input, dependencies = {}) {
       if (transport.socket_error) throw new TransportError();
       if (transport.socket_closed) throw new TransportClosed();
       if (remaining() <= 0) throw new ProtocolTimeout();
+      if (Object.hasOwn(snapshot, 'exceptionDetails')) {
+        checks.no_js_exceptions = false; result.code = 'browser_evaluation_exception'; publish(); return result;
+      }
       const { diagnostics: observedDiagnostics, observation: observedObservation, ...observedChecks } = snapshot.result?.value || {};
       const value = { ...observedChecks, no_js_exceptions: exceptions === 0 && !snapshot.exceptionDetails };
       if (!validChecks(value) || !validDiagnostics(observedDiagnostics) || !observedObservation || Object.keys(observedObservation).sort().join(',') !== 'location_category,ready_state' || !['loading','interactive','complete','other'].includes(observedObservation.ready_state) || !['tasks','blank','browser_error','auth','other'].includes(observedObservation.location_category)) { result.code = 'browser_readiness_invalid'; return result; }

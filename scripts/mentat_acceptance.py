@@ -373,7 +373,7 @@ class Journey:
                 require(set(value) == {"schema_version", "ready", "code", "stage", "checks", "diagnostics", "observation", "transport"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
                         and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed", "browser_protocol_timeout", "browser_transport_closed", "browser_transport_error",
-                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_target_ambiguous", "browser_target_rejected"},
+                                             "browser_readiness_invalid", "browser_evaluation_exception", "browser_js_exception", "browser_configuration_invalid", "browser_target_ambiguous", "browser_target_rejected"},
                         "browser_output_invalid")
                 final = value
             latest = dict(value["checks"])

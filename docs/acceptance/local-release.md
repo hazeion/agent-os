@@ -136,3 +136,10 @@ original parent deadline. Unexpected socket close/error rejects pending waits
 with a fixed code. Passive transport counts, boolean close/error flags and a
 numeric close code are bounded and never substitute for readiness. Raw frames,
 response IDs, URLs and close/error reasons are omitted.
+
+A document may temporarily have no root element. The probe reads that root once
+and reports false shell markers while it is absent; this cannot satisfy the
+unchanged eleven readiness checks. An evaluation reply containing
+`exceptionDetails` fails as `browser_evaluation_exception` with the exception
+predicate false. Missing or malformed values without an exception remain
+`browser_readiness_invalid`; neither kind is retried or treated as readiness.
