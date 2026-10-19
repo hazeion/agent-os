@@ -67,5 +67,13 @@ without skips or ResourceWarnings:
 - `/private/tmp/mentat-current-admission-fix-final.log`
 - `/private/tmp/mentat-current-admission-fix-exact-concurrency.log`
 
-Extended concurrency repetitions and final exact-commit reviews are pending. These
+Extended repetitions finished with 40/40 passes for each unchanged concurrency
+target. Those processes started before the final `O_NONBLOCK` addition, so their
+logs are supporting functional evidence rather than an exact-final-head gate:
+
+- `/private/tmp/mentat-current-capacity-race-final.log`
+- `/private/tmp/mentat-current-context-send-race-qualified.log`
+
+The 37 focused methods and two unchanged concurrency targets above ran with all
+final safeguards, including `O_NONBLOCK`. Final exact-commit reviews are pending. These
 focused results do not qualify a rebuilt artifact or the full integrated suite.
