@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2359,6 +2359,147 @@ MIGRATIONS += ((35, """
         BEGIN SELECT RAISE(ABORT,'run.identity_immutable'); END;
 """),)
 
+MIGRATIONS += ((36, """
+    CREATE TABLE mentat_run_attention (
+        slot_id INTEGER PRIMARY KEY,
+        run_id TEXT NOT NULL CHECK(length(run_id) BETWEEN 1 AND 128),
+        incarnation TEXT NOT NULL CHECK(length(incarnation)=32 AND incarnation NOT GLOB '*[^0-9a-f]*'),
+        item_id TEXT CHECK(item_id IS NULL OR length(item_id)=43 AND item_id GLOB 'inbox_item_[0-9a-f]*'),
+        revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(revision)='integer' AND revision BETWEEN 0 AND 2147483647),
+        created_at REAL CHECK(created_at IS NULL OR created_at>0),
+        updated_at REAL CHECK(updated_at IS NULL OR updated_at>=created_at),
+        read_at REAL CHECK(read_at IS NULL OR read_at>=created_at),
+        acknowledged_at REAL CHECK(acknowledged_at IS NULL OR acknowledged_at>=created_at),
+        resolved_at REAL CHECK(resolved_at IS NULL OR resolved_at>=created_at),
+        last_action_digest TEXT CHECK(last_action_digest IS NULL OR length(last_action_digest)=64),
+        last_expected_revision INTEGER CHECK(last_expected_revision IS NULL OR last_expected_revision BETWEEN 1 AND 2147483646),
+        retired_at REAL CHECK(retired_at IS NULL OR retired_at>0),
+        retired_source TEXT CHECK(retired_source IS NULL OR retired_source IN ('console','task_dispatch')),
+        retired_status TEXT CHECK(retired_status IS NULL OR retired_status IN ('completed','failed','cancelled','stopped','interrupted')),
+        retired_dispatch_state TEXT CHECK(retired_dispatch_state IS NULL OR retired_dispatch_state IN ('legacy','reserved','submitting','accepted','rejected','unknown')),
+        retired_partial INTEGER CHECK(retired_partial IS NULL OR retired_partial IN (0,1)),
+        retired_terminal_finalized INTEGER CHECK(retired_terminal_finalized IS NULL OR retired_terminal_finalized IN (0,1)),
+        retired_state_revision INTEGER CHECK(retired_state_revision IS NULL OR retired_state_revision>=1),
+        retired_task_id TEXT CHECK(retired_task_id IS NULL OR length(retired_task_id) BETWEEN 1 AND 160),
+        retired_conversation_id TEXT CHECK(retired_conversation_id IS NULL OR length(retired_conversation_id) BETWEEN 1 AND 128),
+        retired_agent_id TEXT CHECK(retired_agent_id IS NULL OR length(retired_agent_id) BETWEEN 1 AND 128),
+        retired_run_created_at TEXT CHECK(retired_run_created_at IS NULL OR length(retired_run_created_at) BETWEEN 1 AND 64),
+        retired_run_updated_at TEXT CHECK(retired_run_updated_at IS NULL OR length(retired_run_updated_at) BETWEEN 1 AND 64),
+        retired_run_completed_at TEXT CHECK(retired_run_completed_at IS NULL OR length(retired_run_completed_at) BETWEEN 1 AND 64),
+        CHECK((item_id IS NULL AND revision=0 AND created_at IS NULL AND updated_at IS NULL
+               AND read_at IS NULL AND acknowledged_at IS NULL AND resolved_at IS NULL
+               AND last_action_digest IS NULL AND last_expected_revision IS NULL AND retired_at IS NULL)
+           OR (item_id IS NOT NULL AND revision>=1 AND created_at>0 AND updated_at>=created_at)),
+        CHECK((retired_at IS NULL AND retired_source IS NULL AND retired_status IS NULL
+               AND retired_dispatch_state IS NULL AND retired_partial IS NULL
+               AND retired_terminal_finalized IS NULL AND retired_state_revision IS NULL
+               AND retired_task_id IS NULL AND retired_conversation_id IS NULL
+               AND retired_agent_id IS NULL AND retired_run_created_at IS NULL
+               AND retired_run_updated_at IS NULL AND retired_run_completed_at IS NULL)
+           OR (retired_at IS NOT NULL AND item_id IS NOT NULL AND retired_source IS NOT NULL
+               AND retired_status IS NOT NULL AND retired_dispatch_state IS NOT NULL
+               AND retired_partial IS NOT NULL AND retired_terminal_finalized IS NOT NULL
+               AND retired_state_revision IS NOT NULL AND retired_run_created_at IS NOT NULL
+               AND retired_run_updated_at IS NOT NULL))
+    );
+    CREATE UNIQUE INDEX mentat_run_attention_source ON mentat_run_attention(run_id,incarnation);
+    CREATE UNIQUE INDEX mentat_run_attention_item ON mentat_run_attention(item_id)
+        WHERE item_id IS NOT NULL;
+    CREATE TRIGGER mentat_run_attention_source_unique BEFORE INSERT ON mentat_run_attention
+        WHEN EXISTS(SELECT 1 FROM mentat_run_attention
+            WHERE run_id=NEW.run_id AND incarnation=NEW.incarnation)
+        BEGIN SELECT RAISE(ABORT,'run_attention.source_collision'); END;
+    CREATE TRIGGER mentat_run_attention_identity_immutable BEFORE UPDATE ON mentat_run_attention
+        WHEN NEW.slot_id IS NOT OLD.slot_id OR NEW.run_id IS NOT OLD.run_id
+          OR NEW.incarnation IS NOT OLD.incarnation
+          OR (OLD.item_id IS NOT NULL AND NEW.item_id IS NOT OLD.item_id)
+          OR (OLD.retired_at IS NOT NULL AND (
+              NEW.retired_at IS NOT OLD.retired_at OR
+              NEW.retired_source IS NOT OLD.retired_source OR
+              NEW.retired_status IS NOT OLD.retired_status OR
+              NEW.retired_dispatch_state IS NOT OLD.retired_dispatch_state OR
+              NEW.retired_partial IS NOT OLD.retired_partial OR
+              NEW.retired_terminal_finalized IS NOT OLD.retired_terminal_finalized OR
+              NEW.retired_state_revision IS NOT OLD.retired_state_revision OR
+              NEW.retired_task_id IS NOT OLD.retired_task_id OR
+              NEW.retired_conversation_id IS NOT OLD.retired_conversation_id OR
+              NEW.retired_agent_id IS NOT OLD.retired_agent_id OR
+              NEW.retired_run_created_at IS NOT OLD.retired_run_created_at OR
+              NEW.retired_run_updated_at IS NOT OLD.retired_run_updated_at OR
+              NEW.retired_run_completed_at IS NOT OLD.retired_run_completed_at))
+        BEGIN SELECT RAISE(ABORT,'run_attention.source_immutable'); END;
+    CREATE TRIGGER mentat_run_attention_protect BEFORE DELETE ON mentat_run_attention
+        WHEN OLD.item_id IS NOT NULL AND
+             (OLD.retired_at IS NULL OR OLD.resolved_at IS NULL OR OLD.acknowledged_at IS NULL)
+        BEGIN SELECT RAISE(ABORT,'run_attention.retained'); END;
+    CREATE TRIGGER mentat_run_attention_item_unique BEFORE UPDATE OF item_id ON mentat_run_attention
+        WHEN NEW.item_id IS NOT NULL AND (
+            EXISTS(SELECT 1 FROM mentat_inbox_items WHERE id=NEW.item_id) OR
+            EXISTS(SELECT 1 FROM mentat_run_attention WHERE item_id=NEW.item_id AND slot_id!=OLD.slot_id))
+        BEGIN SELECT RAISE(ABORT,'run_attention.item_collision'); END;
+    CREATE TRIGGER mentat_inbox_run_item_unique BEFORE INSERT ON mentat_inbox_items
+        WHEN EXISTS(SELECT 1 FROM mentat_run_attention WHERE item_id=NEW.id)
+        BEGIN SELECT RAISE(ABORT,'run_attention.item_collision'); END;
+    CREATE TRIGGER mentat_run_attention_initial AFTER INSERT ON mentat_run_attention
+        WHEN EXISTS(SELECT 1 FROM mentat_runs r WHERE r.id=NEW.run_id AND
+            (r.status='unknown' OR r.status IN ('failed','interrupted') OR
+             (r.status IN ('completed','failed','cancelled','stopped','interrupted') AND
+              (r.partial=1 OR r.terminal_finalized=0))))
+        BEGIN UPDATE mentat_run_attention SET
+            item_id='inbox_item_'||lower(hex(randomblob(16))),revision=1,
+            created_at=CAST(strftime('%s','now') AS REAL),updated_at=CAST(strftime('%s','now') AS REAL)
+            WHERE run_id=NEW.run_id AND incarnation=NEW.incarnation; END;
+    INSERT INTO mentat_run_attention(run_id,incarnation)
+        SELECT run_id,incarnation FROM mentat_run_identities ORDER BY run_id;
+    CREATE TRIGGER mentat_run_attention_reserve AFTER INSERT ON mentat_run_identities
+        BEGIN
+            DELETE FROM mentat_run_attention WHERE rowid IN
+                (SELECT rowid FROM mentat_run_attention WHERE retired_at IS NOT NULL
+                 AND resolved_at IS NOT NULL AND acknowledged_at IS NOT NULL
+                 ORDER BY created_at,item_id LIMIT 1)
+                AND (SELECT COUNT(*) FROM mentat_run_attention)>=10000;
+            SELECT CASE WHEN (SELECT COUNT(*) FROM mentat_run_attention)>=10000
+                THEN RAISE(ABORT,'run_attention.capacity') END;
+            INSERT INTO mentat_run_attention(run_id,incarnation) VALUES(NEW.run_id,NEW.incarnation);
+        END;
+    CREATE TRIGGER mentat_run_attention_transition
+        AFTER UPDATE OF status,dispatch_state,partial,terminal_finalized,details_json ON mentat_runs
+        WHEN OLD.status IS NOT NEW.status OR OLD.dispatch_state IS NOT NEW.dispatch_state
+          OR OLD.partial IS NOT NEW.partial OR OLD.terminal_finalized IS NOT NEW.terminal_finalized
+          OR OLD.details_json IS NOT NEW.details_json
+        BEGIN
+            UPDATE mentat_run_attention SET revision=revision+1,
+                updated_at=MAX(updated_at,CAST(strftime('%s','now') AS REAL)),
+                read_at=NULL,acknowledged_at=NULL,resolved_at=NULL,
+                last_action_digest=NULL,last_expected_revision=NULL
+                WHERE run_id=NEW.id AND item_id IS NOT NULL AND retired_at IS NULL;
+            UPDATE mentat_run_attention SET
+                item_id='inbox_item_'||lower(hex(randomblob(16))),revision=1,
+                created_at=CAST(strftime('%s','now') AS REAL),updated_at=CAST(strftime('%s','now') AS REAL)
+                WHERE run_id=NEW.id AND item_id IS NULL AND retired_at IS NULL AND
+                (NEW.status='unknown' OR NEW.status IN ('completed','failed','cancelled','stopped','interrupted'));
+        END;
+    CREATE TRIGGER mentat_run_attention_retire BEFORE DELETE ON mentat_runs
+        BEGIN
+            SELECT CASE WHEN OLD.status NOT IN ('completed','failed','cancelled','stopped','interrupted')
+                THEN RAISE(ABORT,'run_attention.active_retirement') END;
+            SELECT CASE WHEN NOT EXISTS(
+                SELECT 1 FROM mentat_run_attention a JOIN mentat_run_identities i
+                ON i.run_id=a.run_id AND i.incarnation=a.incarnation WHERE a.run_id=OLD.id)
+                THEN RAISE(ABORT,'run_attention.identity_missing') END;
+            UPDATE mentat_run_attention SET retired_at=CAST(strftime('%s','now') AS REAL),
+                retired_source=OLD.source,retired_status=OLD.status,
+                retired_dispatch_state=OLD.dispatch_state,retired_partial=OLD.partial,
+                retired_terminal_finalized=OLD.terminal_finalized,
+                retired_state_revision=OLD.state_revision,retired_task_id=OLD.task_id,
+                retired_conversation_id=OLD.conversation_id,retired_agent_id=OLD.agent_id,
+                retired_run_created_at=OLD.created_at,retired_run_updated_at=OLD.updated_at,
+                retired_run_completed_at=OLD.completed_at
+                WHERE run_id=OLD.id AND item_id IS NOT NULL AND retired_at IS NULL;
+            DELETE FROM mentat_run_attention WHERE run_id=OLD.id AND item_id IS NULL;
+        END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2695,7 +2836,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2829,6 +2970,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 33 cannot be safely upgraded")
                 if version == 35 and schema_signature_state(connection, 34) != "expected":
                     raise MentatDatabaseError("Mentat schema 34 cannot be safely upgraded")
+                if version == 36 and schema_signature_state(connection, 35) != "expected":
+                    raise MentatDatabaseError("Mentat schema 35 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

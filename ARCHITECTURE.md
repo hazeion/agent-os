@@ -591,7 +591,7 @@ bounded cleanup. Run, reservation, and dispatch-head timestamps and identifiers
 are semantically reconstructed, including monotonic created/updated chronology.
 Attachment binding transactionally limits the retained graph to 100 distinct
 ready blobs and 24 MiB of referenced blob bytes. Existing over-limit roots fail
-closed on further binding. Together with the 56 MiB SQLite budget and bounded
+closed on further binding. Together with the 63 MiB SQLite budget and bounded
 history/registry members, this keeps every admitted retained state within the
 96 MiB private-backup unit ceiling.
 Event retention keeps contiguous newest suffixes under per-Run and global count
@@ -602,6 +602,12 @@ Schema 35 assigns each canonical Run a private incarnation on insertion and
 backfills retained Runs through an exact migration. The incarnation identifies
 one attempt across public ID reuse; it does not itself reserve Inbox notice
 capacity or publish owner attention.
+Schema 36 reserves one private owner-attention row per Run attempt, including
+hidden rows before any notice exists. Canonical status changes materialize or
+reopen one source-bound notice, and a Run deletion freezes its bounded outcome
+on that row before the live identity is removed. Project result-review rows
+remain their own authority; the owner Inbox must merge both sources under one
+guarded snapshot before Run notices are browser-visible.
 Schema startup verifies the exact Run/Event/dispatch table and index
 fingerprint, and semantic validation rechecks retention and relationship
 invariants. Legacy authority import performs that complete validation inside

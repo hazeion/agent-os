@@ -239,9 +239,21 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     )
     conversation_ids = tuple(str(row["id"]) for row in conversation_rows)
     conversation_sql, conversation_args = _placeholders(conversation_ids)
+    has_run_identities = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mentat_run_identities'"
+    ).fetchone() is not None
+    run_identity_join = (" LEFT JOIN mentat_run_identities i ON i.run_id=r.id" if has_run_identities else "")
+    run_identity_join += " LEFT JOIN mentat_dispatch_reservations d ON d.run_id=r.id"
+    run_identity_column = "i.incarnation" if has_run_identities else "NULL AS incarnation"
+    run_columns = (
+        "r.id,r.task_id,r.conversation_id,r.retry_of_run_id,r.resume_of_run_id,"
+        "r.status,r.state_revision,r.partial,r.terminal_finalized,r.dispatch_state,"
+        + run_identity_column + ",d.state AS reservation_state,d.attempt_count AS reservation_attempt_count"
+    )
     run_rows = _rows(
         connection,
-        f"SELECT id, task_id, conversation_id, retry_of_run_id, resume_of_run_id, status, state_revision, partial, terminal_finalized FROM mentat_runs WHERE task_id IN {task_sql} OR conversation_id IN {conversation_sql} ORDER BY id",
+        f"SELECT {run_columns} FROM mentat_runs r{run_identity_join} "
+        f"WHERE r.task_id IN {task_sql} OR r.conversation_id IN {conversation_sql} ORDER BY r.id",
         task_args + conversation_args,
     )
     # Preserve retry/resume evidence that otherwise would survive a deleted
@@ -252,7 +264,8 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         known_sql, known_args = _placeholders(known)
         related = _rows(
             connection,
-            f"SELECT id, task_id, conversation_id, retry_of_run_id, resume_of_run_id, status, state_revision, partial, terminal_finalized FROM mentat_runs WHERE retry_of_run_id IN {known_sql} OR resume_of_run_id IN {known_sql} ORDER BY id",
+            f"SELECT {run_columns} FROM mentat_runs r{run_identity_join} "
+            f"WHERE r.retry_of_run_id IN {known_sql} OR r.resume_of_run_id IN {known_sql} ORDER BY r.id",
             known_args + known_args,
         ) if known else []
         additions = [row for row in related if str(row["id"]) not in run_by_id]
@@ -262,6 +275,8 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
             raise PlanningDeletionError("planning.deletion_unavailable")
         run_by_id.update({str(row["id"]): row for row in additions})
     run_rows = [run_by_id[key] for key in sorted(run_by_id)]
+    if has_run_identities and any(row["incarnation"] is None for row in run_rows):
+        raise PlanningDeletionError("planning.deletion_unavailable")
     run_ids = _run_deletion_order(run_rows)
     run_sql, run_args = _placeholders(run_ids)
 
@@ -368,7 +383,7 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         "edges": [(str(row["task_id"]), str(row["dependency_task_id"])) for row in incident_edges],
         "conversations": [(str(row["id"]), int(row["revision"])) for row in conversation_rows],
         "runs": [
-            (str(row["id"]), str(row["task_id"] or ""), str(row["conversation_id"] or ""), str(row["retry_of_run_id"] or ""), str(row["resume_of_run_id"] or ""), str(row["status"]), int(row["state_revision"]), int(row["partial"]), int(row["terminal_finalized"]))
+            (str(row["id"]), str(row["task_id"] or ""), str(row["conversation_id"] or ""), str(row["retry_of_run_id"] or ""), str(row["resume_of_run_id"] or ""), str(row["status"]), int(row["state_revision"]), int(row["partial"]), int(row["terminal_finalized"]), str(row["incarnation"] or ""), str(row["dispatch_state"]), str(row["reservation_state"] or ""), int(row["reservation_attempt_count"]) if row["reservation_attempt_count"] is not None else -1)
             for row in run_rows
         ],
         "artifacts": [(str(row["mentat_task_id"]), str(row["binding_id"]), str(row["attachment_id"])) for row in artifact_rows],
@@ -483,6 +498,14 @@ class PlanningDeletionService:
                         current = _snapshot(connection, plan.target_kind, plan.target_id)
                         self._verify_post_stop(plan, current)
                         self._erase(connection, plan)
+                        if connection.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mentat_run_attention'"
+                        ).fetchone() is not None:
+                            from run_attention import RunAttentionError, validate_run_attention_connection
+                            try:
+                                validate_run_attention_connection(connection)
+                            except RunAttentionError as exc:
+                                raise PlanningDeletionError("planning.deletion_unavailable") from exc
                         connection.execute(
                             "INSERT INTO mentat_planning_deletion_receipts (confirmation_digest, target_kind, target_digest, closure_digest, project_count, task_count, conversation_count, run_count, artifact_count, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'deleted', ?)",
                             (plan.confirmation_id, plan.target_kind, plan.target_digest, plan.closure_digest, plan.counts.projects, plan.counts.tasks, plan.counts.conversations, plan.counts.runs, plan.counts.artifacts, _now()),
@@ -513,7 +536,10 @@ class PlanningDeletionService:
                 if new != old:
                     raise PlanningDeletionError("planning.deletion_stale")
                 continue
-            if old[:5] != new[:5] or new[5] not in TERMINAL_STATUSES or new[7] != 0 or new[8] != 1 or new[6] <= old[6]:
+            dispatch_preserved = (old[10:] == new[10:] or
+                (old[10:13] == ("reserved", "reserved", 0) and
+                 new[10:13] == ("rejected", "rejected", 0)))
+            if old[:5] != new[:5] or old[9] != new[9] or not dispatch_preserved or new[5] not in TERMINAL_STATUSES or new[7] != 0 or new[8] != 1 or new[6] <= old[6]:
                 raise PlanningDeletionError("planning.deletion_stop_unverified")
         stable_before = dict(plan.snapshot)
         stable_after = dict(current.snapshot)

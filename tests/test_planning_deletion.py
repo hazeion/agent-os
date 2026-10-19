@@ -102,6 +102,15 @@ class PlanningDeletionTests(unittest.TestCase):
                 plan = service.preview("project", "project_one")
                 self.assertEqual(plan.counts.public(), {"projects": 1, "tasks": 2, "conversations": 1, "runs": 2 + retry_count, "artifacts": 0})
                 self.assertEqual(plan.active_run_ids, ())
+                with closing(connect(root)) as connection:
+                    visible_before = {
+                        row[0]: (row[1], row[2]) for row in connection.execute(
+                            "SELECT run_id,incarnation,item_id FROM mentat_run_attention "
+                            "WHERE run_id IN (" + ",".join("?" for _ in plan.run_ids) + ") "
+                            "AND item_id IS NOT NULL", plan.run_ids,
+                        )
+                    }
+                self.assertTrue(visible_before)
                 confirmed = service.begin_confirmation("project", "project_one", plan.confirmation_id)
                 self.assertEqual(service.finalize(confirmed), plan.counts)
                 self.assertEqual(service.completed_receipt("project", "project_one", plan.confirmation_id), plan.counts)
@@ -110,6 +119,14 @@ class PlanningDeletionTests(unittest.TestCase):
                     self.assertEqual([row[0] for row in connection.execute("SELECT id FROM mentat_conversations")], [kept_conversation])
                     for table in ("mentat_conversation_turns", "mentat_conversation_messages", "mentat_runs"):
                         self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table} WHERE conversation_id = ?", (deleted_conversation,)).fetchone()[0], 0)
+                    for run_id, (incarnation, item_id) in visible_before.items():
+                        retained = connection.execute(
+                            "SELECT item_id,retired_at,retired_status FROM mentat_run_attention "
+                            "WHERE run_id=? AND incarnation=?", (run_id, incarnation),
+                        ).fetchone()
+                        self.assertEqual(retained[0], item_id)
+                        self.assertGreater(retained[1], 0)
+                        self.assertIn(retained[2], {"completed", "failed", "cancelled", "stopped", "interrupted"})
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_conversation_run_attempts").fetchone()[0], 0)
                     RunRepository(connection).validate()
                 self.assertEqual([row["id"] for row in read_authoritative_tasks(root)], ["task_keep"])
@@ -214,7 +231,14 @@ class PlanningDeletionTests(unittest.TestCase):
                 service.finalize(plan)
             connection = connect(root)
             try:
-                connection.execute("UPDATE mentat_runs SET status = 'stopped', terminal_finalized = 1, state_revision = state_revision + 1 WHERE id = 'run_delete_active'")
+                connection.execute("UPDATE mentat_runs SET status = 'stopped', dispatch_state = 'rejected', terminal_finalized = 1, state_revision = state_revision + 1 WHERE id = 'run_delete_active'")
+            finally:
+                connection.close()
+            with self.assertRaisesRegex(PlanningDeletionError, "deletion_stop_unverified"):
+                service.finalize(plan)
+            connection = connect(root)
+            try:
+                connection.execute("UPDATE mentat_runs SET dispatch_state = 'accepted', state_revision = state_revision + 1 WHERE id = 'run_delete_active'")
             finally:
                 connection.close()
             service.finalize(plan)
