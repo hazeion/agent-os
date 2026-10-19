@@ -1,59 +1,89 @@
 # Home load performance on the Project stack
 
-## Contract and investigation plan
+## Contract and source correction
 
-This branch starts at exact PR264 head
+This branch starts at exact PR #264 head
 `667744984d3cf0b7a5458ece206075e924c21b2a`. Its hosted Node foundation job
-118224513089 in workflow39300608851 passed browser smoke and all nonperformance
-categories, but mobile Lighthouse scored94/94/94 against the unchanged95
-median threshold. LCP was2949–2995ms. These are real current-head failures,
-not canceled predecessor aggregations.
+118224513089 in workflow 39300608851 passed browser smoke and every other
+Lighthouse category, but mobile performance scored 94/94/94 against the
+unchanged median requirement of 95. LCP was 2949–2995ms. This was a real
+current-head failure, distinct from canceled predecessor aggregations.
 
-The bounded hosted artifact contains scores and timing only. It has no LCP
-node, request chain or trace, so source guesses do not establish the cause.
-Reproduce full reports with the exact pinned Chrome152.0.7923.0 and current
-Lighthouse13.4.1, disposable data/config/home/Hermes/vault/browser profiles and
-this branch's own dependency installation and build. No owner account, provider
-or Run is involved.
+The existing producer tip already includes AppShell inactive-route prefetch
+control from `ca638f5`. Original #267 and later feature branches contain it;
+original #264–266 do not. This branch carries only its two Link prefetch props.
+Every element, label, route, accessibility attribute and normal click behavior
+stays intact. Active/current-page links retain their existing default. The
+complete AppShell blob is `74e790330aca30a8963776e7cd51ef5e7ce365e1`, identical
+to the later source. The larger Task-input feature was not cherry-picked.
 
-Before changing rendering, compare the current producer tip2324cb1. That tip
-already includes AppShell inactive-route prefetch control fromca638f5.
-Determine whether that existing reviewed optimization addresses the measured
-request/render delay. Preserve route contents, normal navigation, client
-navigation hydration, accessibility and all current features. Do not replace
-current architecture with a historical UI.
+Dependencies, configuration, workflows, smoke scripts, Lighthouse gate,
+three measured runs per mode, category requirements, timeouts and budgets are
+unchanged. No new production capability, provider operation or Run is involved.
+Root and ci_review_two independently cleared source commit
+`0e12af49612a2ed5947c8022cea004df8078e7ec`. Subsequent evidence changes are
+this document only. Exact-head hosted CI remains required before merge.
 
-Only component/source changes under web/ and this review are owned here.
-Dependencies, configs, workflows, smoke scripts, Lighthouse gate, score95,
-three measured runs, category requirements, timeouts and budgets remain fixed.
-Require comparable baseline/change evidence, focused behavior tests, full
-lint/typecheck/test/build as appropriate and the unmodified Lighthouse gate.
-Two independent reviews and current hosted CI are still required before merge.
+## Full reports and measured behavior
 
-## Existing source correction and baseline evidence
+The hosted artifact has scores and timing only, with no LCP node or trace.
+The isolated worktree installed its own locked Node dependencies, built its
+own dashboard and downloaded the exact public project-pinned Chrome
+152.0.7923.0 into new temporary storage. Experiments used disposable data,
+config, home, Hermes, vault and browser-profile roots, with the real CLI,
+Python bridge and built Next app. Owner state and active profiles were unused.
 
-The complete AppShell blob from ca638f5 is already present on original267 and
-later feature branches. Original264–266 lack it. This branch carries only its
-two Link prefetch props, leaving every element, label, route and normal click
-behavior unchanged. It does not cherry-pick the larger Task-input feature.
-The resulting AppShell blob is `74e790330aca30a8963776e7cd51ef5e7ce365e1`,
-identical to the existing producer tip's file.
+Three full mobile reports per variant identify the same initial Home subtitle
+as LCP, with identical text, selector and geometry. All baseline reports show
+four speculative inactive-route RSC requests during Home load, covering
+Agents, Tasks and Runs. All changed reports show zero. Total requests fall
+from 26 to 22; first-report transferred bytes fall from 255752 to 246668.
+This is direct request evidence, not a claim derived from score noise.
 
-Three full local pinned-browser mobile traces identify the unchanged initial
-Home subtitle as LCP. Each baseline makes four speculative inactive-route RSC
-requests during Home load, covering Agents, Tasks and Runs. There are26 total
-requests. Baseline scores are99/87/95 and LCP1922/2793/2726ms. These local
-runs overlapped other owned CPU work and do not reproduce or explain the
-Linux94 median by themselves. Request elimination and unchanged content/
-navigation must be verified separately from score variation.
+| Evidence | Mobile scores | Meaning |
+| --- | --- | --- |
+| Hosted original #264 | 94/94/94 | Existing exact-head gate failure |
+| Local baseline full traces | 99/87/95 | Diagnostic, shared CPU contention; not a Linux reproduction |
+| Local changed full traces | 94/95/94 | Diagnostic; does not itself pass the median requirement |
+| Unchanged local six-audit gate | 95/95/95 | Actual local gate passes its unchanged median requirement |
 
-Lint and typecheck pass. The first full local web run passed387/388 methods;
-one pre-existing planning-ui test failed its initial Ship Alpha lookup after
-six seconds. That test renders ProjectsTasksWorkspace directly and never
-imports changed AppShell. Its exact focused rerun passes unchanged in734ms.
-The original failure log is retained; a quieter full run and rebuild are in
-progress. No assertion, test source, deadline or gate has changed.
+The changed diagnostic LCP values are 2771/2667/2707ms. Their nonperformance
+categories all score 100. The trace still identifies normal script/layout
+work and one render-blocking stylesheet. No subtitle, visibility, animation,
+font, content or timing workaround was added. The existing source correction
+is retained without claiming a universal timing gain.
 
-Changed-source traces, the unchanged six-audit gate and real navigation smoke
-remain pending. Passing local checks cannot establish the final exact-head
-hosted95 requirement.
+After coordinating other owned heavy work to pause, the unmodified gate ran
+once on the changed source. Its three desktop scores are 100/100/100 and mobile
+scores are 95/95/95. Every accessibility, best-practices and SEO score is 100.
+The gate verifies Chrome 152.0.7923.0 and Lighthouse 13.4.1, retains three runs
+per mode and the existing minimum of 95, and reports `ok:true`. This is the
+first full gate invocation after the carry, not a retry-until-green sequence.
+It proves local gate behavior, not future hosted results or excess headroom.
+
+## Checks and limitations
+
+ESLint, TypeScript, all 388 web tests and the production standalone build pass.
+The first local full test run passed 387/388; one existing planning-ui test
+failed its initial Ship Alpha lookup after six seconds. It renders
+ProjectsTasksWorkspace directly and never imports changed AppShell. The exact
+focused test passes unchanged in 734ms, and the subsequent quieter full run
+passes all 388 tests without skips. Original failure evidence is retained.
+No assertion, test source or deadline was changed.
+
+Both existing real-browser modes pass on tested source `0e12af4`: default
+route/desktop/mobile/keyboard/reflow/planning smoke and client-navigation
+persistence with pre-hydration navigation. No smoke code changed. Every owned
+app/browser process closed after each experiment. Reports and traces remain in
+private temporary storage, with concise logs at:
+
+- `/private/tmp/mentat-planning-performance-baseline.log`
+- `/private/tmp/mentat-planning-performance-after.log`
+- `/private/tmp/mentat-planning-performance-final-gate.log`
+- `/private/tmp/mentat-planning-performance-navigation.log`
+- `/private/tmp/mentat-planning-performance-check.log`, original failed run
+- `/private/tmp/mentat-planning-performance-check-quiet.log`, complete passing run
+
+No real provider, Google login, remote HTTPS host, Linux runtime qualification,
+physical-device acceptance or garage work is proven here. Current hosted CI,
+including the same performance budget, remains an integration gate.
