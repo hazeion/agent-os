@@ -15,8 +15,10 @@ from agent_registry import AgentRegistry
 from mentat import local_bridge
 from project_context_editor import read_project_editor
 from project_repository import mutate_authoritative_projects
+from task_repository import mutate_authoritative_tasks
 from tests.test_project_repository import project
 from tests import test_project_context as context_tests
+from tests.test_task_repository import task
 
 ROOT = Path(__file__).resolve().parents[1]
 STANDALONE = ROOT / 'web/.next/standalone'
@@ -26,20 +28,23 @@ PROJECT = {'id': 'project_mentat', 'name': 'Garage', 'revision': 1, 'status': 'a
 
 class ContextFixtureHandler(local_bridge.BridgeRequestHandler):
     def do_GET(self):
-        if self.path == local_bridge.BRIDGE_HEALTH_PATH or self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT):
+        if (self.path == local_bridge.BRIDGE_HEALTH_PATH or self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT)
+                or self.path.startswith(local_bridge.TASK_INPUT_ROOT)
+                or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASKS_PATH)
+                or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASK_DETAIL_PATH)
+                or self.path.startswith(local_bridge.BRIDGE_PLANNING_TASK_PATH)):
             return super().do_GET()
         if not self._request_is_private() or not self._owner_access_allowed(unsafe=False):
             return self._send_json({'error': 'unauthorized'}, 401)
         if self.path.startswith(local_bridge.BRIDGE_PLANNING_OVERVIEW_PATH):
             return self._send_json({**ENVELOPE, 'projects': [PROJECT], 'project_count': 1, 'attention': [], 'attention_count': 0, 'today': '2026-09-22', 'truncated': False}, 200)
-        if self.path.startswith(local_bridge.BRIDGE_PLANNING_TASKS_PATH):
-            return self._send_json({**ENVELOPE, 'project': PROJECT, 'tasks': [], 'count': 0, 'next_cursor': None}, 200)
         if self.path == '/bridge/v1/agents':
             return self._send_json({**ENVELOPE, 'agents': [{'id': 'agent_research', 'name': 'Research Agent', 'runtime_type': 'codex', 'runtime_config_id': 'context_config', 'capabilities': ['run.start']}], 'count': 1}, 200)
         return self._send_json({**ENVELOPE, 'status': 'unavailable'}, 503)
 
     def do_POST(self):
-        if self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT):
+        if (self.path.startswith(local_bridge.PROJECT_CONTEXT_ROOT) or self.path.startswith(local_bridge.TASK_INPUT_ROOT)
+                or self.path in {local_bridge.BRIDGE_PLANNING_DELETION_PREVIEW_PATH, local_bridge.BRIDGE_PLANNING_DELETION_CONFIRM_PATH}):
             return super().do_POST()
         return self._send_json({**ENVELOPE, 'status': 'unavailable'}, 503)
 
@@ -58,6 +63,7 @@ class ProjectContextBrowserTests(unittest.TestCase):
         service = fixture.deletion_service(); service.finalize(service.preview('project', 'project_mentat'))
         mutate_authoritative_projects(fixture.root, lambda rows: ([*rows, project('Garage', 'project_mentat')], None))
         AgentRegistry(fixture.root, supported_runtime_types=('codex',)).create_agent(agent_id='agent_research', name='Research Agent', runtime_config_id='context_config', runtime_type='codex', runtime_agent_ref='default', capabilities=('run.start',))
+        mutate_authoritative_tasks(fixture.root, lambda rows: ([*rows, {**task('task_garage_research'), 'title':'Research garage organization', 'project':'Garage', 'project_id':'project_mentat', 'assigned_agent_id':'agent_research'}], None))
         floorplan = fixture.root / 'dimensions.md'; floorplan.write_text('Garage dimensions: 6 metres by 5 metres. Keep bicycle access clear.', encoding='utf-8')
         import server
         with patch.object(server, 'DATA_DIR', fixture.root):
@@ -88,6 +94,9 @@ class ProjectContextBrowserTests(unittest.TestCase):
                 self.assertEqual(state['current']['brief'], 'Garage layout: reserve a workbench and bicycle access.')
                 self.assertEqual(len(state['current']['files']), 1)
                 self.assertEqual(state['grants'][0]['state'], 'revoked')
+                with __import__('contextlib').closing(__import__('mentat_db').connect(fixture.root)) as connection:
+                    self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_versions').fetchone()[0], 0)
+                    self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_scopes').fetchone()[0], 0)
             finally:
                 process.terminate()
                 try: process.wait(5)

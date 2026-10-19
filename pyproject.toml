@@ -115,7 +115,7 @@ py-modules = [
   "server",
   "task_planning",
   "task_delegation_receipts",
-  "task_repository",
+  "task_repository", "task_inputs", "task_inputs_http",
   "vercel_connections",
   "vercel_infrastructure",
   "vercel_runtime",

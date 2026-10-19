@@ -960,9 +960,26 @@ Task-specific input is a separately versioned set of approved references and
 bounded instructions. Exact owner approval binds that input version, Task
 revision/membership, selected Agent, runtime configuration/capability snapshot,
 Project context version and grant revision. Outputs from another Task cross
-this boundary only as explicitly selected immutable deliverable versions.
+this boundary as explicitly selected immutable deliverable versions, or as
+exact versions resolved under an owner-approved conditional transfer in the
+same plan segment. Such a transfer binds producer and destination Task/Agent
+incarnations, the approved producer attempt, named output slots,
+schema/type/count/byte bounds, allowed uses and limits. Only registered outputs
+from verified successful work may resolve it; their exact immutable identities
+are frozen before destination reservation. Missing, ambiguous, malformed, extra
+or replaced outputs require an owner checkpoint. Dependencies alone confer no
+permission, and no unrestricted latest-result alias or general Project read
+right is created. Owners can require manual approval on any transfer. This is
+an approved-plan contract, not a capability currently advertised by an adapter.
 Changing an assignment, input, execution configuration or grant invalidates
 the pending approval. It never changes an already-dispatched snapshot.
+
+Schema 29 implements the preparation side: private Task incarnations, immutable
+input scopes/versions, exact Project/Task/Agent grant and file selection, a
+bounded owner editor and retention through backup/restore. The owner action is
+**Save input version**; it does not approve execution or create a Run.
+Approval, qualified adapter isolation, Run-input receipts and conditional
+handoff resolution described below are still to be implemented.
 
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and

@@ -3,7 +3,7 @@ import { CONTEXT_READS, CONTEXT_UPLOAD_LIMIT, contextRequest, contextResult, Con
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type Environment = Readonly<Record<string, string | undefined>>;
-const FAILURES = new Set(["invalid", "file_unavailable", "stale", "project_changed", "project_unavailable", "context_unavailable", "agent_unavailable", "version_unavailable", "current_version", "granted_version", "capacity", "blob_capacity", "staging_changed", "revision_conflict", "file_scope", "files_invalid", "brief_invalid", "revision_invalid", "confirmation_invalid", "unavailable"]);
+const FAILURES = new Set(["invalid", "file_unavailable", "stale", "project_changed", "project_unavailable", "context_unavailable", "agent_unavailable", "version_unavailable", "current_version", "granted_version", "task_input", "capacity", "blob_capacity", "staging_changed", "revision_conflict", "file_scope", "files_invalid", "brief_invalid", "revision_invalid", "confirmation_invalid", "unavailable"]);
 export class ProjectContextBridgeError extends Error {
   constructor(readonly code = "unavailable", readonly status = 503) { super("project_context_unavailable"); }
 }

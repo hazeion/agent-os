@@ -83,7 +83,7 @@ function mutationRefreshFixture() {
       if (row.workflow_stage === "done" && row.recurrence) fixture.rows.push({ ...row, id: "task_successor", revision: 1, due_date: "2026-08-30", workflow_stage: "planned", planning_state: "planned", status: "todo" });
       return Response.json({ ...envelope, action: "edit", project: fixture.project, task: fixture.summary(row) });
     }
-    if (path.endsWith("/delete/preview")) return Response.json({ ...envelope, affected: { projects: 0, tasks: 1, conversations: 0, runs: 0, artifacts: 0 }, confirmation_id: "a".repeat(64), has_active_runs: false, retained_context_versions: 0, target_kind: "task", target_id: task.id });
+    if (path.endsWith("/delete/preview")) return Response.json({ ...envelope, affected: { projects: 0, tasks: 1, conversations: 0, runs: 0, artifacts: 0 }, confirmation_id: "a".repeat(64), has_active_runs: false, retained_context_versions: 0, retained_input_versions: 0, target_kind: "task", target_id: task.id });
     if (path.endsWith("/delete")) { fixture.rows = fixture.rows.filter((row) => row.id !== task.id); return Response.json({ ...envelope, action: "delete", deletion: { projects: 0, tasks: 1, conversations: 0, runs: 0, artifacts: 0 }, target_kind: "task", target_id: task.id }); }
     if (path === `/api/planning/projects/${project.id}/rename`) {
       const body = JSON.parse(String(init?.body)); fixture.project = { ...fixture.project, name: body.name, revision: fixture.project.revision + 1 };
@@ -119,6 +119,56 @@ test("the inspector identifies the Task, summarizes saved planning, and submits 
   await user.click(save);
   await within(inspector).findByRole("heading", { name: "Revised Alpha" });
   assert.equal(fixture.rows[0].title, "Revised Alpha");
+});
+
+test("prepared Task inputs hide text-only Run once with a clear reason", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  fixture.override = (url) => {
+    if (!url.pathname.endsWith("/planning-task-execution")) return null;
+    const baseline = fixture.execution();
+    const execution = baseline.execution as Record<string, unknown>;
+    return Response.json({ ...baseline, execution: { ...execution, available: false, reason: "project_inputs_unavailable" } });
+  };
+  render(<ProjectsTasksWorkspace />);
+  const user = userEvent.setup({ document: dom.window.document });
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await screen.findByText(/Run once cannot use this Task's saved inputs yet/u);
+  assert.equal(screen.queryByRole("button", { name: "Run once" }), null);
+});
+
+test("saving the first Task input removes Run once before the fresh execution read", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const fixture = mutationRefreshFixture();
+  let saved = false;
+  const pendingExecution = deferred<Response>();
+  const contextId = `project_context_${"a".repeat(32)}`;
+  fixture.override = (url, init) => {
+    if (url.pathname.endsWith("/planning-task-execution")) {
+      if (saved) return pendingExecution.promise;
+      return Response.json(fixture.execution());
+    }
+    if (url.pathname === `/api/planning/tasks/${task.id}/inputs`) {
+      if (init?.method === "POST") {
+        saved = true;
+        return Response.json({ input_id: `task_input_${"b".repeat(32)}`, revision: 1 });
+      }
+      return Response.json({ task: { id: task.id, title: task.title, revision: 1, project_id: project.id, project_status: "active", assigned_agent_id: "agent_alpha" },
+        input_revision: saved ? 1 : 0, expected_task_token: "f".repeat(64), version: null, versions: [],
+        eligible_contexts: [{ context: { id: contextId, revision: 1, brief: "Garage dimensions", created_at: 1790035200, project_id: project.id, retired: false, current: true, files: [], prune_blocked: "current_version" }, grant_revision: 1 }] });
+    }
+    return null;
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await screen.findByRole("button", { name: "Run once" });
+  await user.click(screen.getByRole("button", { name: "Prepare inputs" }));
+  await screen.findByLabelText("Task-specific instructions");
+  await user.click(screen.getByRole("button", { name: "Save input version" }));
+  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Run once" }), null));
+  assert.ok(screen.getByText("Loading execution status…"));
+  pendingExecution.resolve(Response.json({ ...fixture.execution(), execution: { ...fixture.execution().execution as object, available: false, reason: "project_inputs_unavailable" } }));
+  await screen.findByText(/Run once cannot use this Task's saved inputs yet/u);
 });
 
 test("mobile Task selection and compact jumps reach the inspector, Tasks, and Projects without changing drafts", async () => {
@@ -2036,7 +2086,7 @@ test("dependency editor prevents saves beyond the 100-prerequisite boundary", as
 test("Task deletion shows only count effects, then confirms the exact preview before refreshing authority", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const reminderDetail = { ...taskDetail, reminders: [{ at: "2030-09-03T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_delete" }] };
-  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 1, projects: 0, runs: 1, tasks: 2 }, confirmation_id: "a".repeat(64), has_active_runs: true, retained_context_versions: 0, target_id: task.id, target_kind: "task" as const };
+  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 1, projects: 0, runs: 1, tasks: 2 }, confirmation_id: "a".repeat(64), has_active_runs: true, retained_context_versions: 0, retained_input_versions: 0, target_id: task.id, target_kind: "task" as const };
   const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: task.id, target_kind: "task" as const };
   const calls: Array<{ body: unknown; path: string }> = [];
   let deleted = false;
@@ -2070,7 +2120,7 @@ test("Task deletion shows only count effects, then confirms the exact preview be
 test("Project deletion clears every local reminder schedule because a count-only cascade can span dependent Tasks", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const reminderDetail = { ...taskDetail, reminders: [{ at: "2030-09-03T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_project_delete" }] };
-  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 0, projects: 1, runs: 0, tasks: 2 }, confirmation_id: "b".repeat(64), has_active_runs: false, retained_context_versions: 2, target_id: project.id, target_kind: "project" as const };
+  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 0, projects: 1, runs: 0, tasks: 2 }, confirmation_id: "b".repeat(64), has_active_runs: false, retained_context_versions: 2, retained_input_versions: 0, target_id: project.id, target_kind: "project" as const };
   const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: project.id, target_kind: "project" as const };
   let deleted = false;
   globalThis.fetch = async (input) => {

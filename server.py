@@ -3889,6 +3889,7 @@ def preview_mentat_planning_deletion(payload: object) -> tuple[dict, int]:
             "confirmation_id": plan.confirmation_id,
             "affected": plan.counts.public(),
             "retained_context_versions": plan.retained_context_versions,
+            "retained_input_versions": plan.retained_input_versions,
             "has_active_runs": bool(plan.active_run_ids),
         }, 200
     except PlanningDeletionError as exc:
@@ -4983,7 +4984,7 @@ def _planning_execution_binding_state(agent_id: object) -> str:
     ).hexdigest()
 
 
-def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict, dict | None, str | None]:
+def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict, dict | None, str | None, bool]:
     """Read the exact task, bounded execution history, and safe projection."""
 
     if not isinstance(task_id, str) or TASK_ID_PATTERN.fullmatch(task_id) is None:
@@ -5003,7 +5004,9 @@ def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], 
             requested_changes = repository.task_execution_change_request(
                 task_id, result_task_revision=snapshot.revision,
             )
-            return snapshot.document, attempts, safe, repository.task_execution_recovery(task_id), requested_changes
+            from task_inputs import task_has_saved_inputs
+            prepared = task_has_saved_inputs(connection, task_id)
+            return snapshot.document, attempts, safe, repository.task_execution_recovery(task_id), requested_changes, prepared
         except TaskRepositoryConflict as exc:
             raise OrchestrationServiceError("dispatch.task_not_found") from exc
         except (TaskRepositoryError, RunRepositoryError, sqlite3.Error) as exc:
@@ -5017,6 +5020,7 @@ def _planning_execution_public(
     attempts: tuple[dict, ...],
     safe_task: dict,
     recovery: dict | None = None,
+    prepared_inputs: bool = False,
 ) -> dict:
     active_attempt = any(
         item["state"] in {"dispatched", "review_ready"} for item in attempts
@@ -5030,6 +5034,7 @@ def _planning_execution_public(
         and isinstance(task.get("assigned_agent_id"), str)
         and len(attempts) < 8
         and not active_attempt
+        and not prepared_inputs
         and (
             latest_attempt is None
             or latest_attempt["state"] == "changes_requested"
@@ -5063,7 +5068,7 @@ def _planning_execution_public(
         "task": safe_task,
         "execution": {
             "available": available,
-            "reason": None if available else "unavailable",
+            "reason": None if available else "project_inputs_unavailable" if prepared_inputs else "unavailable",
             "attempts": public_attempts,
             "attempt_count": len(public_attempts),
             "recovery": {"available": recovery is not None, "run_id": recovery["run_id"] if recovery else None, "run_revision": recovery["run_revision"] if recovery else None},
@@ -5077,8 +5082,8 @@ def _planning_execution_public(
 
 
 def mentat_planning_task_execution_payload(task_id: str) -> dict:
-    task, attempts, safe, recovery, _requested_changes = _planning_execution_snapshot(task_id)
-    return _planning_execution_public(task, attempts, safe, recovery)
+    task, attempts, safe, recovery, _requested_changes, prepared = _planning_execution_snapshot(task_id)
+    return _planning_execution_public(task, attempts, safe, recovery, prepared)
 
 
 def _planning_execution_objective_projection(objective: str) -> dict:
@@ -5105,16 +5110,16 @@ def mentat_planning_task_run_once_preview(
     if type(expected_revision) is not int or expected_revision < 1:
         return {"error_code": "planning_execution.invalid"}, 400
     try:
-        task, attempts, safe, recovery, requested_changes = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery, requested_changes, prepared = _planning_execution_snapshot(task_id)
+        public = _planning_execution_public(task, attempts, safe, recovery, prepared)
+        if expected_revision != safe["revision"] or not public["execution"]["available"]:
+            return {"error_code": "planning_execution.unavailable"}, 409
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
         objective = OrchestrationService._task_contract(task, safe["revision"], requested_changes).objective
     except RunRepositoryConflict:
         return {"error_code": "planning_execution.conflict"}, 409
     except OrchestrationServiceError as exc:
         return _planning_execution_error(exc)
-    public = _planning_execution_public(task, attempts, safe, recovery)
-    if expected_revision != safe["revision"] or not public["execution"]["available"]:
-        return {"error_code": "planning_execution.unavailable"}, 409
     return {
         "schema_version": 1,
         "action": "run_once",
@@ -5199,10 +5204,12 @@ def mentat_planning_task_run_once(
                 raise OrchestrationServiceError("dispatch.idempotency_conflict")
             response = mentat_planning_task_execution_payload(task_id)
             return {"schema_version": 1, "action": "run_once", "duplicate": True, **response}, 200
-        task, attempts, safe, recovery, requested_changes = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery, requested_changes, prepared = _planning_execution_snapshot(task_id)
+        public = _planning_execution_public(task, attempts, safe, recovery, prepared)
+        if payload["expected_revision"] != safe["revision"] or not public["execution"]["available"]:
+            return {"error_code": "planning_execution.confirmation_stale"}, 409
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
         objective = OrchestrationService._task_contract(task, safe["revision"], requested_changes).objective
-        public = _planning_execution_public(task, attempts, safe, recovery)
         if (
             payload["expected_revision"] != safe["revision"]
             or not public["execution"]["available"]
@@ -9671,6 +9678,9 @@ def persist_task_delegation(
 
 def reserve_task_delegation(task_id: str, expected_task: dict, reservation: dict):
     def mutator(tasks):
+        input_error = _legacy_delegation_input_error(task_id)
+        if input_error:
+            return tasks, (None, input_error[0]["error"])
         if not isinstance(tasks, list):
             return tasks, (None, "Task storage must contain a list")
         next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
@@ -9728,6 +9738,30 @@ def delegation_confirmation(prefix: str, task: dict, intent: dict) -> str:
     return f"{prefix}_" + hashlib.sha256(bound.encode("utf-8")).hexdigest()[:24]
 
 
+def _task_has_prepared_project_inputs(task_id: str) -> bool | None:
+    """Return None on unreadable authority; legacy Hermes must fail closed."""
+    from task_inputs import task_has_saved_inputs
+
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True):
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                return task_has_saved_inputs(connection, task_id)
+            finally:
+                connection.close()
+    except (MentatDatabaseError, OSError, ValueError, sqlite3.Error):
+        return None
+
+
+def _legacy_delegation_input_error(task_id: str) -> tuple[dict, int] | None:
+    prepared = _task_has_prepared_project_inputs(task_id)
+    if prepared is None:
+        return {"error": "Task inputs could not be verified; delegation is unavailable."}, 409
+    if prepared:
+        return {"error": "Saved Task inputs require approved Project execution before starting work."}, 409
+    return None
+
+
 def preview_task_delegation(task_id: str, payload):
     if not TASK_ID_PATTERN.fullmatch(task_id or ""):
         return {"error": "Invalid task id"}, 400
@@ -9736,6 +9770,9 @@ def preview_task_delegation(task_id: str, payload):
     task = task_record(task_id)
     if task is None:
         return {"error": f"Task not found: {task_id}"}, 404
+    input_error = _legacy_delegation_input_error(task_id)
+    if input_error:
+        return input_error
     if task.get("delegation"):
         return {"error": "Task already has linked or pending Hermes work."}, 409
     all_tasks = read_task_snapshot()
@@ -10384,6 +10421,10 @@ def preview_delegation_action(task_id: str, payload):
     note = str(payload.get("note") or "").strip()
     if action not in DELEGATION_ACTIONS:
         return {"error": "Unsupported delegation action."}, 400
+    if action in {"retry", "request_revision"}:
+        input_error = _legacy_delegation_input_error(task_id)
+        if input_error:
+            return input_error
     state = compact_text(delegation.get("state"), max_length=40).lower() or "queued"
     if state not in DELEGATION_ACTION_STATES[action]:
         return {"error": f"The {action.replace('_', ' ')} action is unavailable while delegated work is {state}."}, 409
@@ -10450,6 +10491,10 @@ def execute_confirmed_delegation_action(task_id: str, payload):
     task_updates = {}
     with HERMES_KANBAN_LOCK:
         current_task = task_record(task_id)
+        if action in {"retry", "request_revision"}:
+            input_error = _legacy_delegation_input_error(task_id)
+            if input_error:
+                return input_error
         expected_local = {key: value for key, value in task.items() if key != "delegation"}
         current_local = {key: value for key, value in (current_task or {}).items() if key != "delegation"}
         current_delegation = (current_task or {}).get("delegation") if isinstance((current_task or {}).get("delegation"), dict) else {}
@@ -10464,6 +10509,10 @@ def execute_confirmed_delegation_action(task_id: str, payload):
             return {"error": "Hermes delegation state became unavailable; preview again."}, 409
         if remote_delegation_revision(latest_remote) != preview.get("remote_revision"):
             return {"error": "Hermes task or run state changed after preview; preview the action again."}, 409
+        if action in {"retry", "request_revision"}:
+            input_error = _legacy_delegation_input_error(task_id)
+            if input_error:
+                return input_error
         if action == "accept":
             delegation.update({"state": "completed", "review_state": "accepted", "updated_at": now_iso()})
             task_updates = {
@@ -10499,6 +10548,9 @@ def execute_confirmed_delegation_action(task_id: str, payload):
                 if not commented.get("ok"):
                     result = commented
                 else:
+                    input_error = _legacy_delegation_input_error(task_id)
+                    if input_error:
+                        return {**input_error[0], "partial": True}, input_error[1]
                     revision = int(delegation.get("attempts") or 0) + 1
                     result = adapter.create_task(
                         board,
