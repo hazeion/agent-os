@@ -1,0 +1,223 @@
+# Current-only backup and private unit
+
+The owner explicitly requested fresh/current operation only. This slice accepts
+backup format5 and the current schema46 SQLite unit exclusively. Formats1–4,
+older restore receipt protocols, out-of-line Agent registries and historical
+positive fixtures are retired, not migrated. Unknown/future inputs also fail.
+
+Old-root refusal must occur through read-only inspection before data locks,
+source hardening, chmod or publication. Refusal preserves the exact archive
+and source/target tree. A genuinely absent/uninitialized Console may use a
+current empty unit; existing historical files never become an empty fallback.
+
+PrivateConsoleUnit has three fields: history_raw, database_raw and blobs.
+Canonical Agents are embedded. Current integrity, retained input/output/blob
+bounds, owner-auth invalidation, approval/review epoch rotation, exact preview/
+confirmation, locking, unknown Run/Stop evidence and interrupted current restore
+reconciliation remain intact. B supplies one current schema46 initialization
+recipe plus structural receipts1–45; its caller records46. A owns repository
+validators and cache tests. Root owns global CLI/docs removal.
+
+Verification uses current roundtrip, corruption/graph/retention, owner-auth and
+restore recovery tests, plus explicit old/future format/schema refusal proving
+no archive/tree mutation. Historical success cases are removed rather than
+repurposed into compatibility promises. Two independent reviews are required
+before publication. No production provider or owner service is involved.
+
+## Retired or ported historical methods
+
+The following exact old method names are absent after this change. Current
+Run/blob, provider, Project, owner-method and plan behavior is retained, including
+renamed current equivalents and a current FK/SSE-trigger assertion. Explicit
+old schema/format upgrade success contracts are intentionally retired.
+
+`tests/test_private_console_state.py`:
+
+- `test_already_migrated_summary_uses_current_canonical_counts`
+- `test_bridge_recovery_does_not_create_destination_before_private_migration`
+- `test_changed_legacy_source_invalidates_migration_confirmation`
+- `test_malformed_v2_manifest_items_fail_closed`
+- `test_pre_registry_v2_backup_restores_with_an_empty_registry`
+- `test_previewed_private_migration_preserves_source_and_is_idempotent`
+- `test_private_migration_creates_missing_root_and_rebuilds_partial_stage`
+- `test_private_migration_never_promotes_extra_stage_entries`
+- `test_private_migration_never_promotes_nested_stage_symlink`
+- `test_private_migration_receipt_crash_rejects_changed_destination`
+- `test_private_migration_receipt_crash_resumes_without_recopy`
+- `test_private_migration_revalidates_inventory_after_rename`
+- `test_released_schema_eight_format_four_backup_restores_and_upgrades`
+- `test_released_schema_four_v2_and_v3_backups_restore_and_migrate`
+- `test_released_schema_seven_v3_backup_restores_and_converges_agents`
+- `test_released_schema_ten_format_four_backup_restores_and_upgrades`
+- `test_released_schema_thirteen_format_four_backup_restores_and_upgrades`
+- `test_released_schema_twelve_format_four_backup_restores_and_upgrades`
+- `test_schema_nine_backup_restores_vercel_connection_and_agent_together`
+- `test_schema_seven_backup_bounds_legacy_projection_without_dropping_canonical_runs`
+- `test_schema_seven_backup_derives_runs_from_sqlite_and_rejects_event_corruption`
+- `test_schema_seven_capture_ignores_malformed_stale_legacy_history`
+- `test_schema_seven_private_migration_receipt_survives_digest_upgrade`
+- `test_schema_six_backup_restores_and_migrates_to_current_schema`
+- `test_startup_refuses_legacy_private_state_until_migrated`
+- `test_upgrade_resumes_genuine_protocol_2_restore_receipts`
+- `test_upgrade_resumes_genuine_protocol_3_schema_seven_restore`
+- `test_v2_restore_is_blocked_while_recorded_server_is_active`
+- `test_v2_restore_replaces_private_unit_and_v1_preserves_it`
+
+`tests/test_data_backup_restore.py`:
+
+- `test_default_released_private_units_round_trip_for_older_formats`
+
+`tests/test_restore_sanitization_context.py`:
+
+- `test_published_protocol3_owner_sanitization_with_real_clock_resumes_exactly`
+
+`tests/test_retained_project_schema_backups.py`:
+
+- `test_future_schema_remains_unsupported`
+- `test_retained_project_schemas_filter_and_validate_complete_empty_units`
+- `test_retained_project_schemas_preserve_nonempty_agent_registry`
+- `test_retained_version_does_not_bypass_exact_schema_validation`
+
+`tests/test_project_context.py`:
+
+- `test_exact_schema26_upgrades_without_changing_existing_authority`
+- `test_populated_schema26_run_authority_backup_restores_and_upgrades`
+- `test_private_restore_preserves_context_and_compatible_export_omits_it`
+- `test_schema26_backup_remains_supported`
+- `test_schema26_drift_and_partial_migration_fail_atomically`
+
+`tests/test_project_plans.py`:
+
+- `test_schema32_exact_upgrade_and_drift_gate`
+
+`tests/test_google_login_transactions.py`:
+
+- `test_migration_failure_is_atomic`
+- `test_schema25_snapshot_compatibility_and_exact_forward_migration`
+
+`tests/test_schema25_owner_methods.py`:
+
+- `test_changed_source_and_mid_rewrite_failure_leave_schema24_and_restore_fk_enforcement`
+- `test_populated_migration_preserves_sessions_and_sse_foreign_key_and_trigger`
+- `test_private_backup_restore_and_compatible_export_keep_identity_boundaries`
+- `test_released_schema24_private_snapshot_still_validates_and_sanitizes`
+
+## Verification checkpoint
+
+Current empty-unit construction, canonical Run/blob capture and active Run
+status/timestamps pass. Old/future source schemas, retired runtime files,
+current schema drift, and old/future restore protocols pass refusal checks;
+source modes/mtime/bytes and inflight evidence stay unchanged. Current archive
+roundtrip plus old/future formats pass. An initial broader data-backup run
+passed its 34 selected invocations, including an imported-helper discovery
+duplicate that has since been removed; that is not claimed as 34 unique tests.
+Four existing owner-auth/epoch restore methods pass. A new refusal test's first
+assertion used the wrong public partial status; it now requires the existing
+`partial_failure`, and its corrected run passes without production changes.
+
+The initial current plan-drift port failed against the old base core. After
+normal composition with B's actual current-only core, its fixture uses an
+owner-only Console directory; current roundtrip and exact drift refusal pass. A's repository/cache changes and root's fresh-only
+CLI/document initialization must compose with this branch. This checkpoint is
+not independently shippable and does not claim final whole-suite acceptance.
+All historical provider/owner feature tests outside explicitly retired
+migration contracts remain. No test deadline or storage limit was widened.
+
+Outside callers retired elsewhere: task_repository standalone/schema5 export
+helpers and cache constructors (A); agent_registry_migration and global CLI/
+private migration modules (root); global forward fixtures (B/root). The removed
+MAX_REGISTRY_DATABASE_BYTES reference in test_run_identities needs root cleanup.
+Shared pure document I/O now imports data_documents._publish_raw_missing from
+root's actual checkpoint6c6c589; no retired migration module is needed. Current restore protocol4 and its exact
+inflight state, including unknown/partial outcomes, remain authoritative.
+
+
+## Fresh storage composition checkpoint
+
+B's actual current core and root6c6c589 are normal merge ancestors. Seven focused
+checks passed in15.829s, including current plan roundtrip and a fresh empty
+archive restored to a usable embedded Agent registry (list/create); backing up
+the fresh source does not create its SQLite authority or a standalone registry.
+
+At root's request, private_state gains only the shared read-only
+fresh_console_storage_issue helper. Missing-database admission permits absent
+or empty Console storage, or one exact duplicate-free current schema3/runs[]
+history document. Unknown Console inventory, retained blob files, old/future or
+nonempty history, retired registry files and old runtime main/sidecar evidence
+refuse. Reads are bounded/no-follow, identity checked and owner-private; nothing
+is hardened or rewritten. Existing current SQLite authority still ignores
+stale old JSON/registry files. An explicit restore stage lacking its current DB
+refuses rather than using the canonical fresh-root template. Capture rechecks
+fresh admission after template construction so newly appearing authority is not
+silently replaced with empty state.
+
+Eight focused current/refusal methods pass in4.630s, including ambiguous JSON,
+unknown files, runtime sidecars and authority appearing during template
+construction. The initial helper iteration caught and corrected a temporary
+root lexical/canonical alias comparison; no validator was weakened. The broad
+129-method run began before this factoring and remains separate evidence. It
+currently exposes an existing startup error projection failure after waiting
+on the shared lock; root owns that implementation, and the original refusal,
+thread termination and unchanged-tree assertions remain. Final composed suite
+qualification and two independent reviews remain pending.
+
+## Integrated freshness and tamper review followup
+
+Normal merges now include A de8e585 and root0bd705b/f1955a5. The affected
+startup/shared-admission/fresh-registry10-method run passed in41.210s; after
+kernel integration another10-method run passed in33.903s, including exact
+locked startup refusal and cleanup-time tampering of current canonical SQLite
+Run status. The latter replaces an obsolete attack on stale JSON, which current
+SQL authority deliberately ignores; it now proves the mutation happened by
+exact SQL readback and still requires retained partial restore evidence.
+An orphaned POSIX-only decorator from a removed historical symlink method was
+removed from the ordinary backup-filter method, restoring Windows coverage.
+
+Independent review identified a narrow same-inode history metadata race:
+link-count or mode changes during reading were not included in the original
+identity tuple. The helper now validates regular/no-reparse, one link, owner,
+0600 mode and bounded size at lexical stat, opened fstat, post-read fstat and
+terminal path stat. A deterministic read hook creates an outside hardlink or
+changes mode after the first read; both refuse without creating SQLite or
+rewriting history. All nine focused current/refusal methods pass in5.025s.
+These source changes require final independent re-review. The original broad
+run remains diagnostic (known obsolete startup and stale-JSON fixture failures);
+no final exact-head whole-suite pass is claimed yet.
+
+The fresh history open now also uses O_NONBLOCK so replacement of the checked
+regular file with a FIFO cannot block before the opened-file type check. A
+POSIX fixture replaces the file at os.open, requires both NOFOLLOW and NONBLOCK,
+then opens the real FIFO and verifies immediate refusal with no database
+creation. All ten focused current/refusal methods pass in5.787s. Existing
+regular-file and current-present-database behavior is unchanged. This narrow
+followup is subject to independent review before publication.
+
+The shared parser explicitly decodes UTF-8 before JSON parsing, matching actual
+current Run bootstrap. JSON's bytes auto-detection previously admitted UTF-16,
+UTF-32 and UTF-8 BOM documents that bootstrap refuses. All three are now part
+of unchanged-history/no-database refusal coverage. The same current shape,
+duplicate-key and Unicode-error policy remains; no new encoding is supported.
+
+## Final component evidence
+
+The initial broad diagnostic run is terminal:129 methods in864.428s,
+126 passed and3 failed, with no errors or skips. It began before the later
+source composition, so it is not exact-final-head qualification. The startup
+error projection and stale-JSON tamper assumptions were corrected as described
+above. The third failure was a test-porting mistake: the unchanged per-scope
+32-plan-version count assertion had been replaced with database schema46.
+The original32 assertion is restored; no production limit changes. All15 plan
+methods plus the exact startup and canonical tamper regressions pass together:
+17 methods in57.774s with ResourceWarnings as errors.
+
+Two private-state fixtures still passed the removed pre-authority constructor
+argument into A's TaskRepository API. Both now use the actual current-only
+constructor, retaining their exact claim and capacity/retention assertions.
+Malformed stale history and maximum terminal dispatch retention both pass on
+the real composed interfaces:2 methods in27.960s with ResourceWarnings as errors.
+Final shared freshness checks, including UTF-16/32/BOM refusal, all pass:
+10 methods in8.800s. Production source changes have two independent reviews;
+this final fixture/evidence followup still requires independent delta review.
+The worktree is ready for root's exact composed full-suite qualification. No
+hosted CI, Windows/Linux execution, remote operator or provider acceptance is
+claimed, and nothing has been pushed or published from this branch.

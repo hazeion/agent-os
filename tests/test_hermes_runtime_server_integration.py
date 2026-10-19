@@ -131,7 +131,7 @@ class HermesRuntimeServerIntegrationTests(unittest.TestCase):
                     "completed_at": None,
                 }
                 TaskRepository(
-                    connection, allow_pre_authority_schema=True
+                    connection
                 ).insert_collection([task_document])
                 digest = runtime_binding_digest(
                     agent_id="agent_researcher",
@@ -145,7 +145,7 @@ class HermesRuntimeServerIntegrationTests(unittest.TestCase):
                     dispatch_id="dispatch_private",
                     run_id="run_preallocated",
                     task=TaskRepository(
-                        connection, allow_pre_authority_schema=True
+                        connection
                     ).get(task_id).document,
                     task_revision=1,
                     agent_id="agent_researcher",

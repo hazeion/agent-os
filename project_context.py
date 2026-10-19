@@ -15,6 +15,7 @@ from agent_console_attachments import (
     AttachmentError, MAX_RETAINED_BLOBS, MAX_RETAINED_BLOB_BYTES,
     read_attachment_bytes,
 )
+from mentat_db import SCHEMA_VERSION as DATABASE_SCHEMA_VERSION
 from private_state import private_state_lock
 from project_repository import ProjectRepository, ProjectRepositoryError
 from task_repository import _guarded_transaction, _open_repository_database
@@ -23,37 +24,19 @@ MAX_BRIEF_BYTES = 16 * 1024
 MAX_FILES = 16
 MAX_PROJECT_VERSIONS = 32
 MAX_VERSIONS = 256
-LEGACY_MAX_METADATA_BYTES = 4 * 1024 * 1024
-# Schema 28 reserves bounded migration/control overhead for 128 Agent
-# incarnations, up to 256 scope retirement fields, and the approval epoch.
-ACCESS_MAX_METADATA_BYTES = LEGACY_MAX_METADATA_BYTES + 64 * 1024
-# Schema 29 reserves every supported Task identity slot plus empty input graph
-# framing. Full schema-28 roots must remain valid after the identity migration.
+# Current graph allocations. These fixed component contributions retain the
+# existing aggregate limit; no earlier database version selects a smaller graph.
+CONTEXT_MAX_METADATA_BYTES = 4 * 1024 * 1024
+ACCESS_MAX_METADATA_BYTES = CONTEXT_MAX_METADATA_BYTES + 64 * 1024
 MAX_METADATA_BYTES = ACCESS_MAX_METADATA_BYTES + 512 * 1024
-# Schema 30 charges immutable Run-input receipts and exact file identities in
-# the same bounded graph. Empty migration overhead is intentionally small.
 RUN_INPUT_MAX_METADATA_BYTES = MAX_METADATA_BYTES + 512 * 1024
-# Schema 31 shares the same graph with bounded typed deliverable versions.
 DELIVERABLE_MAX_METADATA_BYTES = RUN_INPUT_MAX_METADATA_BYTES + 2 * 1024 * 1024
-# Schema 32 adds bounded immutable owner review decisions for exact result heads.
 DELIVERABLE_REVIEW_MAX_METADATA_BYTES = DELIVERABLE_MAX_METADATA_BYTES + 1024 * 1024
-# Schema 33 reserves immutable bounded plan versions and protected input refs.
 PLAN_MAX_METADATA_BYTES = DELIVERABLE_REVIEW_MAX_METADATA_BYTES + 8 * 1024 * 1024
-# Schema 38 retains bounded owner-selected lead-role history separately from
-# Project context and plan authority.
 LEAD_MAX_METADATA_BYTES = PLAN_MAX_METADATA_BYTES + 256 * 1024
-# Schema 39 allows 256 retained Project planning inputs with 16 KiB briefs
-# and up to eight frozen file records each. Validate prospective writes
-# against this entire shared private-backup graph before committing them.
 PROJECT_INPUT_MAX_METADATA_BYTES = LEAD_MAX_METADATA_BYTES + 6 * 1024 * 1024
-# Schema 40 adds at most one immutable action receipt per retained Project
-# planning-input version for exact lost-response reconciliation.
 PROJECT_INPUT_ACTION_MAX_METADATA_BYTES = PROJECT_INPUT_MAX_METADATA_BYTES + 256 * 1024
-
-# Schema 42 reserves bounded historical evidence for 128 proposal Run-input
-# receipts with at most eight exact file records each. Dispatch stays closed.
 PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES + 512 * 1024
-# At most one normalized completion and bounded control/call metadata per Run.
 WORKER_JOURNAL_MAX_METADATA_BYTES = PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES + 10 * 1024 * 1024
 OUTPUT_RESERVATION_MAX_METADATA_BYTES = WORKER_JOURNAL_MAX_METADATA_BYTES + 16 * 1024 * 1024 + 4096
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
@@ -101,6 +84,13 @@ def _encoded(value: object) -> bytes:
 def validate_project_context_connection(connection: sqlite3.Connection, *, require_available: bool = True) -> None:
     """Validate the complete bounded retained graph, including backup snapshots."""
     # No row_factory mutation: backup validators and repositories share this handle.
+    try:
+        journal_versions = tuple(row[0] for row in connection.execute(
+            'SELECT version FROM schema_migrations ORDER BY version'))
+    except sqlite3.Error:
+        _fail('invalid')
+    if any(type(version) is not int for version in journal_versions) or journal_versions != tuple(range(1, DATABASE_SCHEMA_VERSION + 1)):
+        _fail('invalid')
     scopes = connection.execute(
         "SELECT id,project_id,revision,created_at,retired_at FROM mentat_project_context_scopes ORDER BY id"
     ).fetchmany(MAX_VERSIONS + 1)
@@ -112,136 +102,109 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
     ).fetchmany(MAX_VERSIONS * MAX_FILES + 1)
     if len(scopes) > MAX_VERSIONS or len(versions) > MAX_VERSIONS or len(files) > MAX_VERSIONS * MAX_FILES:
         _fail("capacity")
-    schema_version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
     metadata = [[list(row) for row in rows] for rows in (scopes, versions, files)]
-    budget = LEGACY_MAX_METADATA_BYTES
-    if schema_version >= 28:
-        budget = ACCESS_MAX_METADATA_BYTES
-        metadata[0] = [list(row[:4]) + ['0' * 32] for row in scopes]
-        from project_context_access import ProjectContextAccessError, validate_access_connection
-        try:
-            metadata.extend(validate_access_connection(connection))
-        except ProjectContextAccessError as exc:
-            if str(exc) == 'project_context_access.capacity':
-                _fail('capacity')
-            _fail('invalid')
-    if schema_version >= 29:
-        budget = MAX_METADATA_BYTES
-        from task_inputs import TaskInputError, validate_input_connection
-        try:
-            metadata.extend(validate_input_connection(connection, require_available=require_available))
-        except TaskInputError as exc:
-            if str(exc) == 'task_input.capacity':
-                _fail('capacity')
-            _fail('task_inputs_invalid')
-    if schema_version >= 30:
-        budget = RUN_INPUT_MAX_METADATA_BYTES
-        from run_input_receipts import RunInputReceiptError, validate_run_input_connection
-        try:
-            metadata.extend(validate_run_input_connection(connection, require_available=require_available))
-        except RunInputReceiptError as exc:
-            if str(exc) == 'run_input.capacity':
-                _fail('capacity')
-            _fail('run_inputs_invalid')
-    if schema_version >= 31:
-        budget = DELIVERABLE_MAX_METADATA_BYTES
-        from project_deliverables import DeliverableError, validate_deliverable_connection
-        try:
-            metadata.extend(validate_deliverable_connection(connection, require_available=require_available))
-        except DeliverableError as exc:
-            if str(exc) == 'deliverable.capacity':
-                _fail('capacity')
-            _fail('deliverables_invalid')
-    if schema_version >= 32:
-        budget = DELIVERABLE_REVIEW_MAX_METADATA_BYTES
-        from project_deliverable_review import DeliverableReviewError, validate_review_connection
-        try:
-            metadata.extend(validate_review_connection(connection))
-        except DeliverableReviewError as exc:
-            if str(exc) == 'deliverable_review.capacity':
-                _fail('capacity')
-            _fail('deliverable_review_invalid')
-    if schema_version >= 33:
-        budget = PLAN_MAX_METADATA_BYTES
-        from project_plans import ProjectPlanError, validate_plan_connection
-        try:
-            metadata.extend(validate_plan_connection(connection))
-        except ProjectPlanError as exc:
-            if str(exc) == 'project_plan.capacity':
-                _fail('capacity')
-            _fail('plans_invalid')
-    if schema_version >= 38:
-        budget = LEAD_MAX_METADATA_BYTES
-        from project_leads import ProjectLeadError, validate_lead_connection
-        try:
-            metadata.extend(validate_lead_connection(connection))
-        except ProjectLeadError as exc:
-            if str(exc) == 'project_lead.capacity':
-                _fail('capacity')
-            _fail('project_leads_invalid')
-    if schema_version >= 39:
-        budget = PROJECT_INPUT_MAX_METADATA_BYTES
-        from project_planning_inputs import (ProjectPlanningInputError,
-                                             validate_project_planning_input_connection)
-        try:
-            metadata.extend(validate_project_planning_input_connection(
-                connection, require_available=require_available))
-        except ProjectPlanningInputError as exc:
-            if str(exc) == 'project_input.capacity':
-                _fail('capacity')
-            _fail('project_inputs_invalid')
-    if schema_version >= 40:
-        budget = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES
-    if schema_version >= 42:
-        budget = PROJECT_PROPOSAL_INPUT_MAX_METADATA_BYTES
-        from project_proposal_input_receipts import (
-            ProjectProposalInputReceiptError,
-            validate_project_proposal_input_connection,
-        )
-        try:
-            metadata.extend(validate_project_proposal_input_connection(
-                connection, require_available=require_available))
-        except ProjectProposalInputReceiptError as exc:
-            if str(exc) == 'project_proposal_input.capacity':
-                _fail('capacity')
-            _fail('proposal_inputs_invalid')
-    if schema_version >= 43:
-        budget = WORKER_JOURNAL_MAX_METADATA_BYTES
-        from project_worker_journal import WorkerJournalError, validate_worker_journal_connection
-        try:
-            metadata.extend(validate_worker_journal_connection(connection))
-        except WorkerJournalError as exc:
-            if str(exc) == 'worker_journal.capacity':
-                _fail('capacity')
-            _fail('worker_journal_invalid')
-    if schema_version >= 44:
-        from project_scope_journal import validate_scope_journal_connection
-        from project_worker_journal import WorkerJournalError
-        try:
-            metadata.extend(validate_scope_journal_connection(connection))
-        except WorkerJournalError as exc:
-            if str(exc) == 'scope_journal.capacity':
-                _fail('capacity')
-            _fail('scope_journal_invalid')
-    if schema_version >= 45:
-        budget = OUTPUT_RESERVATION_MAX_METADATA_BYTES
-        from project_output_reservations import validate_output_reservations_connection
-        from project_worker_journal import WorkerJournalError
-        try:
-            metadata.extend(validate_output_reservations_connection(connection))
-        except WorkerJournalError as exc:
-            if str(exc) == 'output_reservation.capacity':
-                _fail('capacity')
-            _fail('output_reservation_invalid')
-    if schema_version >= 46:
-        from project_producers import validate_producer_graph
-        from project_worker_journal import WorkerJournalError
-        try:
-            producer_metadata=validate_producer_graph(connection)
-            if len(_encoded(producer_metadata)) > 128*128*1024:
-                _fail('capacity')
-        except WorkerJournalError as exc:
-            _fail('producer_invalid')
+    budget = OUTPUT_RESERVATION_MAX_METADATA_BYTES
+    metadata[0] = [list(row[:4]) + ['0' * 32] for row in scopes]
+    from project_context_access import ProjectContextAccessError, validate_access_connection
+    try:
+        metadata.extend(validate_access_connection(connection))
+    except ProjectContextAccessError as exc:
+        if str(exc) == 'project_context_access.capacity':
+            _fail('capacity')
+        _fail('invalid')
+    from task_inputs import TaskInputError, validate_input_connection
+    try:
+        metadata.extend(validate_input_connection(connection, require_available=require_available))
+    except TaskInputError as exc:
+        if str(exc) == 'task_input.capacity':
+            _fail('capacity')
+        _fail('task_inputs_invalid')
+    from run_input_receipts import RunInputReceiptError, validate_run_input_connection
+    try:
+        metadata.extend(validate_run_input_connection(connection, require_available=require_available))
+    except RunInputReceiptError as exc:
+        if str(exc) == 'run_input.capacity':
+            _fail('capacity')
+        _fail('run_inputs_invalid')
+    from project_deliverables import DeliverableError, validate_deliverable_connection
+    try:
+        metadata.extend(validate_deliverable_connection(connection, require_available=require_available))
+    except DeliverableError as exc:
+        if str(exc) == 'deliverable.capacity':
+            _fail('capacity')
+        _fail('deliverables_invalid')
+    from project_deliverable_review import DeliverableReviewError, validate_review_connection
+    try:
+        metadata.extend(validate_review_connection(connection))
+    except DeliverableReviewError as exc:
+        if str(exc) == 'deliverable_review.capacity':
+            _fail('capacity')
+        _fail('deliverable_review_invalid')
+    from project_plans import ProjectPlanError, validate_plan_connection
+    try:
+        metadata.extend(validate_plan_connection(connection))
+    except ProjectPlanError as exc:
+        if str(exc) == 'project_plan.capacity':
+            _fail('capacity')
+        _fail('plans_invalid')
+    from project_leads import ProjectLeadError, validate_lead_connection
+    try:
+        metadata.extend(validate_lead_connection(connection))
+    except ProjectLeadError as exc:
+        if str(exc) == 'project_lead.capacity':
+            _fail('capacity')
+        _fail('project_leads_invalid')
+    from project_planning_inputs import (ProjectPlanningInputError,
+                                         validate_project_planning_input_connection)
+    try:
+        metadata.extend(validate_project_planning_input_connection(
+            connection, require_available=require_available))
+    except ProjectPlanningInputError as exc:
+        if str(exc) == 'project_input.capacity':
+            _fail('capacity')
+        _fail('project_inputs_invalid')
+    from project_proposal_input_receipts import (
+        ProjectProposalInputReceiptError,
+        validate_project_proposal_input_connection,
+    )
+    try:
+        metadata.extend(validate_project_proposal_input_connection(
+            connection, require_available=require_available))
+    except ProjectProposalInputReceiptError as exc:
+        if str(exc) == 'project_proposal_input.capacity':
+            _fail('capacity')
+        _fail('proposal_inputs_invalid')
+    from project_worker_journal import WorkerJournalError, validate_worker_journal_connection
+    try:
+        metadata.extend(validate_worker_journal_connection(connection))
+    except WorkerJournalError as exc:
+        if str(exc) == 'worker_journal.capacity':
+            _fail('capacity')
+        _fail('worker_journal_invalid')
+    from project_scope_journal import validate_scope_journal_connection
+    from project_worker_journal import WorkerJournalError
+    try:
+        metadata.extend(validate_scope_journal_connection(connection))
+    except WorkerJournalError as exc:
+        if str(exc) == 'scope_journal.capacity':
+            _fail('capacity')
+        _fail('scope_journal_invalid')
+    from project_output_reservations import validate_output_reservations_connection
+    from project_worker_journal import WorkerJournalError
+    try:
+        metadata.extend(validate_output_reservations_connection(connection))
+    except WorkerJournalError as exc:
+        if str(exc) == 'output_reservation.capacity':
+            _fail('capacity')
+        _fail('output_reservation_invalid')
+    from project_producers import validate_producer_graph
+    from project_worker_journal import WorkerJournalError
+    try:
+        producer_metadata=validate_producer_graph(connection)
+        if len(_encoded(producer_metadata)) > 128*128*1024:
+            _fail('capacity')
+    except WorkerJournalError as exc:
+        _fail('producer_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

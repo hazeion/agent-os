@@ -54,31 +54,14 @@ class DataBackupRestoreTests(unittest.TestCase):
             if os.name == "posix":
                 directory.chmod(0o700)
 
-    def make_current(
-        self,
-        base: Path,
-        name: str,
-        marker: str,
-        *,
-        extra_markers: bool = False,
-    ) -> tuple[Path, Path]:
-        seeds = base / f"{name}-seeds"
-        target = base / name
+    def make_current(self, base: Path, name: str, marker: str, *, extra_markers: bool = False) -> tuple[Path, Path]:
+        seeds, target = base / f"{name}-seeds", base / name
         self.write_inventory(seeds, marker="seed")
+        result = data_layout.initialize_data_root(seeds, target,
+            locked_prepare=lambda root, descriptor, plan: data_schema.prepare_fresh_schema_initialization(seeds, root, descriptor, plan),
+            locked_finalize=lambda root, descriptor, plan: data_schema.initialize_fresh_schema_under_lock(seeds, root, descriptor))
+        self.assertEqual(result.status, "initialized")
         self.write_inventory(target, marker=marker, extra_markers=extra_markers)
-        preview = data_schema.preview_schema_migration(
-            seeds,
-            target,
-            home=base / "home",
-        )
-        self.assertEqual(preview.status, "ready")
-        result = data_schema.migrate_data_schema(
-            seeds,
-            target,
-            confirmation_token=preview.confirmation_token or "",
-            home=base / "home",
-        )
-        self.assertEqual(result.status, "migrated")
         self.assertEqual(data_schema.schema_preflight_status(target), "current")
         return seeds, target
 
@@ -180,25 +163,53 @@ class DataBackupRestoreTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertFalse(any("link-preview" in name for name in archive.namelist()))
 
-    def test_default_released_private_units_round_trip_for_older_formats(self):
-        with TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            _seeds, source = self.make_current(base, "source", "source")
-            documents = backup_restore._load_live_documents(source, None)
+    def test_current_private_unit_round_trip_and_old_future_formats_refuse_without_writes(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            _source, archive_path, _backup = self.create_source_backup(base)
+            _seeds, target = self.make_current(base, "target", "target")
+            raw = archive_path.read_bytes()
+            documents, unit, version = backup_restore._contents_from_backup(raw)
+            self.assertEqual(version, 5)
+            self.assertIsNotNone(unit)
+            self.assertEqual(backup_restore._build_backup(documents, unit), raw)
+            for version in (4, 6):
+                output = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(raw)) as original, zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as changed:
+                    for name in original.namelist():
+                        content = original.read(name)
+                        if name == "manifest.json":
+                            manifest = json.loads(content)
+                            manifest["format_version"] = version
+                            content = backup_restore._canonical_json(manifest)
+                        changed.writestr(backup_restore._zip_entry(name), content)
+                selected = base / archive_path.name
+                selected.write_bytes(output.getvalue())
+                selected.chmod(0o600)
+                before, archive_before = self.snapshot(target), selected.read_bytes()
+                preview = backup_restore.preview_durable_restore(target, selected)
+                self.assertEqual(preview.status, "unsupported", preview.public_summary())
+                refused = backup_restore.restore_durable_backup(target, selected, confirmation_token="f" * 64)
+                self.assertEqual(refused.status, "blocked")
+                self.assertEqual(self.snapshot(target), before)
+                self.assertEqual(selected.read_bytes(), archive_before)
 
-            for format_version in (2, 3, 4):
-                with self.subTest(format_version=format_version):
-                    raw = backup_restore._build_backup(
-                        documents,
-                        format_version=format_version,
-                    )
-                    parsed_documents, unit, parsed_version = (
-                        backup_restore._contents_from_backup(raw)
-                    )
-                    self.assertEqual(parsed_documents, documents)
-                    self.assertEqual(parsed_version, format_version)
-                    self.assertIsNotNone(unit)
-                    self.assertEqual(unit.agent_count if unit else -1, 0)
+    def test_fresh_empty_archive_restores_a_usable_embedded_registry(self):
+        from agent_registry import AgentRegistry
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source, archive, _created = self.create_source_backup(base)
+            self.assertFalse((source / "private" / "console" / "mentat.sqlite3").exists())
+            _seeds, target = self.make_current(base, "target", "target")
+            preview = backup_restore.preview_durable_restore(target, archive)
+            restored = backup_restore.restore_durable_backup(target, archive, confirmation_token=preview.confirmation_token or "")
+            self.assertEqual(restored.status, "restored", restored.public_summary())
+            registry = AgentRegistry(target, supported_runtime_types=("hermes",))
+            self.assertEqual(registry.list_agents(), ())
+            agent = registry.create_agent(agent_id="agent_fresh_restore", name="Fresh restored Agent",
+                runtime_config_id="runtime_fresh_restore", runtime_type="hermes", runtime_agent_ref="fixture", capabilities=())
+            self.assertEqual([item.id for item in registry.list_agents()], [agent.id])
+            self.assertFalse((target / "private" / "console" / "agent-registry.sqlite3").exists())
 
     def test_backup_snapshot_serializes_with_ordinary_json_mutation(self):
         with TemporaryDirectory() as tmpdir:
@@ -910,6 +921,9 @@ class DataBackupRestoreTests(unittest.TestCase):
             base = Path(tmpdir)
             _source, backup_path, _result = self.create_source_backup(base)
             _seeds, target = self.make_current(base, "target", "target")
+            from mentat_db import connect
+            connection = connect(target)
+            connection.close()
             preview = backup_restore.preview_durable_restore(target, backup_path)
             initial_checked = Event()
             startup_finished = Event()

@@ -1,4 +1,4 @@
-"""Schema-39 Project input history is storage, never proposal admission."""
+"""Current Project input history is storage, never proposal admission."""
 
 from contextlib import closing
 from dataclasses import replace
@@ -19,7 +19,6 @@ from project_context_editor import (ProjectContextEditorError, preview_context_p
 from project_leads import read_project_lead, select_project_lead
 from project_planning_inputs import (ProjectPlanningInputError,
                                      validate_project_planning_input_connection)
-from task_repository import _schema5_private_unit
 from tests import test_task_inputs
 
 
@@ -210,18 +209,10 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                 replace(unit, database_raw=snapshot.read_bytes())
             )
 
-    def test_schema5_compatible_export_omits_new_authority(self):
+    def test_current_capture_preserves_source_planning_input(self):
         self.insert_version()
         unit = private_console_unit.capture_private_console_unit(self.root)
-        compatible = _schema5_private_unit(unit)
-        with closing(sqlite3.connect(":memory:")) as connection:
-            connection.deserialize(compatible.database_raw)
-            self.assertEqual(connection.execute(
-                "SELECT MAX(version) FROM schema_migrations"
-            ).fetchone()[0], 5)
-            self.assertIsNone(connection.execute(
-                "SELECT name FROM sqlite_master WHERE name='mentat_project_planning_input_versions'"
-            ).fetchone())
+        private_console_unit.validate_private_console_unit(unit)
         with closing(mentat_db.connect(self.root)) as connection:
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM mentat_project_planning_input_versions"
@@ -241,92 +232,14 @@ class ProjectPlanningInputStorageTests(unittest.TestCase):
                     "FROM mentat_project_planning_input_versions WHERE revision=1"
                 )
 
-    def test_populated_schema39_upgrade_backfills_explicit_legacy_receipt(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "schema39.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=39)
-            identifier = "project_input_" + "d" * 32
-            digest = _digest([])
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute(
-                    "INSERT INTO mentat_project_context_scopes VALUES(?,?,?,?,?)",
-                    ("project_scope_" + "a" * 32, "project_garage", 1, 1.0, 5.0),
-                )
-                connection.execute(
-                    "INSERT INTO mentat_project_context_versions VALUES(?,?,?,?,?,?)",
-                    ("project_context_" + "b" * 32,
-                     "project_scope_" + "a" * 32, 1, "Old garage", digest, 2.0),
-                )
-                connection.execute(
-                    "INSERT INTO mentat_project_lead_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("lead_role_" + "c" * 32, "project_garage", "e" * 32, 1,
-                     "select", "agent_research", "f" * 32, 1, "1" * 64,
-                     "project_context_" + "b" * 32, 1, 3.0),
-                )
-                connection.execute(
-                    "INSERT INTO mentat_project_planning_input_versions "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (identifier, "project_garage", "e" * 32, 1, 1,
-                     "lead_role_" + "c" * 32, 1, "agent_research", "f" * 32,
-                     1, "1" * 64, "project_context_" + "b" * 32, 1,
-                     "Plan the old garage", digest, 4.0),
-                )
-                connection.commit()
-                self.assertEqual(mentat_db.schema_signature_state(connection, 39), "expected")
-                mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-                row = connection.execute(
-                    "SELECT action_id,input_id,request_digest,source_kind "
-                    "FROM mentat_project_planning_input_actions"
-                ).fetchone()
-                self.assertEqual(row, (
-                    "project_input_action_" + identifier[14:], identifier,
-                    digest, "legacy",
-                ))
 
 
-class ProjectPlanningInputMigrationTests(unittest.TestCase):
-    def test_deterministic_empty_private_unit_accepts_virtual_migration_cutoff(self):
+class ProjectPlanningInputCurrentRecipeTests(unittest.TestCase):
+    def test_deterministic_empty_private_unit_accepts_virtual_recipe_cutoff(self):
         unit = private_console_unit.empty_private_console_unit()
         private_console_unit.validate_private_console_unit(unit)
 
-    def test_exact_schema39_action_upgrade_and_drift_rejection(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "old.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=39)
-            with closing(sqlite3.connect(path)) as connection:
-                mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drift.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=39)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP TRIGGER mentat_project_planning_input_immutable")
-                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 39"):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute(
-                    "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0], 39)
 
-    def test_exact_schema38_upgrade_and_drift_rejection(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "old.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=38)
-            with closing(sqlite3.connect(path)) as connection:
-                mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drift.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=38)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP TRIGGER mentat_project_lead_immutable")
-                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 38"):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute(
-                    "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0], 38)
 
 
 if __name__ == "__main__":

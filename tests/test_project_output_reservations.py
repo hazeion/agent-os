@@ -19,7 +19,6 @@ import project_output_reservations as outputs
 import project_scope_journal as scopes
 import project_worker_journal as journal
 from run_repository import RunRepository, RunRepositoryError
-from task_repository import _schema5_private_unit
 from tests import test_project_worker_journal as fixtures
 from tests import test_project_scope_journal as scope_fixtures
 
@@ -91,8 +90,8 @@ class OutputReservationTests(unittest.TestCase):
     def test_late_reservation_cannot_retrofit_old_work(self):
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute('BEGIN IMMEDIATE')
-            # Exact historical schema44 graph: omit the later reservation, then
-            # restore version45. No production operation bypass is introduced.
+            # Inject a current scope without its required precharged hold, then
+            # verify that a late reservation cannot repair the ordering breach.
             with patch.object(outputs, 'require_output_reservation', return_value=(None,)*10+(0,)):
                 scopes.prepare_scope(connection, run_id=self.run, generation=fixtures.GENERATION,
                                      plan_witness=scope_fixtures.planned_fixture().journal_plan())
@@ -251,83 +250,11 @@ class OutputReservationTests(unittest.TestCase):
                 with self.assertRaises(journal.WorkerJournalError):
                     outputs.reserve_output(connection,run_id=self.run,generation=fixtures.GENERATION)
                 connection.rollback()
-            compatible=_schema5_private_unit(unit)
-            with closing(sqlite3.connect(':memory:')) as connection:
-                connection.deserialize(compatible.database_raw)
-                self.assertIsNone(connection.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_output_reservations'").fetchone())
         self.assertEqual(self._row(),original)
         self.assertNotIn(first.holder_token,repr(unit))
         self.assertEqual((self.root/'tasks.json').read_bytes(),source_tasks)
 
-    def test_exact_schema44_migrates_empty_without_invented_holders_and_ddl_failure_rolls_back(self):
-        for drift in (False,True):
-            with self.subTest(drift=drift), TemporaryDirectory() as temporary:
-                path=Path(temporary)/'old.sqlite'
-                backups._initialize_database(path,schema_version=44)
-                with closing(sqlite3.connect(path)) as connection:
-                    if drift:
-                        connection.execute('ALTER TABLE mentat_runs ADD COLUMN invalid_extra TEXT')
-                        connection.commit()
-                    before=list(connection.iterdump())
-                    execute=mentat_db._execute_script_in_active_transaction
-                    def fail_after_ddl(active,script):
-                        execute(active,script)
-                        if script==dict(mentat_db.MIGRATIONS)[45]: raise RuntimeError('after output DDL')
-                    if drift:
-                        with self.assertRaises(mentat_db.MentatDatabaseError): mentat_db.migrate(connection)
-                    else:
-                        with patch.object(mentat_db,'_execute_script_in_active_transaction',side_effect=fail_after_ddl):
-                            with self.assertRaisesRegex(RuntimeError,'after output DDL'): mentat_db.migrate(connection)
-                    self.assertEqual(list(connection.iterdump()),before)
-                    self.assertFalse(connection.in_transaction)
-                    if not drift:
-                        mentat_db.migrate(connection)
-                        self.assertEqual(mentat_db.schema_signature_state(connection,46),'expected')
-                        self.assertEqual(outputs.pending_capacity(connection),(0,0))
-                        self.assertIn('mentat_project_output_reservations',{row[0] for row in mentat_db._run_source_migration_snapshot(connection)})
 
-    def test_populated_historical_schema44_backup_retains_work_without_inventing_a_hold(self):
-        with closing(mentat_db.connect(self.root)) as connection:
-            connection.execute('BEGIN IMMEDIATE')
-            # Reproduce the previously supported dormant source graph, without
-            # launching a process or submitting any synthetic/provider work.
-            with patch.object(outputs,'require_output_reservation',return_value=(None,)*10+(0,)):
-                scopes.prepare_scope(connection,run_id=self.run,generation=fixtures.GENERATION,
-                                     plan_witness=scope_fixtures.planned_fixture().journal_plan())
-                call=journal.reserve_call(connection,run_id=self.run,generation=fixtures.GENERATION,request_digest=fixtures.REQUEST)
-                journal.record_submission(connection,call_id=call.call_id,generation=fixtures.GENERATION,
-                    request_digest=fixtures.REQUEST,settlement_token=call.settlement_token)
-            connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
-            from tests.producer_schema_support import remove_schema46
-            remove_schema46(connection)
-            connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
-            connection.execute('DROP TABLE mentat_project_output_reservations')
-            connection.execute('DELETE FROM schema_migrations WHERE version=45')
-            connection.commit()
-            self.assertEqual(mentat_db.schema_signature_state(connection,44),'expected')
-            prior_call=tuple(connection.execute('SELECT * FROM mentat_project_worker_calls').fetchone())
-            prior_scope=tuple(connection.execute('SELECT * FROM mentat_project_worker_scopes').fetchone())
-        from private_state import database_path
-        before={item.name:item.read_bytes() for item in database_path(self.root).parent.glob('mentat.sqlite3*')}
-        unit=backups.capture_private_console_unit(self.root,harden_source=False,copy_sqlite_source=True)
-        backups.validate_private_console_unit(unit)
-        self.assertEqual({item.name:item.read_bytes() for item in database_path(self.root).parent.glob('mentat.sqlite3*')},before)
-        with TemporaryDirectory() as temporary:
-            copied=Path(temporary)/'old44.sqlite'
-            copied.write_bytes(unit.database_raw)
-            with closing(sqlite3.connect(copied)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection,44),'expected')
-                self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_calls').fetchone()),prior_call)
-                self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_scopes').fetchone()),prior_scope)
-        with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection,46),'expected')
-            self.assertEqual(outputs.pending_capacity(connection),(0,0))
-            self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_calls').fetchone()),prior_call)
-            self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_project_worker_scopes').fetchone()),prior_scope)
-            connection.execute('BEGIN IMMEDIATE')
-            with self.assertRaisesRegex(outputs.OutputReservationError,'late'):
-                outputs.reserve_output(connection,run_id=self.run,generation=fixtures.GENERATION)
-            connection.rollback()
 
 
 if __name__=='__main__': unittest.main()

@@ -1011,7 +1011,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
             config = self.make_config(Path(tmpdir) / "platform-data")
             cli_args = server.parse_cli_args([])
             order = []
-            with patch.object(
+            with patch.object(lifecycle, "mark_native_startup_phase", side_effect=lambda phase: order.append("phase:" + phase)), patch.object(
                 lifecycle,
                 "load_runtime_request",
                 return_value=(cli_args, config),
@@ -1027,7 +1027,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
                 result = lifecycle.main(["preflight"])
 
             self.assertEqual(result, 0)
-            self.assertEqual(order, ["initialize", "cleanup"])
+            self.assertEqual(order, ["phase:data-preflight", "initialize", "phase:data-preflight-done", "phase:listener-preflight", "cleanup", "phase:listener-preflight-done"])
 
     def test_preflight_print_config_remains_side_effect_free(self):
         with TemporaryDirectory() as tmpdir, patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
@@ -1042,30 +1042,32 @@ class LocalServerLifecycleTests(unittest.TestCase):
         initialize.assert_not_called()
         print_report.assert_not_called()
 
-    def test_preflight_legacy_migration_mode_remains_side_effect_free(self):
+    def test_preflight_legacy_migration_flag_is_rejected_without_side_effects(self):
         with patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
             lifecycle,
             "print_report",
         ) as print_report, patch.object(server, "prepare_data_root_for_startup") as initialize:
-            exit_code = lifecycle.main(
-                ["preflight", "--preview-legacy-migration"]
-            )
+            with self.assertRaises(SystemExit) as rejected:
+                lifecycle.main(
+                    ["preflight", "--preview-legacy-migration"]
+                )
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(rejected.exception.code, 2)
         cleanup.assert_not_called()
         initialize.assert_not_called()
         print_report.assert_not_called()
 
-    def test_preflight_schema_migration_mode_remains_side_effect_free(self):
+    def test_preflight_schema_migration_flag_is_rejected_without_side_effects(self):
         with patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
             lifecycle,
             "print_report",
         ) as print_report, patch.object(server, "prepare_data_root_for_startup") as initialize:
-            exit_code = lifecycle.main(
-                ["preflight", "--preview-schema-migration"]
-            )
+            with self.assertRaises(SystemExit) as rejected:
+                lifecycle.main(
+                    ["preflight", "--preview-schema-migration"]
+                )
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(rejected.exception.code, 2)
         cleanup.assert_not_called()
         initialize.assert_not_called()
         print_report.assert_not_called()

@@ -1,4 +1,4 @@
-"""Schema-42 proposal receipt evidence is retained while dispatch stays closed."""
+"""Current proposal receipt evidence is retained while dispatch stays closed."""
 
 from contextlib import closing
 from pathlib import Path
@@ -9,7 +9,6 @@ import unittest
 
 import mentat_db
 import private_console_unit
-from task_repository import _schema5_private_unit
 from project_proposal_input_receipts import (
     ProjectProposalInputReceiptError, _digest,
     validate_project_proposal_input_connection,
@@ -21,13 +20,13 @@ CREATED = "2026-09-29T12:00:00+00:00"
 
 
 class ProjectProposalInputReceiptTests(unittest.TestCase):
-    def test_exact_schema41_upgrade_keeps_proposal_dispatch_closed(self):
+    def test_current_empty_input_keeps_proposal_dispatch_closed(self):
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "mentat.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=41)
+            private_console_unit._initialize_database(path)
             with closing(sqlite3.connect(path)) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
-                self.assertEqual(mentat_db.schema_signature_state(connection, 41), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 mentat_db.migrate(connection)
                 self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -40,18 +39,6 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
                         "'reserved',?,?)", (CREATED, CREATED),
                     )
 
-    def test_source_schema_drift_blocks_upgrade_without_receipt(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=41)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP TRIGGER mentat_runs_project_proposal_closed_insert")
-                connection.commit()
-                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 41"):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute(
-                    "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0], 41)
 
     def setUp(self):
         self.fixture = test_project_planning_inputs.ProjectPlanningInputStorageTests()
@@ -119,7 +106,7 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
             )
         return run_id
 
-    def test_exact_historical_graph_and_file_pin(self):
+    def test_exact_retained_graph_and_file_pin(self):
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute("BEGIN IMMEDIATE")
             run_id = self._insert_consistent_receipt(connection)
@@ -131,7 +118,7 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             connection.rollback()  # The forged Run never becomes usable runtime state.
 
-    def test_empty_receipt_backup_restore_and_schema5_compatibility(self):
+    def test_empty_current_receipt_backup_restore(self):
         unit = private_console_unit.capture_private_console_unit(self.root)
         private_console_unit.validate_private_console_unit(unit)
         with TemporaryDirectory() as temporary:
@@ -146,15 +133,6 @@ class ProjectProposalInputReceiptTests(unittest.TestCase):
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) FROM mentat_project_proposal_input_receipts"
                 ).fetchone()[0], 0)
-            compatible = _schema5_private_unit(unit)
-            with closing(sqlite3.connect(":memory:")) as connection:
-                connection.deserialize(compatible.database_raw)
-                self.assertEqual(connection.execute(
-                    "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0], 5)
-                self.assertIsNone(connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='mentat_project_proposal_input_receipts'"
-                ).fetchone())
 
     def test_modified_receipt_or_ordered_file_is_rejected(self):
         for target in ("manifest", "authorization", "qualification", "operations", "limits", "file"):

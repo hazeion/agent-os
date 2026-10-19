@@ -198,9 +198,9 @@ transaction first and perform owner matching/session issuance afterward. Frozen
 native executables cannot launch this worker and fail closed; the first hosting
 profile uses installed Python on Linux.
 
-Schema 25 records the owner's authentication method and generation explicitly.
-Existing schema-24 passkey sessions and SSE references survive migration with
-their original evidence. Google sessions have no fabricated passkey device:
+The current database records the owner's authentication method and generation
+explicitly. Valid current passkey sessions and SSE references retain their
+original evidence. Google sessions have no fabricated passkey device:
 they bind the exact issuer/subject principal digest and owner generation.
 Authentication also requires reconciled configuration matching the principal's
 configuration revision. Authentication and security mutations revalidate these
@@ -209,11 +209,10 @@ cannot complete after a method or generation change, including one during
 external signature verification.
 
 Google configuration stores only the client ID, canonical origin and credential
-source kind; it never stores a client secret. Migration enrolls no Google owner
-and issues no Google session. Private backup validation accepts both historical
-schemas 24 and 25 and the current schema. Restore revokes all sessions, keeps terminal
-history bounded, and marks Google configuration as requiring host reconciliation.
-Schema-5 compatible export omits all owner authentication authority. Ordinary
+source kind; it never stores a client secret. Initialization enrolls no Google
+owner and issues no Google session. Private backups require current schema 46.
+Restore revokes all sessions, keeps terminal history bounded and marks Google
+configuration as requiring host reconciliation. Ordinary
 website login uses the fixed Google flow; real operator deployment acceptance
 remains a required gate.
 
@@ -301,19 +300,17 @@ remote dashboard serving. See [the operator guide](docs/setup/google-owner.md).
   recently completed process. Records in `data/agents.json` are not the new
   canonical Agent registry.
 - Canonical Mentat Agents and their one-to-one adapter runtime configurations
-  are persisted in schema-9 owner-private `mentat.sqlite3`. The runtime
+  are persisted in current schema 46 owner-private `mentat.sqlite3`. The runtime
   configuration retains the private runtime-owned Agent reference; ordinary
   browser projections omit that reference and expose only Mentat identity,
   runtime type/config identity, and declared capabilities. The local registry
   is transactionally capped at 128 Agents so create/list responses and private
   recovery remain bounded.
-- Existing roots converge only through `mentat agent-registry-migration`.
-  Preview performs no write and binds the exact standalone source and Mentat
-  database state. Confirmation refuses an active server, creates or verifies a
-  format-3 backup, revalidates both sides under the durable mutation lock, and
-  commits Agent/config rows with the singleton authority receipt in one
-  transaction. After that receipt exists, the old `agent-registry.sqlite3` is
-  ignored and never updated or used as fallback authority.
+- Only fresh/current schema 46 roots are supported. Fresh Agent authority is
+  claimed under exact receipt and path guards. Standalone registry convergence,
+  old-schema upgrades and old archive restores are retired. Presence detection
+  may refuse old storage; canonical authority never reads or falls back to old
+  registry bytes. See [ADR0002](docs/adr/0002-current-only-storage.md).
 - The registry does not auto-import or mutate Hermes profiles, store
   credentials, edit/delete Agents, or replace heartbeat observations.
 - A Hermes **session** remains conversation history owned by a specific Hermes
@@ -322,7 +319,7 @@ remote dashboard serving. See [the operator guide](docs/setup/google-owner.md).
 
 ## Optional Vercel boundary
 
-Schema 9 adds one private, versioned Vercel connection record. It stores only
+The current database contains one private, versioned Vercel connection record. It stores only
 validated settings and the credential-source kind. Credential values stay in
 operator environment variables and never enter SQLite, backups, logs, Node, or
 browser responses. The browser receives only the connection label, model,
@@ -355,49 +352,39 @@ The read-only browser state deliberately distinguishes configuration from a
 live probe: `configured` and `credential_present` report validated local
 configuration only. Only an explicit confirmed CLI test may report `ready`.
 
-Format-4 backup and restore treat provider settings and their bound Agents as
-one schema-9 consistency unit. The schema-5 compatible-root export omits the
-provider table and Vercel Agents so an older build never opens schema 9 or sees
-an unsupported runtime binding.
+Current format 5 backup and restore retain validated provider settings and
+bound Agents in the same schema 46 consistency unit. Credentials remain excluded.
+There is no older-build provider projection or compatible-root export.
 
 ## Data ownership and layout
 
-The canonical durable-data inventory, platform defaults, target directory
-classes, initialization rules, migration/backup contract, and secret exclusions
-live in [DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A defines that target,
-while Milestone 1B implements deterministic resolution, bounded read-only
-preflight, owner-only directory creation, and locked missing-only seed copying.
-Milestone 1C adds explicit, backed-up, locked migration of the fixed legacy
-durable-JSON inventory with source preservation, interruption-safe reservation,
-and verified completion receipt. Milestone 1D adds a sidecar schema manifest,
-backed-up version-0 bootstrap, read-only pre-write schema gating, clean-install
-provenance, exact temporary reconciliation, process-reentrant shared-lock
-coordination with ordinary durable JSON writes, and forward-version refusal
-without changing consumer-visible JSON shapes. Both ordinary writers and schema
-recovery preserve the configured no-follow root spelling and keep validation
-and mutation on the same pinned filesystem objects. Terminal success is bound
-to root identity and exact durable bytes, and ordinary writers preserve the
-same schema size/type/file-object invariants. Milestone 1E-A adds a fixed,
-versioned backup and preview-confirm restore boundary for the nine
-schema-governed durable JSON documents. Backup snapshots share the pinned root
-lock with normal mutations. Restore binds exact archive and target state,
-publishes pre-restore recovery evidence and a reservation before atomic document
-commits, resumes only exact old/new interruption state, and blocks startup while
-incomplete. Already-running dashboard JSON reads and writes share that lock and
-fail closed while a reservation or restore recovery temporary exists. It
-preserves the destination's schema provenance and every excluded class.
-Milestone 1E-B moves retained Console history, SQLite metadata, and
-content-addressed blobs to owner-only `<data-root>/private/console/`. A shared
-private-state lock coordinates history and attachment mutation, reconciliation,
-migration, backup, and restore. Version-2 backups add a WAL-safe filtered
-SQLite snapshot, canonical retained history, and only referenced ready blobs;
-version-1 JSON-only restores remain supported and leave private state intact.
-Milestone 1F treats the installed application tree as replaceable and the data
-root as operator-owned. Integration coverage replaces immutable application
-trees whose seeds differ, requires a verified pre-upgrade backup, removes only
-the application tree, and reconnects a reinstall to the unchanged durable JSON
-and retained private Console consistency unit. Installer mechanics remain a
-separate Milestone 3 boundary.
+The canonical inventory, platform defaults, initialization, current backup and
+secret exclusions live in [DATA_LAYOUT.md](DATA_LAYOUT.md). The owner chose
+fresh/current SQLite schema 46, backup format 5 and restore protocol 4 only.
+[ADR0002](docs/adr/0002-current-only-storage.md) supersedes earlier migration and
+older-backup compatibility promises. Current row formats and provenance remain
+validated; retiring old databases does not discard valid current rows.
+
+Read-only admission precedes directory hardening, locks, seed copying, writable
+SQLite, WAL setup and lifecycle cleanup. Existing older, future, malformed or
+unsafe storage is refused unchanged. A fresh current root is initialized from
+fixed packaged seeds with owner-only permissions, missing-only publication and
+exact fresh-reservation recovery. Existing current roots retain their complete
+structural journal 1..46 and execute no schema conversion. These structural rows
+are not retained upgrade recipes.
+
+Durable JSON, SQLite, retained history projection and referenced blobs share a
+pinned mutation/backup boundary. Current backup validates exact schema, semantic
+rows, receipts and references before publication. Current restore binds exact
+archive and destination state, publishes pre-restore recovery evidence, uses a
+validated current reservation and keeps the previous private set until new-state
+verification. Only exact recognized current interruption states may resume;
+unknown state and partial verification fail closed. Restore rotates/revokes
+current authority as required and never restarts uncertain external work.
+Credentials, remote connection definitions, runtime scratch, browser state and
+external stores remain excluded. Application-only replacement and uninstall
+preserve the external current data root; they do not promise old-format support.
+
 Milestone 2A adds one versioned owner-only remote-connection record below
 `<data-root>/private/`, exact state-bound preview/confirmation, binding rotation
 when authority changes, and a fixed-path server-only health/capability client.
@@ -455,88 +442,32 @@ Markdown, backtick, and emphasis wrappers are parsed outside the URL span.
 Supported structured messages contribute only bounded allowlisted text parts;
 image, tool, and reasoning content is omitted.
 
-### SQLite Task persistence transition
+### SQLite Task authority and current recovery
 
-Pivot Slice 1C-A advanced the existing owner-private Console database to schema
-5 and added canonical `mentat_tasks`, ordered tag, and ordered dependency tables.
-Scalar planning fields are indexed columns; bounded nested planning/delegation
-objects and safe unknown compatibility fields are stored once in separate JSON
-columns. Internal monotonically increasing revisions provide compare-and-swap
-replacement semantics, while deferred foreign keys and collection validation
-reject missing, self-referential, or cyclic dependencies.
+Current schema 46 stores canonical `mentat_tasks`, ordered tags and dependencies,
+bounded planning/extension fields and optimistic revisions. Deferred foreign
+keys and semantic validation reject missing, self-referential and cyclic
+relationships. Fresh setup validates exact bounded `tasks.json` seed bytes and
+identity, requires an empty repository and commits Tasks with the authority
+receipt in one transaction. Source drift and partial writes fail closed.
 
-Pivot Slice 1C-B advances that database to schema 6 with an exact singleton
-Task-authority receipt. After acquiring its exclusive server reservation and
-before opening a listener, Mentat takes the shared private-state lock, validates
-the exact bounded `tasks.json` bytes and
-identity, requires an empty repository, imports and reconstructs the collection,
-and commits both Tasks and the receipt in one immediate transaction. Sparse
-historical Tasks receive deterministic canonical defaults; duplicate IDs,
-invalid dependency graphs, unsafe metadata, source drift, occupied destinations,
-and partial writes fail closed.
+After the receipt exists, all live Task paths use SQLite exclusively, including
+delegation, calendar links, search, recurrence and webhook refresh. A zero-Task
+receipt is authoritative. Runtime code never reads, writes, shadows or falls
+back to stale `tasks.json`; generic JSON writes do not include that file.
 
-Once the receipt exists, every live Task workflow, including delegation
-reservations, calendar links, search, recurrence, attachment reconciliation,
-and webhook-triggered refresh, reads and mutates SQLite. The centralized list
-mutator adapter preserves public payloads and order while maintaining internal
-monotonic revisions. A zero-Task receipt is authoritative. Runtime code never
-reads, writes, shadows, or falls back to stale `tasks.json` after cutover.
-
-Slice 1C-D makes that boundary explicit in the server call graph: live
-workflows use dedicated SQLite Task snapshot and mutation helpers, while the
-generic JSON helpers retain only a compatibility shim for older callers and
-tests. `tasks.json` is not in the generic project-owned write allowlist. Its
-remaining references are limited to packaged seed, migration, explicit offline
-export/downgrade, backup compatibility, or documented recovery behavior.
-
-The operator command `mentat task-migration` remains read-only. Before cutover
-it validates and binds the exact source bytes/file identity and destination
-schema/occupancy without creating a database or sidecar. After cutover it
-reports existing SQLite authority without consulting stale JSON. Deterministic
-export is an explicit offline recovery action, not another runtime authority.
-`mentat task-export` first previews a token bound to the authoritative export
-and current `tasks.json` identity; confirmation refuses an active server,
-revalidates both states, atomically replaces only `tasks.json`, and verifies the
-published bytes. This Task-only form is a recovery artifact, not a complete old
-build environment. `mentat task-export --compatible-root` instead creates a
-new validated sibling data root containing current durable documents, exported
-Tasks, retained Console/attachment/blob state, the Agent registry, and an exact
-schema-5 copy of the Console database with empty Task tables. Exported
-`tasks.json` is therefore the sibling's sole Task authority, so changes made by
-the old build import exactly if that sibling is later upgraded. The schema-9
-source root stays unchanged.
-
-Remote Hermes selection is separate private state and its credential is not a
-downgrade artifact. Compatible-root preview and confirmation therefore fail
-closed while the source is actively in remote mode. The operator must
-deliberately switch the stopped source to local mode, create the sibling, and
-configure remote Hermes in the old build before it performs any operation.
-Missing, interrupted, malformed, or unavailable private state must produce a
-bounded Task-export error rather than a traceback.
-Canonical export bytes are published and verified exactly, without adding or
-stripping an optional trailing newline, so both the digest and accepted
-maximum-size repository identify the actual old-build document. Compatible
-publication synchronizes populated staged directories bottom-up, the complete
-stage root, and the pinned parent after its exclusive POSIX rename. Windows
-uses missing-only `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`. A durability
-failure after publication is a partial write, never a no-write result or
-success.
-
-Released format-2 and format-3 backups with exact Console schemas 4 through 7
-remain valid. Restored pre-convergence Agent state must complete the explicit
-registry migration before normal startup. Current format-4 backups retain
-Agents, Tasks, Runs, AgentEvents, dispatch state, and all authority receipts as one
-recovery unit. To downgrade after live Task
-mutations, stop Mentat, preview `mentat task-export --compatible-root`, confirm
-its exact token, and point the older build at the reported schema-5 sibling
-data-root name. Restoring a pre-cutover backup remains an alternative that
-discards later Task mutations. Mentat never uses stale `tasks.json`
-automatically and never downgrades the authoritative schema-9 source database.
+`mentat task-export` is current offline SQLite-to-JSON recovery. Preview binds
+the exact authoritative export and destination identity. Confirmation refuses
+an active server, revalidates both states, atomically replaces only `tasks.json`
+and verifies exact bytes without adding or stripping a newline. It preserves
+the shared document ceiling and reports post-write uncertainty as partial.
+Live Task authority remains SQLite. Migration commands, schema 5 sibling export,
+`--compatible-root` and older-build downgrade paths are retired. A current
+format 5 backup is the full retained recovery unit.
 
 ### SQLite Run and AgentEvent authority
 
-Pivot Slice 1C-C advances the same owner-private database to schema 7. SQLite
-is authoritative for both compatibility Console Runs and runtime-neutral Task
+The current owner-private schema 46 database is authoritative for both compatibility Console Runs and runtime-neutral Task
 dispatch Runs. `mentat_runs` stores immutable Task/Agent/runtime-binding
 snapshots plus independently revisioned execution and submission state;
 `mentat_agent_events` is an append-only, per-Run monotonic journal.
@@ -592,14 +523,13 @@ are semantically reconstructed, including monotonic created/updated chronology.
 Attachment binding transactionally limits the retained graph to 100 distinct
 ready blobs and 24 MiB of referenced blob bytes. Existing over-limit roots fail
 closed on further binding. Together with the 63 MiB SQLite budget and bounded
-history/registry members, this keeps every admitted retained state within the
+SQL-derived history, this keeps every admitted retained state within the
 96 MiB private-backup unit ceiling.
 Event retention keeps contiguous newest suffixes under per-Run and global count
 and content budgets and records explicit replay-gap metadata. A private durable
 runtime-event cursor survives retained-event deletion, so old runtime events
 cannot reappear and a long source timeline is consumed in bounded pages.
-Schema 35 assigns each canonical Run a private incarnation on insertion and
-backfills retained Runs through an exact migration. The incarnation identifies
+Every canonical Run receives a private incarnation on insertion. The incarnation identifies
 one attempt across public ID reuse; it does not itself reserve Inbox notice
 capacity or publish owner attention.
 Schema 36 reserves one private owner-attention row per Run attempt, including
@@ -611,21 +541,18 @@ guarded snapshot. Browser detail and owner attention actions bind the opaque
 item to its exact Run incarnation or retained receipt and never dispatch work.
 Schema startup verifies the exact Run/Event/dispatch table and index
 fingerprint, and semantic validation rechecks retention and relationship
-invariants. Legacy authority import performs that complete validation inside
-the same transaction as its authority receipt, so invalid event identity or
-semantics cannot leave a committed cutover. Public version-1 Run/Event APIs expose only bounded domain fields
-and numeric usage metrics;
-runtime references, binding digests, raw adapter payloads, tool arguments and
-results, paths, credentials, and private reasoning remain server-side. The
-legacy Console-history JSON file is migration/export compatibility evidence
-only after the Run-authority receipt exists; backup derives that representation
-and attachment reachability from SQLite. That compatibility member is bounded
-independently, contains Console-source Runs only, and may omit old event detail
-or older Runs without pruning canonical SQLite task-dispatch Runs, events, or
-referenced attachments. Once schema-7 authority exists, stale, missing, linked,
-or malformed legacy JSON is not opened during backup. A schema-5 compatible
-export separately filters attachments and blobs to the Runs its legacy
-projection retains. Startup performs one bounded reconciliation pass for native
+invariants. Fresh Run initialization claims an empty SQL store and its authority receipt
+atomically. Only missing or current-format empty JSON history can accompany
+that initialization; old or nonempty JSON is refused before source writes.
+Existing SQL authority never opens stale history as input. Backup derives the
+bounded Console history projection and attachment reachability from canonical
+SQLite and validates them against the same snapshot. The history member may
+omit old event detail or older Console Runs without pruning canonical Task Runs,
+events or referenced attachments. No standalone history import, old archive
+conversion or compatible-root projection remains.
+Public version-1 Run/Event APIs expose bounded domain fields and numeric usage;
+runtime references, digests, raw adapter payloads, tool arguments/results,
+paths, credentials and private reasoning stay server-side. Startup performs one bounded reconciliation pass for native
 Runs that have a durable runtime reference.
 
 ### Conversation authority, live Turns, and bounded concurrency
@@ -750,17 +677,10 @@ One monotonic notice order still lets newer global setup/navigation failures
 supersede stale Turn feedback. Existing Task-dispatch Runs retain their Task,
 reservation, dispatch-head, and idempotency authority.
 
-Format-4 backup remains the recovery container because it embeds the private
-database. Schema 12 is a forward-only repair for one exactly fingerprinted
-pre-release schema-11 Conversation shape: before upgrade, read-only capture may
-accept released fingerprints or that exact missing-trigger and broad
-blocked-reason variant. SQL fingerprints ignore layout only: token boundaries
-and quoted contents remain exact. The migration acquires its SQLite write lock
-before classifying the source, then rebuilds the Turn table with the released
-enum, restores all four queue/identity triggers, checks every foreign key, and
-commits the schema receipt with the rewrite. Released schema 11 and that exact
-legacy shape converge to one schema-12 fingerprint; every other drift and every
-active caller transaction fail closed.
+Current format 5 backup embeds the validated private database. Exact current
+SQL fingerprints preserve token boundaries and quoted contents while ignoring
+layout. Old schema fingerprints and pre-release missing-trigger variants are
+unsupported; drift and active caller-transaction conversion attempts fail closed.
 
 Schema 13 adds an exact terminal-finalization barrier. A terminal local Hermes
 Conversation remains publicly `finalizing` until its exact normalized terminal
@@ -772,9 +692,6 @@ An unfinalized terminal is retention-pinned, and startup recovery marks
 incomplete evidence partial and blocks the queue head rather than advancing it.
 The only accepted first-event cursor discontinuity is the exact initial Hermes
 binding marker for the same Agent and Turn; every other gap fails closed.
-During the same migration, schema-12 continuation pins that already advanced
-beyond `reserved` are cleared before the stricter identity trigger is installed;
-this keeps claimed or accepted pre-upgrade successors recoverable after restart.
 
 Queued Codex continuity stores the exact predecessor Run while the successor is
 reserved, which pins that predecessor against retention. Dispatch revalidates
@@ -787,8 +704,7 @@ the normal retention ceiling and keeps every classification in the durable
 submission receipts even if an older Run row is evicted. The schema trigger
 permits only those exact claim or no-attempt terminal clears; every other
 Conversation Run identity change remains immutable. Backup, restore,
-fingerprint, and semantic validation remain compatible with released schemas
-10 through 13.
+fingerprint and semantic validation require the exact current schema.
 
 Schema 14 adds explicit Conversation Run attempts for operator recovery.
 Retry creates a new Run for the same Turn with a fresh immutable execution
@@ -801,18 +717,12 @@ retention, and permit at most seven later attempts for one Turn. The latest
 submission projection advances to the new Run without deleting prior Runs or
 events. Concurrent keys cannot create two successors from one source, and a
 restart marks an unattempted recovery reservation interrupted or a claimed
-uncertain attempt unknown without another adapter call. Migration 14 requires
-the exact schema-13 fingerprint in the same write transaction, replaces only
-the latest-result insertion trigger, and adds the bounded attempt-receipt
-authority.
+uncertain attempt unknown without another adapter call. The current attempt
+receipt and latest-result triggers enforce these boundaries.
 
-Schema 16 rebuilds only the exact schema-15 Conversation table constraint to
-add the `manual` title source. The migration preserves Messages, Turns, Runs,
-submission receipts, staging, and attachment references under one SQLite write
-transaction and foreign-key check. Manual rename is an exact-revision mutation
-for active or archived Conversations. Later first-Turn title derivation and
-queued-Turn edits may update only their existing derived title source and can
-never replace a manual title.
+Manual Conversation rename is an exact-revision mutation for active or archived
+Conversations. Later first-Turn title derivation and queued-Turn edits may update
+only their existing derived title source and never replace a manual title.
 
 Conversation history search reads titles only. It scans the validated maximum
 of 1,024 Conversations, applies Unicode case-folded substring matching plus an
@@ -885,9 +795,8 @@ Run `details_json` remains a bounded display snapshot, while `run_attachments`
 is the retention/access authority;
 legacy media metadata without an exact direction-bound row is omitted from
 browser and backup projections rather than minting a dead content route.
-Compatible-root export intentionally omits Conversation
-authority and leaves the source unchanged. Lossless rollback uses a validated
-pre-migration backup; in-place schema downgrade is unsupported.
+Current backup/restore retains validated Conversation authority; in-place schema
+downgrade and compatible-root export are unsupported.
 
 Milestone 9 adds a loopback-only signed Hermes native-event receiver as an
 observation wakeup. The receiver authenticates the exact raw body, accepts an
@@ -904,7 +813,7 @@ reconciliation remains the correctness and recovery boundary. Stock Hermes
 0.20.1 is the maintained local webhook baseline after live qualification and
 Linux, macOS, and Windows CI; Hermes 0.19, absent,
 unconfigured, disabled, and safe-mode runtimes retain quiet polling fallback.
-Private migration and restore use exact reservations, verified old/new states,
+Current restore uses exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
 secret-bearing private state are excluded.
@@ -1005,7 +914,7 @@ roots, and a receipt-bearing Run is excluded from ordinary terminal pruning.
 At most 128 receipts fit within a separate bounded retained class and the
 shared context metadata budget. Backup and restore validate this graph; old
 input versions and Runs cannot be pruned while referenced. No browser action,
-approval grant or adapter dispatch is added by this migration. Exact approval,
+approval grant or adapter dispatch is added by this storage. Exact approval,
 atomic Run/receipt reservation and runtime qualification remain prerequisites
 before Project execution can be exposed.
 
@@ -1072,11 +981,11 @@ rows disclose changed or unavailable Task/Agent identity without substituting
 new content after ID reuse. Editing or saving a plan does not start work or
 make a version-1 plan eligible for approval.
 
-Schema 37 widens only the immutable plan-version storage constraint for a later
-policy-bearing format 2. Its exact schema-36 migration retains every format-1
-row, digest and input reference, and rejects drift or insufficient temporary
-disk headroom before the shadow-table copy. Format-2 publication requires
-semantic validation, private-backup accounting and the owner editor together.
+The current immutable plan-version storage accepts validated retained format-1
+rows and policy-bearing format-2 rows. Their digests and input references remain
+immutable. These are current row formats, not old database support. Format-2
+publication requires semantic validation, private-backup accounting and the
+owner editor together.
 The format-2 owner editor publishes immutable
 requested operations, typed final and intermediate output slots, direct
 dependency-bound handoffs, and whole-plan retry limits. A public-web node
@@ -1126,14 +1035,13 @@ delivery and reconciles the receipt before starting a new save. An opaque
 epoch-bound scope token keeps local drafts from crossing Project ID reuse or
 restore while staying stable across ordinary metadata edits. A saved input
 remains preparation, not permission for a proposal Run.
-The exact schema-39 migration seals pre-editor input IDs and backfills legacy
-receipts; only later owner receipts carry action tokens. Private backup
+Valid current pre-editor inputs retain their sealed IDs and legacy receipt
+provenance; only owner receipts carry action tokens. No older-root backfill runs. Private backup
 validation requires one receipt per input and recomputes owner request digests,
 including action ID, from immutable input and file evidence.
 
-Schema 41 reserves a separate `project_proposal` canonical Run source through
-an exact schema-40 table rebuild. The migration preserves every existing
-Run/Event reference and recreates all Run-owned indexes and triggers. SQLite
+The current database reserves a separate `project_proposal` canonical Run
+source while preserving current Run/Event references, indexes and triggers. SQLite
 INSERT and source-UPDATE guards reject the new source until a later exact
 Project planning-input/Run receipt and qualified runtime admission exist.
 Run-attention and owner Inbox validation also reject any proposal row planted
@@ -1321,8 +1229,7 @@ The largest identity/closure representation is precharged under the existing
 shared metadata ceiling. Private archival capture may retain only prepared,
 cancelled or witness-bound stopped scope records; active/unknown scopes refuse
 capture until the complete active-source contract exists. Restore preserves
-history without reissuing launch tokens or reconstructing PIDs. Schema-5 export
-omits scope authority. Scope bookkeeping adds no launcher, signal route, Run,
+history without reissuing launch tokens or reconstructing PIDs. Scope bookkeeping adds no launcher, signal route, Run,
 capacity, provider or output authority; production proposal guards remain closed
 and restart recovery still requires separately qualified kernel reconciliation.
 
@@ -1337,10 +1244,8 @@ and 128 KiB of future output/receipt metadata before any new scope or call.
 Project/Task retention, Console binding and Project staging count these holds
 against the shared 100-blob/24-MiB limits, including after restore fencing.
 Only the once-issued holder token's hash is persisted. There is no release,
-capture or token-recovery operation in this prerequisite. Historical schema-44
-work migrates without invented holds and cannot be retrofitted after launch or
-debit. Backup preserves charges; restore rotates authority and schema-5 export
-omits the reservation graph. Production admission, registered producing output
+capture or token-recovery operation in this prerequisite. Existing current work without a hold cannot be retrofitted after launch or
+debit. Backup preserves charges and restore rotates authority. Production admission, registered producing output
 and owner Apply remain separate required capabilities, with source guards closed.
 
 Schema 46 couples private canonical proposal lifecycle with immutable registered
@@ -1360,13 +1265,13 @@ COMMIT. An uncertain acknowledgment resolves through validated immutable receipt
 readback; it cannot extend the deadline or repeat inference. Failed parsing
 retains exact output as failure evidence. Questions remain in the snapshot.
 
-The strict private producer validator supersedes schema44's archival refusal
-only for complete schema46 producer graphs. Backup retains active, unknown and
+The strict private producer validator permits archival capture only for complete
+current producer graphs. Backup retains active, unknown and
 completed evidence, verifies query/image provenance from retained input bytes,
 and excludes producers from legacy JSON. Restore rotates authority, retains
 spending and holds, never reconstructs tokens/witnesses, and refuses activation
 while original work remains unverified. Producer Runs and Events cannot be
-pruned by ordinary Console retention. Schema5 export omits producer authority.
+pruned by ordinary Console retention.
 Qualification output is permanently distinguished from production intake:
 source insertion, ordinary Run/Inbox getters, provider dispatch, owner Apply
 and approval remain closed pending their separate qualified contracts.
@@ -1461,10 +1366,9 @@ content/size checks, staged expiry, orphan grace and bounded GC batches.
 Initial metadata bounds are 16 KiB of UTF-8 brief/instructions per context,
 16 files per revision, 32 context revisions per Project, 32 versions per
 deliverable, 256 context revisions and 256 deliverable versions globally,
-and a 4 MiB schema-27 metadata budget. Schema 28 adds a fixed 64 KiB of migration
-and control headroom: up to 128 bounded Agent identity/incarnation pairs,
+and a 4 MiB shared metadata budget plus fixed 64 KiB control headroom: up to 128 bounded Agent identity/incarnation pairs,
 256 retirement-field reservations and one approval epoch fit within that
-allowance. Schema-27 snapshots retain their original accounting. New admission
+allowance. Current admission
 charges worst-case terminal grant state, revision and timestamp representation,
 so revocation cannot make a valid backup exceed its budget. All 128 maximum-size
 Agent identity slots are reserved at admission, so later registry creation or
@@ -1492,9 +1396,7 @@ revoked pending explicit owner reauthorization, discards transient staging and
 intents proven never reserved or submitted, and never resumes work. Every
 reservation/attempt that could have reached an adapter retains immutable input
 and provenance and reconciles as interrupted or unknown, with no automatic
-replay. Dispatched input receipts remain evidence. Compatible schema-5 export
-omits the unsupported
-Project context/grant/deliverable authority while leaving the source unchanged.
+replay. Dispatched input receipts remain evidence in the current recovery unit.
 
 ## Write boundaries
 
@@ -1607,11 +1509,10 @@ runtime, and never returns the adapter-owned runtime reference. A configured
 Agent authorizes work only through an exact Task assignment, capability match,
 binding snapshot, and durable dispatch reservation. Codex Agents use only the
 fixed `default` binding and capabilities implemented by the available adapter.
-Backup format 4 includes and semantically validates embedded Hermes and Codex
-bindings, including Codex's fixed binding and capability vocabulary. Format-3
-backups retain the former standalone registry, and pre-registry format-2
-backups restore an empty migration source; both require the explicit
-convergence command before normal startup.
+Backup format 5 includes and semantically validates embedded Hermes and Codex
+bindings, including Codex's fixed binding and capability vocabulary. Older
+archive formats and standalone registry convergence are unsupported; current
+recovery cannot synthesize or substitute runtime authority.
 
 The Next.js Agents workspace offers three fixed local Agent setup operations:
 check, preview, and confirm. Python discovers only the configured local Hermes
@@ -1744,7 +1645,7 @@ offer an explicit two-step Enable files action only for a stopped, exact local
 Hermes Agent; the mutation is bound to its current capability set and rechecks
 that the fixed local runtime supports the file boundary. Codex, Vercel, remote
 Hermes, and incomplete adapters remain unsupported. Unsent staging is removed
-from private backup snapshots and compatible export, while retained Run inputs
+from private backup snapshots, while retained Run inputs
 and trusted export artifacts remain part of the validated private consistency
 unit. Startup and periodic reconciliation discard an entire staged Context Pack
 if any of its snapshots becomes unavailable.
@@ -2158,7 +2059,7 @@ URLs, HTML, headers, addresses, or original images and is capped at 512 rows and
 64 MiB of transformed images. Process-local no-store and capacity states use a
 separate 512-entry LRU, and persisted results are not duplicated there. The
 256-bit cache secret and cache members are
-excluded from backup, restore, and compatible export. The enabled-by-default,
+excluded from backup and restore. The enabled-by-default,
 exact-revision privacy preference lives separately at
 `config/link-previews-v1.json`; clearing cache cannot change it. Disabling
 cancels/suppresses work and cards, and re-enabling never automatically fetches

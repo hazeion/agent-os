@@ -4,6 +4,7 @@ import concurrent.futures
 import sqlite3
 import secrets
 import unittest
+from unittest.mock import patch
 
 import owner_auth
 from tests import test_google_login_transactions as login
@@ -103,12 +104,69 @@ class GoogleSessionIssuanceTests(unittest.TestCase):
 
     def test_failed_delete_rolls_back_insert_and_preserves_receipt(self):
         values = self.verified()
-        self.connection.execute("CREATE TRIGGER fixture_reject_claim BEFORE DELETE ON mentat_owner_google_transactions BEGIN SELECT RAISE(ABORT, 'test'); END")
-        self.connection.commit()
+        receipt_before = tuple(self.connection.execute(
+            "SELECT * FROM mentat_owner_google_transactions WHERE transaction_id=?",
+            (values['transaction_id'],),
+        ).fetchone())
+        schema_before = self.connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        sessions_before = self.connection.execute("SELECT * FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall()
+        open_connection = self.authority._open
+        observed = []
+        denied = []
+        class ObserveBeforeDelete:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def execute(self, statement, parameters=()):
+                if statement == "DELETE FROM mentat_owner_google_transactions WHERE transaction_id=?":
+                    observed.append((self.connection.in_transaction, self.connection.execute(
+                        "SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'"
+                    ).fetchone()[0]))
+                    def authorize(action, table, _column, _database, _source):
+                        if action == sqlite3.SQLITE_DELETE and table == 'mentat_owner_google_transactions':
+                            denied.append(table)
+                            return sqlite3.SQLITE_DENY
+                        return sqlite3.SQLITE_OK
+                    self.connection.set_authorizer(authorize)
+                return self.connection.execute(statement, parameters)
+
+        def open_with_delete_denial():
+            return ObserveBeforeDelete(open_connection())
+        with patch.object(self.authority, '_open', side_effect=open_with_delete_denial):
+            with self.assertRaisesRegex(owner_auth.OwnerAuthError, '^invalid$'):
+                self.authority.complete_google_login(**values)
+        self.assertEqual(observed, [(True, 1)])
+        self.assertEqual(denied, ['mentat_owner_google_transactions'])
+        self.assertEqual(self.connection.execute("SELECT * FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall(), sessions_before)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0], 0)
+        self.assertEqual(tuple(self.connection.execute(
+            "SELECT * FROM mentat_owner_google_transactions WHERE transaction_id=?", (values['transaction_id'],)
+        ).fetchone()), receipt_before)
+        self.assertEqual(self.connection.execute('SELECT state FROM mentat_owner_google_transactions WHERE transaction_id=?', (values['transaction_id'],)).fetchone()[0], 'verified')
+        self.assertEqual(self.connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall(), schema_before)
+        self.assertTrue(self.authority.complete_google_login(**values).cookie_value)
         with self.assertRaises(owner_auth.OwnerAuthError):
             self.authority.complete_google_login(**values)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0], 1)
+
+    def test_current_schema_drift_refuses_through_owner_error_without_claiming(self):
+        values = self.verified()
+        self.connection.execute("CREATE TRIGGER fixture_reject_claim BEFORE DELETE ON mentat_owner_google_transactions BEGIN SELECT RAISE(ABORT, 'test'); END")
+        self.connection.commit()
+        before = self.connection.serialize()
+        receipt = tuple(self.connection.execute(
+            "SELECT * FROM mentat_owner_google_transactions WHERE transaction_id=?", (values['transaction_id'],)
+        ).fetchone())
+        with self.assertRaisesRegex(owner_auth.OwnerAuthError, '^unavailable$'):
+            self.authority.complete_google_login(**values)
+        self.assertEqual(self.connection.serialize(), before)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0], 0)
-        self.assertEqual(self.connection.execute('SELECT state FROM mentat_owner_google_transactions WHERE transaction_id=?', (values['transaction_id'],)).fetchone()[0], 'verified')
+        self.assertEqual(tuple(self.connection.execute(
+            "SELECT * FROM mentat_owner_google_transactions WHERE transaction_id=?", (values['transaction_id'],)
+        ).fetchone()), receipt)
         self.connection.execute('DROP TRIGGER fixture_reject_claim')
         self.connection.commit()
         self.assertTrue(self.authority.complete_google_login(**values).cookie_value)
