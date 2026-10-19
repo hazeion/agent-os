@@ -827,7 +827,7 @@ class TaskRepository:
         for expected_order, row in enumerate(rows):
             if int(row["sort_order"]) != expected_order:
                 raise TaskRepositoryError("task_repository.corrupt")
-            if 'input_incarnation' in row.keys() and (
+            if (
                 not isinstance(row['input_incarnation'], str)
                 or re.fullmatch(r'[0-9a-f]{32}', row['input_incarnation']) is None
             ):
@@ -878,7 +878,7 @@ class TaskRepository:
                 "updated_at": str(row["updated_at"]),
                 "completed_at": row["completed_at"],
             }
-            if "project_id" in row.keys() and row["project_id"] is not None:
+            if row["project_id"] is not None:
                 task["project_id"] = str(row["project_id"])
             if bool(row["assigned_agent_id_present"]):
                 task["assigned_agent_id"] = row["assigned_agent_id"]

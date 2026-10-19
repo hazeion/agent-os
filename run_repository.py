@@ -7502,10 +7502,6 @@ class RunRepository:
         page_count = int(self.connection.execute("PRAGMA page_count").fetchone()[0])
         if page_size * page_count > RUN_STORE_DATABASE_BUDGET:
             raise RunRepositoryError("run_repository.corrupt")
-        has_terminal_finalized = any(
-            str(column[1]) == "terminal_finalized"
-            for column in self.connection.execute("PRAGMA table_info(mentat_runs)")
-        )
         terminal_count = int(
             self.connection.execute(
                 "SELECT COUNT(*) FROM mentat_runs WHERE status NOT IN ("
@@ -7519,8 +7515,6 @@ class RunRepository:
                     "AND successor.source = 'console' "
                     "AND successor.status = 'reserved' "
                     "AND successor.dispatch_state = 'reserved')"
-                    if has_terminal_finalized
-                    else ""
                 )
                 + (" AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
                    "WHERE mentat_run_input_receipts.run_id = mentat_runs.id)"
