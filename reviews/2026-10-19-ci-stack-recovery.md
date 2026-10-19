@@ -58,13 +58,17 @@ Local isolated Python 3.13.14 evidence so far:
   the production standalone build passes with Next 16.3.8. The ordinary local
   test command had UI readiness/latency failures under concurrent host load;
   no test, timeout, assertion or repository CI command was changed to pass.
-- The full Python suite remains running. No completion claim is made from its
-  partial output. Hosted current-head verification remains required.
+- The original full Python run completed 2,663 tests in 3,663.039 seconds,
+  with one error and 130 skips. It is not a passing full-suite result.
+  Hosted current-head verification remains required.
 - The original full run reports one webhook lock-probe subprocess timeout.
   Cold import profiling identifies installed Hermes CLI discovery. The
   reviewed [fixture isolation correction](2026-10-19-webhook-lock-order-fixture.md)
   passes all 19 webhook route tests with the complete original probe and all
   deadlines unchanged. The original full run retains its error as evidence.
+- The [historical Project-backup repair](2026-10-19-tip-project-schema-backups.md)
+  restores explicitly supported schemas 38–42. All four final empty/registry
+  backup regressions and six historical policy-migration methods pass.
 
 Hosted multi-platform CI, stack propagation, integrated owner workflow,
 provider qualification and real host/garage acceptance remain incomplete.
