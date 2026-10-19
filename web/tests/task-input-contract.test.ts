@@ -60,5 +60,9 @@ test("retired history and prune projections bind one exact version", async () =>
   assert.deepEqual(taskInputPruned({ pruned: true }), { pruned: true });
   await readBridgeRetiredTaskInputs(async (url, init) => { assert.equal(String(url), "http://127.0.0.1:8891/bridge/v1/task-inputs/retired-history"); assert.equal(init?.method, "GET"); return Response.json(envelope(summary)); }, environment);
   await previewBridgeTaskInputPrune(inputId, async (url, init) => { assert.equal(new URL(String(url)).pathname, "/bridge/v1/task-inputs/prune-preview"); assert.deepEqual(JSON.parse(String(init?.body)), { input_id: inputId }); return Response.json(envelope(preview)); }, environment);
+  await assert.rejects(
+    previewBridgeTaskInputPrune(inputId, async () => Response.json({ schema_version: 1, status: "retained_plan" }, { status: 409 }), environment),
+    (error: unknown) => error instanceof TaskInputBridgeError && error.code === "retained_plan" && error.status === 409,
+  );
   await confirmBridgeTaskInputPrune(inputId, preview.confirmation_id, async (url, init) => { assert.equal(new URL(String(url)).pathname, "/bridge/v1/task-inputs/prune-confirm"); assert.deepEqual(JSON.parse(String(init?.body)), { input_id: inputId, confirmation_id: preview.confirmation_id, confirmed: true }); return Response.json(envelope({ pruned: true })); }, environment);
 });

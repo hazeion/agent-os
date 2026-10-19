@@ -4,7 +4,7 @@ import { taskInputEditor, taskInputPublished, taskInputRequest, parseTaskInputVe
 export class PublicTaskInputError extends Error { constructor(readonly code: string) { super(code); } }
 const TASK = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const INPUT = /^task_input_[0-9a-f]{32}$/u;
-const FAILURES = new Set(["invalid", "task_changed", "grant_changed", "file_scope", "files_unavailable", "revision_conflict", "capacity", "image_limit", "version_unavailable", "project_unavailable", "context_unavailable", "agent_unavailable", "file_unavailable", "current_version", "stale", "unavailable"]);
+const FAILURES = new Set(["invalid", "task_changed", "grant_changed", "file_scope", "files_unavailable", "revision_conflict", "capacity", "image_limit", "version_unavailable", "project_unavailable", "context_unavailable", "agent_unavailable", "file_unavailable", "current_version", "retained_plan", "stale", "unavailable"]);
 async function readJson(response: Response): Promise<unknown> {
   if (!response.body || !response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicTaskInputError("invalid_response");
   const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let length = 0;

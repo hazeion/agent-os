@@ -42,7 +42,7 @@ class DeliverableContentTests(unittest.TestCase):
             private_console_unit._initialize_database(path, schema_version=30)
             with closing(sqlite3.connect(path)) as connection:
                 mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 32)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_deliverable_versions").fetchone()[0], 0)
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drifted-schema30.sqlite3"
@@ -260,7 +260,7 @@ class OwnerDeliverableStorageTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM attachments WHERE state='staged'").fetchone()[0], 0)
 
     def test_shared_metadata_budget_rolls_back_layout_and_preview(self):
-        with patch("project_context.DELIVERABLE_REVIEW_MAX_METADATA_BYTES", 100):
+        with patch("project_context.PLAN_MAX_METADATA_BYTES", 100):
             with self.assertRaisesRegex(project_context.ProjectContextError, "capacity"):
                 publish_owner_edit(self.root, "project_mentat", "layout", garage_layout(),
                                    expected_project_revision=1, expected_slot_revision=0)

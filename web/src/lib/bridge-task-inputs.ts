@@ -3,7 +3,7 @@ import { taskInputEditor, taskInputPublished, taskInputRequest, parseTaskInputVe
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type Environment = Readonly<Record<string, string | undefined>>;
-const FAILURES = new Set(["invalid", "revision_invalid", "instructions_invalid", "files_invalid", "task_changed", "grant_changed", "file_scope", "files_unavailable", "revision_conflict", "capacity", "image_limit", "version_unavailable", "adapter_limits_invalid", "project_unavailable", "context_unavailable", "agent_unavailable", "file_unavailable", "current_version", "stale", "unavailable"]);
+const FAILURES = new Set(["invalid", "revision_invalid", "instructions_invalid", "files_invalid", "task_changed", "grant_changed", "file_scope", "files_unavailable", "revision_conflict", "capacity", "image_limit", "version_unavailable", "adapter_limits_invalid", "project_unavailable", "context_unavailable", "agent_unavailable", "file_unavailable", "current_version", "retained_plan", "stale", "unavailable"]);
 export class TaskInputBridgeError extends Error { constructor(readonly code = "unavailable", readonly status = 503) { super("task_input_unavailable"); } }
 function configuration(environment: Environment) {
   const token = environment.MENTAT_BRIDGE_TOKEN ?? "";

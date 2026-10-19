@@ -292,7 +292,7 @@ class PlanningDeletionTests(unittest.TestCase):
                 })
 
         self.assertEqual(preview_status, 200)
-        self.assertEqual(set(preview), {"schema_version", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs", "retained_context_versions", "retained_input_versions", "retained_deliverable_versions", "retained_deliverable_reviews"})
+        self.assertEqual(set(preview), {"schema_version", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs", "retained_context_versions", "retained_input_versions", "retained_deliverable_versions", "retained_deliverable_reviews", "retained_plan_versions"})
         self.assertEqual(result_status, 200)
         self.assertEqual(result, {
             "schema_version": 1, "action": "delete", "target_kind": "task", "target_id": "task_root",

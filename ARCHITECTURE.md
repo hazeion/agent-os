@@ -1032,6 +1032,20 @@ and the affected slots before an explicit confirmation. A definitive stale
 response discards the preview, while an uncertain transport failure leaves it
 available for exact idempotent retry. Review controls never dispatch an Agent.
 
+Schema 33 adds immutable owner-prepared Project plan versions. Each live plan
+scope binds both the Project's private incarnation and its exact context scope;
+versions retain a bounded, ordered Task dependency/checkpoint graph with exact
+Task, Agent and Task-input identities plus finite requested limits. Publishing
+rechecks live assignment, context grant and binding, and protects referenced
+Task-input versions from pruning. A changed Project/Task/Agent/input/grant or
+canonical Task dependency graph appears as a safe stale or mismatch readout;
+historical validation still accepts retired scopes and deleted Tasks/Agents.
+Project deletion retires the scope and discloses retained versions without
+reviving them on ID reuse. Saving a plan grants no approval, Run, Hermes card,
+runtime tool, conditional handoff or Agent proposal authority. Version-1 plans
+cannot be approved for execution; later immutable policy and qualified runtime
+gates are required by the reviewed plan-admission contract.
+
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and
 selected deliverable versions. The existing materialization ceiling remains
