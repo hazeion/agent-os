@@ -60,7 +60,15 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
             self.assertEqual([row[0] for row in connection.execute('SELECT version FROM schema_migrations ORDER BY version')], list(range(1, 47)))
             self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
             self.assertEqual([v for v, _ in mentat_db.MIGRATIONS], [46])
+            self.assertGreater(connection.execute('SELECT MIN(applied_at) FROM schema_migrations').fetchone()[0], 0)
         self.assertTrue(mentat_db.validate_current_database_root(self.root))
+
+    def test_virtual_recipe_cutoffs_stay_zero_while_live_initialization_is_dated(self):
+        with closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
+            connection.executescript(mentat_db.CURRENT_BOOTSTRAP_SQL)
+            self.assertEqual(connection.execute('SELECT applied_at FROM schema_migrations WHERE version=40').fetchone()[0], 0)
+        with closing(mentat_db.connect(self.root)) as connection:
+            self.assertGreater(connection.execute('SELECT applied_at FROM schema_migrations WHERE version=40').fetchone()[0], 0)
 
     def test_fresh_random_epochs_and_owner_state_are_preserved_on_reopen(self):
         with closing(mentat_db.connect(self.root)) as connection:

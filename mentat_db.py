@@ -2838,6 +2838,13 @@ def migrate(
         connection.execute("BEGIN IMMEDIATE")
         for version, script in MIGRATIONS:
             _execute_script_in_active_transaction(connection, script)
+            # Zero timestamps identify virtual empty recipes to row validators.
+            # A real fresh database must retain the original live cutoffs before
+            # any subsequently published planning evidence can become valid.
+            connection.execute(
+                "UPDATE schema_migrations SET applied_at = ? WHERE version < ?",
+                (time.time(), version),
+            )
             connection.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (version, time.time()),
