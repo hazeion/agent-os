@@ -281,6 +281,41 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("pull_request_target", workflow)
 
+    def test_failed_windows_smoke_retains_only_successfully_archived_public_build(self):
+        workflow = (ROOT / ".github/workflows/native-artifacts.yml").read_text(encoding="utf-8")
+        archive_step = workflow.split("      - name: Archive public Windows bundle before smoke\n", 1)[1].split("      - name:", 1)[0]
+        smoke_step = workflow.split("      - name: Smoke install, run, and uninstall on Windows\n", 1)[1].split("      - name:", 1)[0]
+        installer_upload = workflow.split("      - name: Upload unsigned test installer\n", 1)[1].split("      - name:", 1)[0]
+        upload_step = workflow.split("      - name: Retain validated Windows bundle after smoke\n", 1)[1].split("\n  required:", 1)[0]
+        self.assertIn("id: native_build", workflow)
+        self.assertIn("id: windows_bundle", archive_step)
+        self.assertIn("if: runner.os == 'Windows'", archive_step)
+        self.assertIn("python scripts/archive_native_windows.py", archive_step)
+        self.assertLess(workflow.index("Archive public Windows bundle before smoke"), workflow.index("Smoke install, run, and uninstall on Windows"))
+        self.assertIn("always()", upload_step)
+        self.assertIn("steps.native_build.outcome == 'success'", upload_step)
+        self.assertIn("steps.windows_bundle.outcome == 'success'", upload_step)
+        self.assertIn("runner.os == 'Windows'", upload_step)
+        self.assertIn("path: dist/mentat-windows-x64-bundle.zip\n", upload_step)
+        self.assertNotIn("*", upload_step)
+        self.assertNotIn("always()", installer_upload)
+        paths = installer_upload.split("          path: |\n", 1)[1].split("          if-no-files-found:", 1)[0]
+        self.assertEqual(paths.split(), ["dist/*.pkg", "dist/installer/*.exe"])
+        self.assertNotIn("RUNNER_TEMP", upload_step)
+        self.assertNotIn(".log", upload_step)
+        self.assertIn('MENTAT_CI_NATIVE_STARTUP_DIAGNOSTICS: "1"', smoke_step)
+        self.assertEqual(workflow.count('MENTAT_CI_NATIVE_STARTUP_DIAGNOSTICS: "1"'), 1)
+        spec = (ROOT / "packaging/mentat.spec").read_text(encoding="utf-8")
+        self.assertIn('os.environ.get("GITHUB_ACTIONS") == "true"', spec)
+        self.assertIn('inventory_builder["write_windows_bundle_inventory"]', spec)
+        self.assertIn("Path(bundle.name), bundle.toc, bundle.contents_directory", spec)
+        self.assertLess(spec.index("bundle = COLLECT("), spec.index('inventory_builder["write_windows_bundle_inventory"]'))
+        self.assertIn("$attempt -lt 30", smoke_step)
+        self.assertIn("WaitForExit(15000)", smoke_step)
+        self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/bridge/health'", smoke_step)
+        for assertion in ("Upgrade install failed", "Upgrade removed Mentat data", "Upgrade retained stale application files", "Upgraded Mentat did not become healthy", "Uninstaller failed", "Mentat CLI survived uninstall", "Mentat launcher survived uninstall", "Uninstall removed Mentat data"):
+            self.assertIn(assertion, smoke_step)
+
     def test_macos_intel_native_builds_link_source_cryptography_statically(self):
         static_cryptography = (
             "      - name: Configure static cryptography for macOS Intel\n"
@@ -1190,19 +1225,23 @@ class CliTests(unittest.TestCase):
 
     def test_start_runs_preflight_before_the_node_gateway(self):
         args = cli.build_parser().parse_args(["start", "--port", "8891"])
-        with patch.object(cli, "run_lifecycle", return_value=0) as preflight:
+        phases = []
+        with patch.object(cli, "mark_native_startup_phase", side_effect=phases.append), patch.object(
+            cli, "run_lifecycle", side_effect=lambda *_args: (phases.append("preflight-call"), 0)[1]
+        ) as preflight:
             with patch.object(
                 cli,
                 "_load_config",
                 return_value=(None, SimpleNamespace(host="127.0.0.1", port=8891, data_dir=Path("/private/mentat"))),
             ):
-                with patch.object(web_runtime, "run_gateway", return_value=0) as gateway:
+                with patch.object(web_runtime, "run_gateway", side_effect=lambda **_kwargs: (phases.append("gateway-call"), 0)[1]) as gateway:
                     self.assertEqual(cli.run_start(args), 0)
         preflight.assert_called_once_with("preflight", args)
         self.assertEqual(gateway.call_args.kwargs["host"], "127.0.0.1")
         self.assertEqual(gateway.call_args.kwargs["port"], 8891)
         self.assertEqual(gateway.call_args.kwargs["data_dir"], Path("/private/mentat"))
         self.assertEqual(gateway.call_args.kwargs["runtime_environment"]["MENTAT_LAUNCHER_PID"], str(os.getpid()))
+        self.assertEqual(phases, ["preflight", "preflight-call", "preflight-done", "gateway-call"])
 
     def test_native_start_opens_browser_only_after_health_is_ready(self):
         args = cli.build_parser().parse_args(
