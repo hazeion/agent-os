@@ -1,5 +1,6 @@
 """Boundary checks for the disposable release runner; real execution is a separate command."""
 from pathlib import Path
+import json
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -109,7 +110,91 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 remove.assert_not_called()
                 self.assertIn('"owned_state_removed": false', output.call_args.args[0])
                 self.assertIn('"cleanup_incomplete"', output.call_args.args[0])
+                report = json.loads(output.call_args.args[0])
+                self.assertEqual(report["primary_phase"], "setup")
+                self.assertEqual(report["primary_code"], "launcher_exited")
             self.assertTrue(root.is_dir())
+
+    def test_browser_timeout_retains_primary_failure_without_command_disclosure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "owned"
+            root.mkdir()
+            def timeout(journey, *_args, **_kwargs):
+                journey.phase = "browser"
+                raise subprocess.TimeoutExpired(["/private/command", "secret-token"], 40)
+            def refuse_cleanup(journey):
+                journey.launch_output.close()
+                return False
+            with patch.object(acceptance.tempfile, "mkdtemp", return_value=str(root)), patch.object(
+                acceptance.Journey, "run", timeout
+            ), patch.object(acceptance.Journey, "cleanup", refuse_cleanup), patch.object(
+                acceptance.shutil, "rmtree"
+            ) as remove, patch("builtins.print") as output:
+                self.assertEqual(acceptance.main([]), 1)
+                remove.assert_not_called()
+            report = json.loads(output.call_args.args[0])
+            self.assertEqual(report["code"], "cleanup_incomplete")
+            self.assertEqual(report["primary_phase"], "browser")
+            self.assertEqual(report["primary_code"], "operation_timeout")
+            self.assertFalse(report["owned_state_removed"])
+            self.assertNotIn("secret-token", output.call_args.args[0])
+            self.assertNotIn("/private/command", output.call_args.args[0])
+            self.assertTrue(root.is_dir())
+
+    def test_cleanup_report_checks_every_owned_boundary_after_browser_group_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "owned"
+            root.mkdir()
+            browser = unittest.mock.Mock(pid=23456)
+            browser.poll.return_value = 0
+            launcher = unittest.mock.Mock(pid=34567)
+            launcher.poll.return_value = 0
+            def fail(journey, *_args, **_kwargs):
+                journey.phase = "browser"
+                journey.browser, journey.process = browser, launcher
+                journey.launcher_groups = {launcher.pid}
+                journey.children = (45678, 56789)
+                raise acceptance.AcceptanceFailure("browser_child_remains")
+            with patch.object(acceptance.tempfile, "mkdtemp", return_value=str(root)), patch.object(
+                acceptance.Journey, "run", fail
+            ), patch.object(acceptance, "process_group_absent", side_effect=lambda group: group != browser.pid) as groups, patch.object(
+                acceptance, "process_absent", return_value=True
+            ) as children, patch.object(acceptance.shutil, "rmtree") as remove, patch("builtins.print") as output:
+                self.assertEqual(acceptance.main([]), 1)
+                remove.assert_not_called()
+            report = json.loads(output.call_args.args[0])
+            self.assertEqual(report["primary_phase"], "browser")
+            self.assertEqual(report["primary_code"], "browser_child_remains")
+            self.assertEqual(report["cleanup"], {
+                "browser_terminal": True, "browser_group_absent": False,
+                "launcher_terminal": True, "launcher_groups_absent": True,
+                "captured_children_absent": True, "listener_closed": True,
+            })
+            groups.assert_has_calls([unittest.mock.call(browser.pid), unittest.mock.call(launcher.pid)])
+            children.assert_has_calls([unittest.mock.call(45678), unittest.mock.call(56789)])
+            browser.terminate.assert_not_called()
+            launcher.terminate.assert_not_called()
+            browser.wait.assert_called_once_with(timeout=15)
+            launcher.wait.assert_called_once_with(timeout=15)
+            self.assertNotIn("23456", output.call_args.args[0])
+            self.assertNotIn(str(root), output.call_args.args[0])
+
+    def test_cleanup_exception_preserves_primary_code_without_exception_data(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "owned"
+            root.mkdir()
+            with patch.object(acceptance.tempfile, "mkdtemp", return_value=str(root)), patch.object(
+                acceptance.Journey, "run", side_effect=acceptance.AcceptanceFailure("launcher_exited")
+            ), patch.object(acceptance.tempfile, "TemporaryFile", return_value=unittest.mock.Mock()), patch.object(
+                acceptance.Journey, "cleanup", side_effect=OSError("secret /owner/path")
+            ), patch.object(acceptance.shutil, "rmtree") as remove, patch("builtins.print") as output:
+                self.assertEqual(acceptance.main([]), 1)
+                remove.assert_not_called()
+            report = json.loads(output.call_args.args[0])
+            self.assertEqual(report["primary_code"], "launcher_exited")
+            self.assertEqual(report["code"], "cleanup_incomplete")
+            self.assertNotIn("secret", output.call_args.args[0])
+            self.assertNotIn("/owner", output.call_args.args[0])
 
     def test_restart_wait_has_a_deadline_and_does_not_relaunch(self):
         with patch.object(acceptance.time, "monotonic", side_effect=[0, 76]), patch.object(
