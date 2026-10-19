@@ -35,6 +35,8 @@ MAX_METADATA_BYTES = ACCESS_MAX_METADATA_BYTES + 512 * 1024
 RUN_INPUT_MAX_METADATA_BYTES = MAX_METADATA_BYTES + 512 * 1024
 # Schema 31 shares the same graph with bounded typed deliverable versions.
 DELIVERABLE_MAX_METADATA_BYTES = RUN_INPUT_MAX_METADATA_BYTES + 2 * 1024 * 1024
+# Schema 32 adds bounded immutable owner review decisions for exact result heads.
+DELIVERABLE_REVIEW_MAX_METADATA_BYTES = DELIVERABLE_MAX_METADATA_BYTES + 1024 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -131,6 +133,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'deliverable.capacity':
                 _fail('capacity')
             _fail('deliverables_invalid')
+    if schema_version >= 32:
+        budget = DELIVERABLE_REVIEW_MAX_METADATA_BYTES
+        from project_deliverable_review import DeliverableReviewError, validate_review_connection
+        try:
+            metadata.extend(validate_review_connection(connection))
+        except DeliverableReviewError as exc:
+            if str(exc) == 'deliverable_review.capacity':
+                _fail('capacity')
+            _fail('deliverable_review_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

@@ -25,6 +25,7 @@ passing ancestor as current-head acceptance.
 | 268 | `5dc8f64` | `2f14095` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 8 targeted tests discovered; 8 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 269 | `1f2fdee` | `6e32e55` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 19 targeted tests discovered; 19 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 270 | `5b4f4cf` | `769c0c5` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 24 targeted tests discovered; 24 pass; no skips. Hosted and integrated acceptance remain pending. |
+| 271 | `41ab450` | `e1dd2ed` | Resolve the Google worker fixture conflict to the byte-identical reviewed parent. Two independent reviews clear inherited two-child split scheduling, exact discovery coverage, unchanged 30-minute watchdog and private fixture isolation. All 25 Node/deliverable review/transport tests plus 44 scheduler/dashboard/profile tests pass without skips. Original deliverable feature unchanged. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

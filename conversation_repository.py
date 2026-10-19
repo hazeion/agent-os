@@ -1164,7 +1164,7 @@ def validate_repository_connection(
         expected_version = (
             DATABASE_SCHEMA_VERSION if schema_version is None else schema_version
         )
-        if expected_version not in {10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, DATABASE_SCHEMA_VERSION}:
+        if expected_version not in {10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, DATABASE_SCHEMA_VERSION}:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         legacy_missing_objects = {
             ("trigger", "mentat_conversations_agent_immutable"),
