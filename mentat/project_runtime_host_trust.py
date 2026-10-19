@@ -12,7 +12,7 @@ import hashlib
 from pathlib import PurePosixPath
 import re
 
-from mentat.project_runtime_elf import MAX_ELF_BYTES, RuntimeElfError, inspect_host_elf
+from mentat.project_runtime_elf import MAX_ELF_BYTES, ElfDependencies, RuntimeElfError, inspect_host_elf
 from mentat.project_system_origin import PINS
 
 MAX_MEMBERS = 256
@@ -70,16 +70,15 @@ class HostClosureCandidate:
     required_qualification: tuple[str, ...] = _REQUIRED
 
 
-def audit_fixed_helper_closure(
-    helper: str, members: tuple[tuple[str, bytes | str], ...],
-) -> HostClosureCandidate:
-    """Check exact fixed-helper bytes and a bounded supplied ELF/alias graph.
+@dataclass(frozen=True)
+class _ParsedElf:
+    """Internal immutable byte binding, not a provenance or execution witness."""
+    digest: str
+    size: int
+    elf: ElfDependencies
 
-    Members are immutable captured bytes or explicit symlink text, never paths
-    to read. The result cannot authorize launch. Resolution requires one unique
-    supplied target under the existing Ubuntu amd64 default library roots;
-    unrepresented cache, preload, hwcaps and dlopen behavior remains unqualified.
-    """
+
+def _prepare_members(helper, members):
     if type(helper) is not str or helper not in _HELPERS or type(members) is not tuple:
         _fail()
     pin = _HELPERS[helper]
@@ -94,11 +93,8 @@ def audit_fixed_helper_closure(
         path, raw = member
         if type(path) is not str or type(raw) not in (bytes, str):
             _fail()
-        if path != helper_path:
-            # Input member names must already be canonical; only recorded
-            # link targets may contain relative components or /lib aliases.
-            if _library_path(path) != path:
-                _fail()
+        if path != helper_path and _library_path(path) != path:
+            _fail()
         if path in captured:
             _fail()
         if type(raw) is bytes:
@@ -112,7 +108,26 @@ def audit_fixed_helper_closure(
     if (type(raw) is not bytes or len(raw) != pin.member_size
             or hashlib.sha256(raw).hexdigest() != pin.member_digest):
         _fail()
+    return captured
 
+
+def _audit_graph(helper, captured, parsed):
+    """Pure shared graph checks; no parser selection, callback or trust flag.
+
+    Both internal callers bind their fixed parser output to immutable bytes.
+    Ordinary API validates every object strictly; library-origin calls this only
+    after full archive authentication and exact fixed-member parsing. Neither
+    these records nor this result can authorize execution or prove provenance.
+    """
+    helper_path = "/" + _HELPERS[helper].member
+    regular_names = {name for name, raw in captured.items() if type(raw) is bytes}
+    if set(parsed) != regular_names:
+        _fail()
+    for name in regular_names:
+        item, raw = parsed[name], captured[name]
+        if (type(item) is not _ParsedElf or type(item.elf) is not ElfDependencies
+                or item.digest != hashlib.sha256(raw).hexdigest() or item.size != len(raw)):
+            _fail()
     used, aliases, regular, edges = set(), {}, {}, set()
 
     def resolve(path):
@@ -130,44 +145,58 @@ def audit_fixed_helper_closure(
             path = destination
 
     pending = [helper_path]
-    try:
-        while pending:
-            path = resolve(pending.pop())
-            if path in regular:
-                continue
-            raw = captured[path]
-            elf = inspect_host_elf(raw)
-            regular[path] = (hashlib.sha256(raw).hexdigest(), len(raw))
-            requirements = []
-            if elf.interpreter:
-                requirements.append((_library_path(elf.interpreter), None))
-            for name in elf.needed:
-                if "/" in name:
-                    # Host helpers cannot depend on caller ORIGIN/token paths.
-                    if not name.startswith("/"):
-                        _fail()
-                    requirements.append((_library_path(name), None))
-                else:
-                    options = [root + "/" + name for root in _LIBRARY_ROOTS]
-                    targets = {resolve(option) for option in options if option in captured}
-                    if len(targets) != 1:
-                        _fail()
-                    requirements.append((targets.pop(), name))
-            for requirement, soname in requirements:
-                target = resolve(requirement)
-                if target == helper_path:
+    while pending:
+        path = resolve(pending.pop())
+        if path in regular:
+            continue
+        raw = captured[path]
+        elf = parsed[path].elf
+        regular[path] = (hashlib.sha256(raw).hexdigest(), len(raw))
+        requirements = []
+        if elf.interpreter:
+            requirements.append((_library_path(elf.interpreter), None))
+        for name in elf.needed:
+            if "/" in name:
+                if not name.startswith("/"):
                     _fail()
-                dependency = inspect_host_elf(captured[target])
-                if soname is not None and dependency.soname not in (None, soname):
+                requirements.append((_library_path(name), None))
+            else:
+                options = [root + "/" + name for root in _LIBRARY_ROOTS]
+                targets = {resolve(option) for option in options if option in captured}
+                if len(targets) != 1:
                     _fail()
-                edges.add((path, target))
-                if target not in regular:
-                    pending.append(target)
-    except RuntimeElfError:
-        _fail()
-    if used != set(captured):
-        _fail()
+                requirements.append((targets.pop(), name))
+        for requirement, soname in requirements:
+            target = resolve(requirement)
+            if target == helper_path:
+                _fail()
+            dependency = parsed[target].elf
+            if soname is not None and dependency.soname not in (None, soname):
+                _fail()
+            edges.add((path, target))
+            if target not in regular:
+                pending.append(target)
     return HostClosureCandidate(
         helper, tuple((path, *regular[path]) for path in sorted(regular)),
         tuple(sorted(aliases.items())), tuple(sorted(edges)),
-    )
+    ), used
+
+
+def audit_fixed_helper_closure(helper: str, members: tuple[tuple[str, bytes | str], ...]) -> HostClosureCandidate:
+    """Ordinary fixed-helper API: strict host parser on every supplied ELF.
+
+    Caller pins, parsed records and library-only tag profiles are not inputs.
+    No filesystem reader, object execution or readiness authority is provided.
+    """
+    captured = _prepare_members(helper, members)
+    parsed = {}
+    try:
+        for path, raw in captured.items():
+            if type(raw) is bytes:
+                parsed[path] = _ParsedElf(hashlib.sha256(raw).hexdigest(), len(raw), inspect_host_elf(raw))
+    except RuntimeElfError:
+        _fail()
+    candidate, used = _audit_graph(helper, captured, parsed)
+    if used != set(captured):
+        _fail()
+    return candidate
