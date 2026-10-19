@@ -174,65 +174,67 @@ def validate_project_planning_input_connection(
     schema_version = connection.execute(
         "SELECT MAX(version) FROM schema_migrations"
     ).fetchone()[0]
-    if schema_version >= 40:
-        migration = connection.execute(
-            "SELECT applied_at FROM schema_migrations WHERE version=40"
-        ).fetchone()
-        if (migration is None or
-                not (_timestamp(migration[0]) or type(migration[0]) in (int, float) and migration[0] == 0)):
+    from mentat_db import SCHEMA_VERSION
+    if schema_version != SCHEMA_VERSION:
+        _fail("invalid")
+    migration = connection.execute(
+        "SELECT applied_at FROM schema_migrations WHERE version=40"
+    ).fetchone()
+    if (migration is None or
+            not (_timestamp(migration[0]) or type(migration[0]) in (int, float) and migration[0] == 0)):
+        _fail("invalid")
+    cutoff = migration[0]
+    if cutoff == 0 and retained:
+        _fail("invalid")
+    legacy_rows = connection.execute(
+        "SELECT input_id FROM mentat_project_planning_input_legacy ORDER BY input_id"
+    ).fetchmany(MAX_PROJECT_INPUT_VERSIONS + 1)
+    if len(legacy_rows) > MAX_PROJECT_INPUT_VERSIONS:
+        _fail("capacity")
+    legacy_ids = {row[0] for row in legacy_rows}
+    if len(legacy_ids) != len(legacy_rows) or not legacy_ids.issubset(retained):
+        _fail("invalid")
+    actions = connection.execute(
+        "SELECT action_id,input_id,scope_token,selection_token,"
+        "request_digest,source_kind,created_at "
+        "FROM mentat_project_planning_input_actions ORDER BY action_id"
+    ).fetchmany(MAX_PROJECT_INPUT_VERSIONS + 1)
+    if len(actions) > MAX_PROJECT_INPUT_VERSIONS:
+        _fail("capacity")
+    seen_inputs: set[str] = set()
+    for action_id, input_id, scope_token, selection_token, request_digest, source_kind, created_at in actions:
+        if (not isinstance(action_id, str) or _ACTION.fullmatch(action_id) is None
+                or input_id not in retained or input_id in seen_inputs
+                or not isinstance(scope_token, str) or _HEX64.fullmatch(scope_token) is None
+                or not isinstance(selection_token, str) or _HEX64.fullmatch(selection_token) is None
+                or not isinstance(request_digest, str)
+                or _HEX64.fullmatch(request_digest) is None
+                or not _timestamp(created_at)
+                or created_at < retained[input_id][2]):
             _fail("invalid")
-        cutoff = migration[0]
-        if cutoff == 0 and retained:
-            _fail("invalid")
-        legacy_rows = connection.execute(
-            "SELECT input_id FROM mentat_project_planning_input_legacy ORDER BY input_id"
-        ).fetchmany(MAX_PROJECT_INPUT_VERSIONS + 1)
-        if len(legacy_rows) > MAX_PROJECT_INPUT_VERSIONS:
-            _fail("capacity")
-        legacy_ids = {row[0] for row in legacy_rows}
-        if len(legacy_ids) != len(legacy_rows) or not legacy_ids.issubset(retained):
-            _fail("invalid")
-        actions = connection.execute(
-            "SELECT action_id,input_id,scope_token,selection_token,"
-            "request_digest,source_kind,created_at "
-            "FROM mentat_project_planning_input_actions ORDER BY action_id"
-        ).fetchmany(MAX_PROJECT_INPUT_VERSIONS + 1)
-        if len(actions) > MAX_PROJECT_INPUT_VERSIONS:
-            _fail("capacity")
-        seen_inputs: set[str] = set()
-        for action_id, input_id, scope_token, selection_token, request_digest, source_kind, created_at in actions:
-            if (not isinstance(action_id, str) or _ACTION.fullmatch(action_id) is None
-                    or input_id not in retained or input_id in seen_inputs
-                    or not isinstance(scope_token, str) or _HEX64.fullmatch(scope_token) is None
-                    or not isinstance(selection_token, str) or _HEX64.fullmatch(selection_token) is None
-                    or not isinstance(request_digest, str)
-                    or _HEX64.fullmatch(request_digest) is None
-                    or not _timestamp(created_at)
-                    or created_at < retained[input_id][2]):
+        seen_inputs.add(input_id)
+        version = version_rows[input_id]
+        if source_kind == "legacy":
+            if (input_id not in legacy_ids
+                    or version[15] > cutoff
+                    or action_id != "project_input_action_" + input_id[14:]
+                    or scope_token != "0" * 64 or selection_token != "0" * 64
+                    or request_digest != version[14] or created_at != version[15]):
                 _fail("invalid")
-            seen_inputs.add(input_id)
-            version = version_rows[input_id]
-            if source_kind == "legacy":
-                if (input_id not in legacy_ids
-                        or version[15] > cutoff
-                        or action_id != "project_input_action_" + input_id[14:]
-                        or scope_token != "0" * 64 or selection_token != "0" * 64
-                        or request_digest != version[14] or created_at != version[15]):
-                    _fail("invalid")
-            elif source_kind == "owner":
-                if input_id in legacy_ids or version[15] < cutoff:
-                    _fail("invalid")
-                claims = [action_id, version[1], version[4], version[5], version[6],
-                          version[11], version[12], version[3] - 1,
-                          scope_token, selection_token, version[13],
-                          [entry[0] for entry in selected[input_id]]]
-                if hashlib.sha256(_encoded(claims)).hexdigest() != request_digest:
-                    _fail("invalid")
-            else:
+        elif source_kind == "owner":
+            if input_id in legacy_ids or version[15] < cutoff:
                 _fail("invalid")
-        if seen_inputs != set(retained):
+            claims = [action_id, version[1], version[4], version[5], version[6],
+                      version[11], version[12], version[3] - 1,
+                      scope_token, selection_token, version[13],
+                      [entry[0] for entry in selected[input_id]]]
+            if hashlib.sha256(_encoded(claims)).hexdigest() != request_digest:
+                _fail("invalid")
+        else:
             _fail("invalid")
-        metadata.extend([[list(row) for row in legacy_rows], [list(row) for row in actions]])
+    if seen_inputs != set(retained):
+        _fail("invalid")
+    metadata.extend([[list(row) for row in legacy_rows], [list(row) for row in actions]])
     return metadata
 
 

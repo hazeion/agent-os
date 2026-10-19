@@ -33,10 +33,9 @@ DIST_INFO = f"{DIST_NAME}.dist-info"
 EGG_INFO = "mentat_local.egg-info"
 PUBLIC_MODULES = {
     "agent_console_artifacts", "agent_console_attachments", "agent_console_telemetry",
-    "agent_registry", "agent_setup", "agent_registry_migration", "agent_run_history", "agent_runtime",
+    "agent_registry", "agent_setup", "agent_run_history", "agent_runtime",
     "codex_runtime", "codex_task_creation", "planning_calendar", "planning_deletion", "command_manifest", "conversation_attachments", "conversation_planning", "conversation_repository", "data_backup_restore", "data_layout",
-    "data_documents", "data_migration",
-    "data_schema", "delegation_artifacts", "diagnostics_bundle", "health_checks",
+    "data_documents", "data_schema", "delegation_artifacts", "diagnostics_bundle", "health_checks",
     "hermes_browser_events", "hermes_event_refresh", "hermes_kanban", "hermes_local_control",
     "http_read_deadline",
     "hermes_profile_creation",
@@ -47,8 +46,7 @@ PUBLIC_MODULES = {
     "link_preview_cache", "link_preview_image", "link_preview_metadata", "link_preview_policy",
     "link_preview_service", "link_preview_transport", "link_preview_webp", "link_preview_worker",
     "link_preview_workers",
-    "mentat_db", "mentat_lifecycle", "orchestration_service", "private_console_migration",
-    "owner_auth", "owner_auth_setup", "owner_gateway", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_context", "project_context_access", "project_context_editor", "project_context_http", "project_repository", "project_deliverables", "project_deliverables_http", "project_deliverable_review", "project_plan_policy", "project_plans", "project_plans_http", "project_leads", "project_planning_inputs", "project_planning_inputs_http", "owner_inbox", "owner_inbox_http", "remote_hermes", "runtime_config",
+    "mentat_db", "mentat_lifecycle", "orchestration_service", "owner_auth", "owner_auth_setup", "owner_gateway", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_context", "project_context_access", "project_context_editor", "project_context_http", "project_repository", "project_deliverables", "project_deliverables_http", "project_deliverable_review", "project_plan_policy", "project_plans", "project_plans_http", "project_leads", "project_planning_inputs", "project_planning_inputs_http", "owner_inbox", "owner_inbox_http", "remote_hermes", "runtime_config",
     "run_attention", "run_input_receipts", "project_proposal_input_receipts", "project_proposal_artifact", "project_worker_journal", "project_scope_journal", "project_inference_broker", "run_repository", "server", "task_delegation_receipts", "task_planning", "task_repository", "task_inputs", "task_inputs_http",
     "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }
