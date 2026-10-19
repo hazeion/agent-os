@@ -1,6 +1,7 @@
 # PyInstaller definition shared by macOS and Windows native test bundles.
 
 from pathlib import Path
+import os
 import runpy
 import sys
 from PyInstaller.utils.hooks import collect_all
@@ -123,6 +124,12 @@ bundle = COLLECT(
     upx=False,
     name="Mentat",
 )
+
+if sys.platform.startswith("win") and os.environ.get("GITHUB_ACTIONS") == "true":
+    inventory_builder = runpy.run_path(str(ROOT / "scripts" / "archive_native_windows.py"))
+    inventory_builder["write_windows_bundle_inventory"](
+        Path(bundle.name), bundle.toc, bundle.contents_directory,
+    )
 
 if sys.platform == "darwin":
     app = BUNDLE(
