@@ -253,14 +253,16 @@ no new mount or filesystem alias is created. Root paths are explicit, not a
 caller glob or host-directory search. Refuse absent or multiply defined selected
 members instead of choosing a convenient ABI/library version.
 
-Inspect each selected regular object with the unchanged strict host ELF policy:
+Except for the exact library-only profile explicitly defined in amendment A,
+inspect each selected regular object with the unchanged strict host ELF policy:
 ELF64 little-endian machine62 only, fixed interpreter, closed dynamic-tag/flag
 policy, no RPATH/RUNPATH, unsupported search/loader/audit/plugin features or
 ambiguous mappings. Validate its selected SONAME (the fixed loader may have no
-SONAME) and resolve only represented authenticated aliases. Construct each
-helper's reachable subgraph, then call the existing host-closure audit unchanged.
-Every union member must be needed by at least one helper; every per-helper member
-must be consumed. Any missing extra recursive dependency refuses. Extending the
+SONAME) and resolve only represented authenticated aliases. Use the private fixed-purpose shared graph path specified in amendment A for
+the authenticated origin comparison. The ordinary public host-closure API keeps
+its current strict byte-validation behavior; it is not used unchanged on tagged
+library bytes. Every union member must be needed by at least one helper; every
+per-helper member must be consumed. Any missing extra recursive dependency refuses. Extending the
 package/root list requires a contract/pin review, not an automatic download.
 No static result proves cache/preload/hwcaps/dlopen/NSS/plugin/implicit-subprocess
 behavior, immutability at launch or FUSE privilege/teardown.
@@ -467,6 +469,56 @@ The public package, exact member path, size and digest all select the context;
 raw bytes remain unchanged. The existing loader member is254864 bytes,
 SHA256bda779ea9e9ad234f60315477d7cfd0bdde861cd8ddd9df8cdaf62f18c4cec14,
 and must pass the unmodified policy with no tag triple.
+
+### Private shared-graph interface; ordinary API remains strict
+
+The original instruction to call audit_fixed_helper_closure unchanged cannot
+apply to the new tagged-library context: that public API re-runs ordinary
+inspect_host_elf on every object and must continue to refuse the two tagged
+members. This section explicitly supersedes only that call-path instruction.
+It does not authorize a duplicate, weakened or caller-configurable closure policy.
+
+Factor only the pure existing graph checks into a small private shared helper:
+canonical root/alias resolution, cycle/depth/ambiguity checks, helper identity,
+represented dependencies/interpreter/SONAME consistency, member accounting and
+edge/result construction. This helper has no parser-policy selection, callback,
+allowlist, trusted boolean, runtime route or general override. It receives only
+immutable captured member data and the internally parsed bounded ELF records;
+its results remain ordinary freely constructible static comparison data.
+
+The existing ordinary public byte-validation entry point parses every supplied
+regular object with the unchanged ordinary strict host parser, then invokes the
+shared graph checks and preserves its exact unused-member refusal. Its input
+signature, fixed helper identities, exception behavior and required qualification
+flags remain unchanged. In particular, tagged libc/libm bytes still fail there,
+regardless of filenames, caller assertions or copied comparison objects.
+
+A separate private fixed-purpose library-origin path is entered only within the
+fixed worker after full source capture and successful exact signed-release,
+index, package-tuple, archive and selected-member validation. That path selects
+the compiled two-member profile internally using the authenticated libc6 package
+coordinate plus exact member path, size and digest. All other selected library
+objects and the four helper objects use the ordinary strict parser. It neither
+accepts parsed metadata from its caller nor accepts a flag/hook saying that
+bytes are trusted. No alternate public graph API accepts the profile or a list
+of extra tags. Any isolated parsing helper used for arithmetic tests remains
+private, cannot grant provenance and cannot be used to bypass worker admission.
+
+Both paths feed the same private graph checks; do not copy and relax the resolver
+in the origin module. The origin path constructs each helper's exact reachable
+subgraph, requires every per-helper member to be consumed, then requires the
+union of those four consumed library/alias sets to equal the authenticated
+selected set. The output preserves existing unresolved host/runtime requirements
+and adds no readiness, witness or execution authority. No caller-supplied report
+or metadata object substitutes for the authenticated byte-validation path.
+
+Tests must demonstrate that the ordinary public API still refuses both tagged
+members, that profile selection is unavailable before all origin/member checks,
+and that all four origin comparisons succeed through actual common graph logic
+under the narrowly reviewed fixed context. Cover wrong package/member/digest,
+unauthenticated input, stale parsed records, missing/unused/ambiguous aliases and
+dependencies, alongside all existing ordinary graph refusal tests. Portable
+primitive mocks remain unit coverage, never actual signature or Linux evidence.
 
 ### Closed bounded PLT/relocation checks
 
