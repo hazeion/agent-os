@@ -6,6 +6,10 @@ import runpy
 import subprocess
 import sys
 
+from mentat.native_startup_diagnostics import mark_native_startup_phase
+
+mark_native_startup_phase("native-entry")
+
 # Frozen builds need explicit roots for the owner-auth runtime.  PyInstaller
 # sees these static imports, while source-mode packaging tests stay independent
 # of optional native runtime dependencies.
@@ -13,8 +17,12 @@ if bool(getattr(sys, "frozen", False)):
     import argon2  # noqa: F401
     import fido2  # noqa: F401
 
+mark_native_startup_phase("native-verifiers-done")
+
 from mentat.cli import main
 from mentat.web_runtime import application_root, require_node_24
+
+mark_native_startup_phase("native-imports-done")
 
 
 def console_gateway_companion() -> Path | None:
