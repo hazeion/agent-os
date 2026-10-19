@@ -2835,12 +2835,24 @@ def bridge_planning_task_run_once_preview_payload(task_id: str, payload: object)
         source, status = mentat_planning_task_run_once_preview(task_id, payload)
         if status != 200:
             return _planning_execution_failure(status)
-        if not isinstance(source, dict) or set(source) != {"schema_version", "action", "task", "requires_confirmation", "confirmation_id"}:
+        if not isinstance(source, dict) or set(source) != {"schema_version", "action", "task", "objective", "requires_confirmation", "confirmation_id"}:
             raise BridgeConversationProjectionError("planning_execution_invalid")
         task = _planning_execution_task(source.get("task"))
+        objective = source.get("objective")
+        if (
+            not isinstance(objective, dict)
+            or set(objective) != {"text", "redacted", "truncated"}
+            or not isinstance(objective.get("text"), str)
+            or not 1 <= len(objective["text"]) <= 20_000
+            or objective["text"].strip() != objective["text"]
+            or any(unicodedata.category(character).startswith("C") and character not in "\n\t" for character in objective["text"])
+            or type(objective.get("redacted")) is not bool
+            or type(objective.get("truncated")) is not bool
+        ):
+            raise BridgeConversationProjectionError("planning_execution_invalid")
         if source.get("schema_version") != 1 or source.get("action") != "run_once" or task["id"] != task_id or source.get("requires_confirmation") is not True or not isinstance(source.get("confirmation_id"), str) or re.fullmatch(r"[0-9a-f]{64}", source["confirmation_id"]) is None:
             raise BridgeConversationProjectionError("planning_execution_invalid")
-        return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "run_once", "task": task, "requires_confirmation": True, "confirmation_id": source["confirmation_id"]}, 200
+        return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "run_once", "task": task, "objective": dict(objective), "requires_confirmation": True, "confirmation_id": source["confirmation_id"]}, 200
     except Exception:
         return _planning_execution_failure(500)
 

@@ -20,50 +20,71 @@ not in a growing collection of repository narratives.
 
 ## Current position
 
-The owner approved the Beta QA stabilization sequence on September 7, 2026.
-Complete it before resuming MDA implementation; preserve the existing MDA
-worktrees. Each batch remains a focused slice with regression evidence and two
-independent reviews for non-trivial changes. Publication is a separate step.
+On September 21, 2026 the owner approved implementation of the
+[secure owner access and coordinated Project delivery map](https://github.com/hazeion/agent-os/issues/234).
+Its native child dependencies are the current work queue. The acceptance
+scenario is a garage-organization Project: approved research and layout work
+uses supplied goals and measurements to produce a dimensioned layout, editable
+linked shopping document and implementation sequence, followed by coordinated
+review and revision.
 
-1. Execution and visibility: issues #211, #210 (locally verified; publication pending).
-2. Failed Task recovery and cascade deletion: issues #209, #208 (locally verified).
-3. Integration and planner refresh: issues #214, #213 (locally verified).
-4. Delegation availability and Conversation restore: issues #219, #220 (locally verified).
-5. Checklist, Someday, and reminder usability: issues #215, #221, #218 (locally verified).
-6. Shared theme and task-inspector layout: issues #216, #217 (locally verified).
-7. Capability-scoped Agent onboarding: issue #212 (locally verified).
+The target is one owner on an always-on Linux host, accessible from ordinary
+browsers. Google OIDC uses an operator-owned provider application, explicit
+owner enrollment, guided CLI setup and host-admin recovery. Login and
+integration consent remain separate. Persistent Agents have scoped Project
+roles/context; the owner can assign manually or approve a lead Agent's plan.
+Work proceeds within budgets between review checkpoints. The dashboard inbox
+holds questions, approvals, failures and results.
 
-The [Beta QA audit](https://github.com/hazeion/agent-os/issues/222) owns the
-findings and final end-to-end acceptance. The active evidence log is
-`reviews/2026-09-09-first-use-audit.md` (publication held: new-user acceptance
-found result, continuity, live-state, layout, onboarding, and dependency gaps).
-The fourteen original Beta QA fixes remain locally implemented; the broader
-September 9 journey is not approved. Reconcile published main `e1081c4` before
-the next integrated acceptance pass.
-After QA acceptance, reconcile and
-verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against the stabilized baseline.
+### Sequence and resume point
 
-The runtime-neutral Python foundation, SQLite authority, Node gateway,
-Emerald shell, read-only Agents/Tasks/Runs routes, Run timeline and controls,
-production packaging, Codex adapter, runtime coexistence, Agent registry
-convergence, and optional Vercel capability adapters are complete through Slice
-4A.
+1. [Reconcile and verify the baseline](https://github.com/hazeion/agent-os/issues/235):
+   close only evidenced historical fixes; complete next-Run objective previews,
+   live completion/navigation and transcript-refresh work; repeat focused
+   responsive and fresh-install acceptance.
+2. Resolve [Google OIDC authority](https://github.com/hazeion/agent-os/issues/236)
+   and [runtime qualification](https://github.com/hazeion/agent-os/issues/237)
+   through independent primary-source research.
+3. Implement [authorized Project context and deliverables](https://github.com/hazeion/agent-os/issues/238).
+4. Implement [approved plans and scoped handoffs](https://github.com/hazeion/agent-os/issues/239).
+5. Implement [Project review and owner inbox](https://github.com/hazeion/agent-os/issues/240).
+6. Implement [owner login and Linux activation gates](https://github.com/hazeion/agent-os/issues/241)
+   after its baseline/auth prerequisites; this track is independent of later
+   Project UI work.
+7. Verify the [complete garage journey](https://github.com/hazeion/agent-os/issues/242)
+   on the integrated product and reconcile remaining tracker state.
 
-Authenticated multi-device foundation work is complete through MDA-4C: durable owner-auth
-authority remains behind a disabled remote profile, and the local Node gateway
-now uses one process-owned authority, an exhaustive source-checked route/static
-manifest, and one handler wrapper while preserving local behavior. The checked-in
-Linux Caddy profile is version-pinned and executable only through an explicit
-disposable loopback harness; normal launch paths remain unchanged and remote
-serving remains disabled pending a separate activation slice.
+Active evidence: [owner workflow review](reviews/2026-09-21-owner-workflow.md).
+First implementation slice: finish the readable exact next-Run objective and
+review-feedback preview in the
+[Task results and requested changes issue](https://github.com/hazeion/agent-os/issues/226).
 
-Agent Console Slices 1 through 10 are complete. Slice 10 shipped through PR
-#160 with schema-17 non-owning Conversation planning context, bounded planning
-reads, minimal Project and Task creation, Home planning attention and
-draft-only suggestions, exact Task deep links, a hydrated Projects & Tasks
-workspace, clean adversarial re-reviews, 52 green PR checks, and production
-desktop/mobile browser and Lighthouse acceptance. No later Agent Console slice
-is currently approved. Choose the next frontier through the Wayfinder.
+### Implemented baseline and retained boundaries
+
+Beta QA stabilization merged through
+[PR 231](https://github.com/hazeion/agent-os/pull/231); it is no longer awaiting
+publication. The original batch review logs remain historical evidence.
+The [fresh-install audit](https://github.com/hazeion/agent-os/issues/223) remains
+open: merged code is not proof that every acceptance finding is resolved.
+
+Agent Console slices 1-10 and the Projects & Tasks workspace are implemented.
+MDA-4A, MDA-4B and MDA-4C merged through PRs 207, 232 and 233. Owner-auth
+authority, central gateway policy and the disabled Caddy profile are retained;
+remote serving remains disabled until the new authentication and activation
+gates pass. Do not repeat completed MDA work.
+
+The approved OIDC direction revises the earlier passkey-only product choice,
+but does not change live authority until a reviewed migration implements it.
+Project context and runtime-neutral coordination likewise require explicit
+capability contracts: current Conversation planning links are navigation-only,
+and Conversation Turns must never be repurposed as a durable Task scheduler.
+Python retains private data/runtime authority; Node exposes fixed capabilities.
+
+Teams, multi-master sync, a distributed personal-computer fleet, autonomous
+capability grants, purchases, external messaging integrations, guaranteed
+closed-browser notifications and photorealistic rendering are deferred.
+Calendar integration is optional. Hermes cron queueing remains an explicitly
+tracked upstream dependency, not a substitute implementation opportunity.
 
 ## Completed slices
 

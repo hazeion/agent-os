@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
@@ -674,23 +674,22 @@ def _embedded_schema_signature(
 def _expected_embedded_schema_signature(
     schema_version: int = DATABASE_SCHEMA_VERSION,
 ) -> tuple[tuple[str, str, str, str], ...]:
-    with TemporaryDirectory(prefix="mentat-embedded-agent-schema-") as temporary:
-        connection = sqlite3.connect(Path(temporary) / "mentat.sqlite3")
-        try:
+    # This database contains only the expected DDL, never owner data. Building
+    # it in memory avoids a filesystem sync for every migration statement on
+    # the first registry read, while preserving the complete schema check.
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+        )
+        for version, script in MIGRATIONS:
+            if version > schema_version:
+                break
+            connection.executescript(script)
             connection.execute(
-                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                (version,),
             )
-            for version, script in MIGRATIONS:
-                if version > schema_version:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
-                    (version,),
-                )
-            return _embedded_schema_signature(connection)
-        finally:
-            connection.close()
+        return _embedded_schema_signature(connection)
 
 
 def authority_receipt(

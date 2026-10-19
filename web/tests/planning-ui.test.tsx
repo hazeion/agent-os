@@ -881,7 +881,7 @@ test("Task execution stays unavailable until its safe projection arrives, then p
   dom.reconfigure({ url: `${origin}/tasks` });
   const executionTask = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
   const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: executionTask };
-  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: executionTask };
+  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, objective: { text: "Research garage storage.\n\nOperator-requested changes for this exact next attempt:\nKeep the budget below $500.", redacted: false, truncated: false }, task: executionTask };
   const started = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [{ agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" }], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "in_progress" as const, planning_state: "in_progress" as const, status: "in progress" as const } };
   const calls: Array<{ body: unknown; path: string }> = [];
   globalThis.fetch = async (input, init) => {
@@ -902,6 +902,8 @@ test("Task execution stays unavailable until its safe projection arrives, then p
   await screen.findByRole("button", { name: "Run once" });
   await user.click(screen.getByRole("button", { name: "Run once" }));
   await screen.findByRole("button", { name: "Start Run once" });
+  assert.equal(screen.getByLabelText("Instructions for this Run").textContent, preview.objective.text);
+  assert.match(screen.getByLabelText("Instructions for this Run").textContent ?? "", /Keep the budget below \$500/u);
   await user.click(screen.getByRole("button", { name: "Start Run once" }));
   await screen.findByText("Run once started.");
   const inspector = screen.getByLabelText("Task inspector");
@@ -1059,7 +1061,7 @@ test("List selection clears a same-revision Task's pending Run-once confirmation
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
   const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: alpha };
   const betaExecution = deferred<Response>();
-  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha };
+  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, objective: { text: "Research garage storage.\n\nOperator-requested changes for this exact next attempt:\nKeep the budget below $500.", redacted: false, truncated: false }, task: alpha };
   globalThis.fetch = async (input) => {
     const url = new URL(input.toString(), origin);
     const taskId = url.searchParams.get("task_id");
@@ -1193,7 +1195,7 @@ test("a late Run once preview cannot confirm a Task selected from the dependency
   const inspector = screen.getByLabelText("Task inspector");
   await within(inspector).findByText("Prepare the Beta changes.");
   await within(inspector).findByRole("button", { name: "Run once" });
-  latePreview.resolve(Response.json({ ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha }));
+  latePreview.resolve(Response.json({ ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, objective: { text: "Research garage storage.\n\nOperator-requested changes for this exact next attempt:\nKeep the budget below $500.", redacted: false, truncated: false }, task: alpha }));
   await waitFor(() => {
     assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
     assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
@@ -1210,7 +1212,7 @@ test("a late Run once mutation cannot overwrite a Task selected from the depende
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
   const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: alpha };
   const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta };
-  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha };
+  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, objective: { text: "Research garage storage.\n\nOperator-requested changes for this exact next attempt:\nKeep the budget below $500.", redacted: false, truncated: false }, task: alpha };
   const lateMutation = deferred<Response>();
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
   globalThis.fetch = async (input) => {
