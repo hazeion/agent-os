@@ -5,12 +5,12 @@ No helper, decoder, signature utility, library or production worker is executed.
 import array
 from dataclasses import replace
 from copy import deepcopy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import os
 from pathlib import Path
 import socket
 import struct
-from tempfile import TemporaryFile
+from tempfile import TemporaryFile, TemporaryDirectory
 import time
 from types import SimpleNamespace
 import unittest
@@ -19,6 +19,10 @@ from unittest.mock import Mock, patch
 from mentat import project_helper_byte_custody as custody
 from mentat import project_library_origin as library
 from mentat import project_system_origin as origin
+
+posix_descriptors = unittest.skipUnless(
+    os.name == 'posix' and hasattr(os, 'pread'),
+    'Actual POSIX descriptor reads/private capture fixture required')
 
 
 class Endpoint:
@@ -68,9 +72,12 @@ class CustodyTests(unittest.TestCase):
     def kernel_substitutions(self):
         stack = ExitStack()
         for name, value in (("SCM_CREDENTIALS", 2), ("SO_PASSCRED", 16),
+                            ("SCM_RIGHTS", 1), ("MSG_TRUNC", 32), ("MSG_CTRUNC", 8),
                             ("SOCK_CLOEXEC", 0x80000),
                             ("MSG_CMSG_CLOEXEC", 0x40000000)):
             stack.enter_context(patch.object(socket, name, getattr(socket, name, value), create=True))
+        if not hasattr(socket, 'CMSG_SPACE'):
+            stack.enter_context(patch.object(socket, 'CMSG_SPACE', lambda size: size + 16, create=True))
         return stack
 
     def row(self, descriptor, path=None):
@@ -85,8 +92,9 @@ class CustodyTests(unittest.TestCase):
                 custody.acquire_fixed_helper_bytes(Path('/public'))
             pair.assert_not_called()
 
+    @posix_descriptors
     def test_actual_parent_flow_publishes_only_after_normal_closure_and_closes_partial_handoff(self):
-        for fail_at in (None, 7, 'normal'):
+        for fail_at in (None, 7, 'normal', 'close-before', 'close-after'):
             with self.subTest(fail_at=fail_at), ExitStack() as stack, self.kernel_substitutions():
                 manifest, files = self.parent_fixture(stack)
                 endpoint, child = Endpoint(), Endpoint()
@@ -105,7 +113,8 @@ class CustodyTests(unittest.TestCase):
                             delivered.append(descriptor)
                             index = self.index
                             self.index += 1
-                            return (-1 if index == fail_at else index), descriptor
+                            wrong = index == fail_at or (isinstance(fail_at, str) and fail_at.startswith('close-') and index == 7)
+                            return (-1 if wrong else index), descriptor
                         if kind == 'READY':
                             return library._sha(custody._wire(manifest))
                         return None
@@ -130,6 +139,17 @@ class CustodyTests(unittest.TestCase):
                     stack.enter_context(patch.object(target, name, return_value=value, create=True))
                 stack.enter_context(patch.object(custody, '_Channel', Channel))
                 stack.enter_context(patch.object(custody, '_OwnedWorker', Owner))
+                real_close = os.close
+                close_calls = []
+                def close(descriptor):
+                    if isinstance(fail_at, str) and fail_at.startswith('close-') and delivered and descriptor == delivered[0]:
+                        close_calls.append(descriptor)
+                        if fail_at == 'close-after':
+                            real_close(descriptor)
+                        raise OSError('injected ambiguous close')
+                    real_close(descriptor)
+                if isinstance(fail_at, str) and fail_at.startswith('close-'):
+                    stack.enter_context(patch.object(os, 'close', side_effect=close))
                 if fail_at is None:
                     lease = custody.acquire_fixed_helper_bytes(Path('/public'))
                     self.assertEqual(events[-2:], ['NORMAL', 'CLOSED'])
@@ -141,10 +161,18 @@ class CustodyTests(unittest.TestCase):
                     with self.assertRaises(custody.ByteCustodyError):
                         custody.acquire_fixed_helper_bytes(Path('/public'))
                 self.assertTrue(endpoint.closed and child.closed)
+                self.assertEqual(events[-1], 'CLOSED')
                 for descriptor in delivered:
+                    if fail_at == 'close-before' and descriptor == delivered[0]:
+                        os.fstat(descriptor)
+                        real_close(descriptor)
+                        continue
                     with self.assertRaises(OSError):
                         os.fstat(descriptor)
+                if isinstance(fail_at, str) and fail_at.startswith('close-'):
+                    self.assertEqual(close_calls, [delivered[0]])
 
+    @posix_descriptors
     def test_fixed_manifest_wrong_class_is_refused_before_any_transfer(self):
         with ExitStack() as stack:
             manifest, _files = self.parent_fixture(stack)
@@ -155,6 +183,7 @@ class CustodyTests(unittest.TestCase):
             with self.assertRaises(custody.ByteCustodyError):
                 custody._manifest(changed)
 
+    @posix_descriptors
     def test_real_received_byte_read_ignores_shared_offset_and_close_is_idempotent(self):
         with TemporaryFile() as source:
             source.write(b'public fixed bytes'); source.flush()
@@ -171,6 +200,7 @@ class CustodyTests(unittest.TestCase):
             with self.assertRaises(custody.ByteCustodyError):
                 lease.read(row[0])
 
+    @posix_descriptors
     def test_object_rejects_wrong_class_size_hash_identity_and_missing_substituted_seal(self):
         import fcntl
         with TemporaryFile() as source:
@@ -189,7 +219,7 @@ class CustodyTests(unittest.TestCase):
 
     def test_received_right_is_closed_for_foreign_peer_truncation_extra_rights_and_bad_frame(self):
         with self.kernel_substitutions(), TemporaryFile() as source:
-            peer = (123, os.getuid(), os.getgid())
+            peer = (123, 1000, 1000)  # Substituted kernel credentials, not host IDs.
             good = {'version': 1, 'nonce': 'n', 'sequence': 0, 'kind': 'MEMBER', 'value': 0}
             for failure in ('peer', 'truncated', 'extra', 'nonce', 'sequence', 'duplicate-json', 'kind'):
                 descriptors = [os.dup(source.fileno()) for _ in range(2 if failure == 'extra' else 1)]
@@ -220,13 +250,83 @@ class CustodyTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 os.fstat(descriptor)
 
+    @posix_descriptors
+    def test_lease_close_uncertainty_keeps_evidence_and_never_retries_reused_number(self):
+        for after in (False, True):
+            with self.subTest(after=after), TemporaryFile() as source, TemporaryFile() as replacement:
+                source.write(b'public'); source.flush()
+                first, second = os.dup(source.fileno()), os.dup(source.fileno())
+                row = self.row(first)
+                other = list(row); other[0] = 'other'
+                lease = custody.FixedByteCustody({row[0]: (first, row[1]), 'other': (second, row[1])}, [row, other], [])
+                real_close = os.close
+                calls = []
+                def close(descriptor):
+                    calls.append(descriptor)
+                    if descriptor == first:
+                        if after:
+                            real_close(descriptor)
+                            os.dup2(replacement.fileno(), descriptor)
+                        raise OSError('injected before/after close')
+                    real_close(descriptor)
+                with patch.object(os, 'close', side_effect=close):
+                    for _attempt in range(2):
+                        with self.assertRaises(custody.ByteCustodyError) as failure:
+                            lease.close()
+                        self.assertIs(failure.exception._mentat_custody_owner, lease)
+                    self.assertEqual(calls, [first, second])
+                os.fstat(first)  # Still owned or numerically reused; never retried.
+                with self.assertRaises(OSError):
+                    os.fstat(second)
+                real_close(first)
+
+    def test_channel_close_error_attempts_later_rights_and_preserves_uncertainty(self):
+        with self.kernel_substitutions(), TemporaryFile() as source:
+            first, second = os.dup(source.fileno()), os.dup(source.fileno())
+            controls = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [first, second]).tobytes())]
+            channel = custody._Channel(Endpoint((b'bad', controls, socket.MSG_CTRUNC, None)), (1, 2, 3), 'n', time.monotonic()+1)
+            real_close = os.close
+            def close(descriptor):
+                if descriptor == first:
+                    real_close(descriptor)
+                    raise OSError('injected after close')
+                real_close(descriptor)
+            with patch.object(os, 'close', side_effect=close):
+                with self.assertRaises(custody.ByteCustodyError) as failure:
+                    channel.receive('MEMBER', rights=True)
+            self.assertIs(failure.exception._mentat_custody_owner, channel)
+            for descriptor in (first, second):
+                with self.assertRaises(OSError):
+                    os.fstat(descriptor)
+
+    def test_pidfd_close_error_cannot_retry_reused_descriptor(self):
+        with TemporaryFile() as replacement, TemporaryFile() as source:
+            descriptor = os.dup(source.fileno())
+            owner = custody._OwnedWorker(SimpleNamespace(pid=123))
+            owner.reaped, owner.pidfd = True, descriptor
+            real_close = os.close
+            calls = []
+            def close(number):
+                calls.append(number)
+                real_close(number)
+                os.dup2(replacement.fileno(), number)
+                raise OSError('injected reused pidfd')
+            with patch.object(owner, 'absent'), patch.object(os, 'close', side_effect=close):
+                for _attempt in range(2):
+                    with self.assertRaises(custody.ByteCustodyError):
+                        owner.close()
+            self.assertEqual(calls, [descriptor])
+            os.fstat(descriptor)
+            real_close(descriptor)
+
     def test_normal_exit_reap_group_absence_order_without_any_signal(self):
         owner = custody._OwnedWorker.__new__(custody._OwnedWorker)
         owner.process = SimpleNamespace(pid=123, returncode=None)
         owner.pidfd, owner.reaped, owner.ticks = 10, False, 77
         terminal = SimpleNamespace(si_code=getattr(os, 'CLD_EXITED', 1), si_status=0)
         with patch.object(owner, 'terminal', return_value=terminal), patch.object(os, 'waitpid', return_value=(123, 0)), \
-                patch.object(os, 'killpg', side_effect=ProcessLookupError) as group:
+                patch.object(os, 'CLD_EXITED', terminal.si_code, create=True), \
+                patch.object(os, 'killpg', side_effect=ProcessLookupError, create=True) as group:
             owner.normal(time.monotonic()+1)
             self.assertTrue(owner.reaped)
             group.assert_called_once_with(123, 0)
@@ -235,6 +335,7 @@ class CustodyTests(unittest.TestCase):
         owner = custody._OwnedWorker.__new__(custody._OwnedWorker)
         for code, status in ((getattr(os, 'CLD_KILLED', 2), 9), (getattr(os, 'CLD_EXITED', 1), 1)):
             with patch.object(owner, 'terminal', return_value=SimpleNamespace(si_code=code, si_status=status)), \
+                    patch.object(os, 'CLD_EXITED', getattr(os, 'CLD_EXITED', 1), create=True), \
                     patch.object(owner, '_reap') as reap:
                 with self.assertRaises(custody.ByteCustodyError):
                     owner.normal(time.monotonic()+1)
@@ -244,7 +345,7 @@ class CustodyTests(unittest.TestCase):
         owner = custody._OwnedWorker.__new__(custody._OwnedWorker)
         owner.process = SimpleNamespace(pid=123, returncode=0)
         owner.pidfd, owner.reaped, owner.ticks = 10, True, 77
-        with patch.object(os, 'killpg', return_value=None) as group, patch.object(os, 'close') as close:
+        with patch.object(os, 'killpg', return_value=None, create=True) as group, patch.object(os, 'close') as close:
             with self.assertRaises(custody.ByteCustodyError) as failure:
                 owner.close()
             self.assertIs(failure.exception._mentat_worker_owner, owner)
@@ -263,24 +364,26 @@ class CustodyTests(unittest.TestCase):
             else:
                 self.assertTrue(owner.reaped)
                 raise ProcessLookupError()
-        with patch.object(custody, 'linux_process_start_ticks', return_value=77), \
-                patch.object(os, 'getpgid', return_value=123), \
+        with patch.object(custody.signal, 'SIGKILL', getattr(custody.signal, 'SIGKILL', 9), create=True), \
+                patch.object(custody, 'linux_process_start_ticks', return_value=77), \
+                patch.object(os, 'getpgid', return_value=123, create=True), \
                 patch.object(owner, 'terminal', return_value=object()), \
-                patch.object(os, 'waitpid', return_value=(123, 0)), patch.object(os, 'killpg', side_effect=group), \
+                patch.object(os, 'waitpid', return_value=(123, 0)), patch.object(os, 'killpg', side_effect=group, create=True), \
                 patch.object(os, 'close'):
             owner.close()
-        self.assertEqual(signals, [custody.signal.SIGTERM, custody.signal.SIGKILL])
+        self.assertEqual(signals, [custody.signal.SIGTERM, 9])
         owner.process.poll.assert_not_called()
         owner.process.wait.assert_not_called()
 
     def test_changed_leader_identity_has_no_signal_authority(self):
         owner = custody._OwnedWorker.__new__(custody._OwnedWorker)
         owner.process, owner.pidfd, owner.reaped, owner.ticks = SimpleNamespace(pid=123), 10, False, 77
-        with patch.object(custody, 'linux_process_start_ticks', return_value=78), patch.object(os, 'killpg') as group:
+        with patch.object(custody, 'linux_process_start_ticks', return_value=78), patch.object(os, 'killpg', create=True) as group:
             with self.assertRaises(custody.ByteCustodyError):
                 owner.close()
             group.assert_not_called()
 
+    @posix_descriptors
     def test_retained_origin_context_is_same_bytes_and_revalidates_on_exit(self):
         from tests.test_project_library_origin import LibraryOriginTests
         from tempfile import TemporaryDirectory
@@ -293,3 +396,108 @@ class CustodyTests(unittest.TestCase):
                     self.assertEqual(library._sha(members[path]), pin.member_digest)
                     self.assertNotIn(path, owners)
                 self.assertEqual(len(report['helper_closures']), 4)
+
+    @posix_descriptors
+    def test_worker_real_capture_sealed_reads_graph_ack_cleanup_and_descriptor_peak(self):
+        """OS signature/decoder, seals, credentials and limits are substituted.
+
+        The complete existing fixture still performs real private capture,
+        signed-text/index grammar, tar/ELF/shared graph checks and FD reads.
+        """
+        import fcntl
+        import resource
+        from tests.test_project_library_origin import LibraryOriginTests
+        for failure in (None, 'graph', 'partial-ack', False, 0.0, 'close-before', 'close-after'):
+            with self.subTest(failure=repr(failure)), TemporaryDirectory() as temporary, ExitStack() as stack:
+                root, complete = LibraryOriginTests().complete_fixture(temporary, custody_layout=True)
+                stack.enter_context(complete)
+                deadline = time.monotonic() + 10
+                endpoint, events, descriptors, peaks = Endpoint(), [], [], []
+                # One real reserved descriptor represents the substituted channel.
+                stack.enter_context(TemporaryFile())
+                fd_directory = '/dev/fd' if os.path.isdir('/dev/fd') else '/proc/self/fd'
+                baseline = len(os.listdir(fd_directory))
+                original_seal = origin._sealed
+                archive_hashes = {pin.archive_digest for pin in library.PINS}
+                def sealed(raw):
+                    if library._sha(raw) in archive_hashes:
+                        return original_seal(raw)
+                    with TemporaryFile() as source:
+                        source.write(raw); source.flush()
+                        descriptor = os.dup(source.fileno())
+                    descriptors.append(descriptor)
+                    peaks.append(len(os.listdir(fd_directory)))
+                    return descriptor
+                original_selection = library._verified_selection
+                @contextmanager
+                def selected(*args):
+                    with original_selection(*args) as value:
+                        if failure == 'graph':
+                            value[0]['helper_closures'][0][1] = '0' * 64
+                        yield value
+                    events.append('SOURCE_REVALIDATED')
+                test = self
+                class Channel:
+                    def __init__(self, *_args):
+                        self.index = 0
+                    def receive(self, kind):
+                        if kind == 'START':
+                            return {'root': str(root), 'deadline': deadline}
+                        if kind == 'MEMBER_ACK':
+                            index = self.index
+                            self.index += 1
+                            if failure == 'partial-ack' and index == 7:
+                                return -1
+                            if (type(failure) is bool or type(failure) is float) and index == 0:
+                                return failure
+                            return index
+                        return self.digest
+                    def send(self, kind, value, descriptor=None):
+                        events.append(kind)
+                        if kind == 'MANIFEST':
+                            self.digest = library._sha(custody._wire(value))
+                            test.assertEqual(sum(row[5] == 'signed-library-archive' for row in value['rows']), 13)
+                            test.assertEqual(sum(row[5] == 'compiled-helper-pin' for row in value['rows']), 4)
+                        if kind == 'READY':
+                            test.assertEqual(events[-2], 'SOURCE_REVALIDATED')
+                stack.enter_context(patch.object(origin, '_sealed', side_effect=sealed))
+                stack.enter_context(patch.object(library, '_verified_selection', side_effect=selected))
+                stack.enter_context(patch.object(fcntl, 'fcntl', return_value=15))
+                stack.enter_context(patch.object(resource, 'setrlimit'))
+                stack.enter_context(patch.object(custody, '_supported', return_value=True))
+                stack.enter_context(patch.object(custody, '_Channel', Channel))
+                stack.enter_context(patch.object(os, 'getppid', return_value=123))
+                stack.enter_context(patch.object(custody.sys, 'argv', ['worker', '100', '123', 'a'*64, str(deadline)]))
+                real_close = os.close
+                failed_closes = []
+                def close(descriptor):
+                    if isinstance(failure, str) and failure.startswith('close-') and descriptors and descriptor == descriptors[0]:
+                        failed_closes.append(descriptor)
+                        if failure == 'close-after':
+                            real_close(descriptor)
+                        raise OSError('injected worker close uncertainty')
+                    real_close(descriptor)
+                if isinstance(failure, str) and failure.startswith('close-'):
+                    stack.enter_context(patch.object(os, 'close', side_effect=close))
+                if failure is None:
+                    custody._worker(endpoint)
+                    self.assertIn('READY', events)
+                else:
+                    with self.assertRaises(custody.ByteCustodyError):
+                        custody._worker(endpoint)
+                    self.assertNotIn('READY', events)
+                self.assertTrue(endpoint.closed)
+                self.assertEqual(len(descriptors), 17)
+                # Real private capture contributes20 FD and sealing adds17.
+                # Four represents worker stdio plus the reserved channel.
+                self.assertGreaterEqual(max(peaks) - baseline, 37)
+                self.assertLessEqual(max(peaks) - baseline + 4, 64)
+                for descriptor in descriptors:
+                    if failure == 'close-before' and descriptor == descriptors[0]:
+                        os.fstat(descriptor)
+                        real_close(descriptor)
+                        continue
+                    with self.assertRaises(OSError):
+                        os.fstat(descriptor)
+                if isinstance(failure, str) and failure.startswith('close-'):
+                    self.assertEqual(failed_closes, [descriptors[0]])

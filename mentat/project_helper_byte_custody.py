@@ -43,6 +43,25 @@ def _fail():
     raise ByteCustodyError()
 
 
+def _close_fds(descriptors):
+    """Attempt each owned number once; an error never permits numeric retry."""
+    failures = []
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except BaseException as error:
+            failures.append(("descriptor", descriptor, error))
+    return failures
+
+
+def _cleanup_failure(failures, owner):
+    error = ByteCustodyError()
+    error._mentat_custody_cleanup = tuple(failures)
+    error._mentat_custody_owner = owner
+    error.__cause__ = sys.exc_info()[1]
+    return error
+
+
 def _remaining(deadline):
     left = deadline - time.monotonic()
     if left <= 0:
@@ -149,8 +168,9 @@ class _Channel:
             descriptors = []
             return result
         finally:
-            for descriptor in descriptors:
-                os.close(descriptor)
+            failures = _close_fds(descriptors)
+            if failures:
+                raise _cleanup_failure(failures, self)
 
 
 def _read(descriptor, size, deadline):
@@ -193,6 +213,7 @@ class FixedByteCustody:
         self._members = tuple(tuple(row[:3] + [row[5]]) for row in rows)
         self._aliases = tuple(tuple(row) for row in aliases)
         self._lock = threading.RLock()
+        self._uncertain = ()
 
     @property
     def members(self):
@@ -212,8 +233,10 @@ class FixedByteCustody:
     def close(self):
         with self._lock:
             values, self._descriptors = self._descriptors, {}
-            for descriptor, _size in values.values():
-                os.close(descriptor)
+            failures = _close_fds(descriptor for descriptor, _size in values.values())
+            self._uncertain += tuple(failures)
+            if self._uncertain:
+                raise _cleanup_failure(self._uncertain, self)
 
 
 def _manifest(value):
@@ -243,7 +266,7 @@ def _manifest(value):
     return value["rows"]
 
 
-def _worker(endpoint):
+def _worker_body(endpoint):
     """One trusted verification worker; no helper ELF execution or library load."""
     import resource
     for name, maximum in ((resource.RLIMIT_AS, 512 * 1024 * 1024), (resource.RLIMIT_CPU, 15),
@@ -302,10 +325,13 @@ def _worker(endpoint):
             channel.send("MANIFEST", manifest)
             for index, descriptor in enumerate(descriptors):
                 channel.send("MEMBER", index, descriptor)
-                if channel.receive("MEMBER_ACK") != index:
+                ack = channel.receive("MEMBER_ACK")
+                if type(ack) is not int or ack != index:
                     _fail()
-                os.close(descriptor)
                 descriptors[index] = None
+                failures = _close_fds([descriptor])
+                if failures:
+                    raise _cleanup_failure(failures, endpoint)
         origin._drain_children()
         _remaining(deadline)
         channel.send("READY", digest)
@@ -313,10 +339,20 @@ def _worker(endpoint):
             _fail()
         _remaining(deadline)
     finally:
-        for descriptor in descriptors:
-            if descriptor is not None:
-                os.close(descriptor)
-        endpoint.close()
+        failures = _close_fds(descriptor for descriptor in descriptors if descriptor is not None)
+        if failures:
+            raise _cleanup_failure(failures, endpoint)
+
+
+def _worker(endpoint):
+    try:
+        _worker_body(endpoint)
+    finally:
+        # One socket-object close, independent of any member close error.
+        try:
+            endpoint.close()
+        except BaseException as error:
+            raise _cleanup_failure([('socket', endpoint, error)], endpoint)
 
 
 class _OwnedWorker:
@@ -325,6 +361,7 @@ class _OwnedWorker:
         self.process, self.pidfd = process, None
         self.reaped = False
         self.ticks = None
+        self._uncertain = ()
 
     def pin(self):
         process = self.process
@@ -363,6 +400,8 @@ class _OwnedWorker:
         _remaining(deadline)
 
     def close(self):
+        if getattr(self, '_uncertain', ()):
+            raise _cleanup_failure(self._uncertain, self)
         try:
             if not self.reaped:
                 # Do not call Popen.poll/wait: either would end signal authority.
@@ -387,8 +426,12 @@ class _OwnedWorker:
             error._mentat_worker_owner = self
             raise
         if self.pidfd is not None:
-            os.close(self.pidfd)
+            descriptor = self.pidfd
             self.pidfd = None
+            failures = _close_fds([descriptor])
+            if failures:
+                self._uncertain = tuple(failures)
+                raise _cleanup_failure(failures, self)
 
 
 def acquire_fixed_helper_bytes(root):
@@ -442,7 +485,9 @@ def acquire_fixed_helper_bytes(root):
                 channel.send("MEMBER_ACK", index)
             finally:
                 if descriptor is not None:
-                    os.close(descriptor)
+                    failures = _close_fds([descriptor])
+                    if failures:
+                        raise _cleanup_failure(failures, owner)
         digest = library._sha(_wire(manifest))
         if channel.receive("READY") != digest:
             _fail()
@@ -462,14 +507,28 @@ def acquire_fixed_helper_bytes(root):
             error = failure
         raise error
     finally:
+        failures = []
         if not success:
-            for descriptor, _size in received.values():
-                os.close(descriptor)
+            failures.extend(_close_fds(descriptor for descriptor, _size in received.values()))
         for item in (endpoint, child):
             if item is not None:
-                item.close()
+                try:
+                    item.close()
+                except BaseException as error:
+                    failures.append(('socket', item, error))
         if owner is not None and (not success or owner.pidfd is not None):
-            owner.close()
+            try:
+                owner.close()
+            except BaseException as error:
+                failures.append(('worker', owner, error))
+        if failures:
+            if success:
+                # A final socket/owner close failure cancels publication too.
+                try:
+                    lease.close()
+                except BaseException as error:
+                    failures.append(('lease', lease, error))
+            raise _cleanup_failure(failures, owner)
 
 
 def _main():
@@ -481,7 +540,6 @@ def _main():
         _worker(endpoint)
         return 0
     except BaseException:
-        endpoint.close()
         return 1
 
 

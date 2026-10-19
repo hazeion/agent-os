@@ -65,3 +65,36 @@ the worker report and terminal evidence; it does not qualify actual worker
 authentication or real Linux descriptor transport. Independent source reviews,
 actual Linux qualification, security and packaging gates remain pending.
 No security baseline or packaging policy is changed here.
+
+## Corrective source review checkpoint
+
+Root and independent review found gaps despite the first passing batch:
+unisolated close errors could abandon later resources or retry a reused numeric
+descriptor; the worker sealing/handoff path lacked direct synthetic coverage;
+ACK equality admitted booleans/floats; and genuine POSIX fixtures needed targeted
+Windows guards. These findings were corrected without changing the protocol or
+resource limits.
+
+Every member close is attempted once and independently. Ambiguous failures
+retain cleanup evidence and prevent a lease or successful close. Lease state
+retains uncertainty across later close calls without retrying numeric FDs.
+Parent cleanup still attempts both sockets and owned-worker closure after a
+member close failure. Worker endpoint closure remains independent; ACK and
+pidfd cleanup relinquish numeric retry authority before the close attempt.
+
+The complete library fixture now has an optional custody-layout variant; its
+ordinary default and existing assertions remain. The worker fixture performs
+real capture, index grammar, tar/ELF/shared-graph validation, sealed-descriptor
+reads and FD ownership. Signature/decoder primitives, Linux seals/credentials,
+resource effects and the transport are explicitly substituted. It asserts
+source-context exit before READY, exact library/helper classes, graph mismatch,
+partial/boolean/float ACK refusal and endpoint/member cleanup after close
+errors. Instrumented real descriptor counts cover the 20 retained input/root
+FDs plus 17 member descriptors; observed growth plus worker stdio/channel stays
+below 64. This is portable accounting, not a real decoder/Linux peak claim.
+
+The same focused command then passed 68 methods: 67 passed and one existing
+actual-Linux skip in 0.772 seconds, with ResourceWarnings as errors. Log:
+/private/tmp/mentat-helper-byte-custody-corrective-focused.log. Tests are stopped
+for the next coordinated browser window. Independent corrective source review,
+scanner/package gates and actual Linux qualification remain pending.
