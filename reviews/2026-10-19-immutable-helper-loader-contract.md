@@ -71,8 +71,9 @@ parser profile, command, helper selector, environment or generic exec service.
    object bounds. Changed bytes, tuple, alias, graph or unknown dynamic tags
    refuse through the same reviewed checks.
 2. Keep captured objects in owner-private storage until terminal validation.
-   For each regular executable object, require kernel-enforced write, grow,
-   shrink and seal seals, then re-read and hash the sealed descriptor. Reject
+   For every retained regular member, including each helper, loader and
+   library, require kernel-enforced write, grow, shrink and seal seals, then
+   re-read and hash the sealed descriptor. Reject
    partial sealing, writable shared mappings, wrong size, descriptor reuse,
    partial writes, duplicate identities or allocation failure. Names are not
    identity. Close-on-exec remains default; future explicit handoff must list
@@ -88,6 +89,17 @@ parser profile, command, helper selector, environment or generic exec service.
    cleanup attempt. Temporary roots are deleted only after owned workers and
    descriptors are reconciled. Signals target only the already owned process
    identity; no discovered PID or global process search authorizes control.
+
+The authenticated worker-to-parent byte/descriptor transfer and lifetime
+protocol is unresolved. The current freely constructible origin result cannot
+authorize bytes recaptured later. No authenticated flag or result object may
+stand in for byte custody; no cross-boundary reopen or repeated inspection may
+silently replace the exact authenticated objects with another capture. Before
+any custody code is approved, a follow-up must choose a reviewed fixed, bounded
+ownership and descriptor-handoff design that preserves same-byte identity from
+authentication through sealing, parent receipt, terminal validation and closure,
+including failed or partial handoff. The custody stages above specify required
+properties, not an approved transfer implementation.
 
 A whole immutable executable namespace is still required before actual dynamic
 helper launch. This draft deliberately does not choose an unreviewed privileged
