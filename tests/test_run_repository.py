@@ -20,7 +20,7 @@ from agent_runtime import (
     SubmissionDisposition,
     SubmissionOutcome,
 )
-from mentat_db import SCHEMA_VERSION, connect
+from mentat_db import SCHEMA_VERSION, connect, database_path
 from private_state import history_path
 from private_console_unit import PrivateConsoleUnitError, capture_private_console_unit
 import run_repository
@@ -29,6 +29,7 @@ from run_repository import (
     RunRepository,
     RunRepositoryConflict,
     RunRepositoryError,
+    RunRepositoryUnavailable,
     RunRepositoryValidationError,
     load_authoritative_run_summaries,
     save_authoritative_run_summaries,
@@ -105,6 +106,18 @@ def save_current_fixture(root: Path, summaries: list[dict]):
 
 
 class RunRepositoryTests(unittest.TestCase):
+    @staticmethod
+    def storage_snapshot(root: Path):
+        result = {}
+        for path in (root, *sorted(root.rglob("*"))):
+            details = path.lstat()
+            payload = os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None
+            result[str(path.relative_to(root))] = (
+                details.st_dev, details.st_ino, details.st_mode, details.st_nlink,
+                details.st_size, details.st_mtime_ns, payload,
+            )
+        return result
+
     def prepare_dispatch_root(self, root: Path) -> tuple[dict, str]:
         task = task_fixture()
         source = root / "tasks.json"
@@ -288,17 +301,39 @@ class RunRepositoryTests(unittest.TestCase):
                 path.parent.mkdir(parents=True)
                 path.write_text(json.dumps(payload), encoding="utf-8")
                 path.chmod(0o600)
-                def snapshot():
-                    return {str(p.relative_to(root)): (
-                        stat.S_IMODE(p.stat().st_mode), p.read_bytes() if p.is_file() else None
-                    ) for p in root.rglob("*")}
-                before = snapshot()
+                before = self.storage_snapshot(root)
                 with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")), patch.object(
                     run_repository, "private_state_lock", side_effect=AssertionError("lock reached")
                 ):
-                    with self.assertRaisesRegex(RunRepositoryValidationError, "run_migration.source_unsupported"):
+                    with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
                         run_repository.ensure_run_sqlite_authority(root, path)
-                self.assertEqual(snapshot(), before)
+                self.assertEqual(self.storage_snapshot(root), before)
+                self.assertFalse(database_path(root).exists())
+
+    def test_changed_history_before_shared_lock_preserves_run_error_boundary(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = history_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'{"schema_version":3,"runs":[]}')
+            path.chmod(0o600)
+            read = run_repository._read_empty_history
+            changed = []
+            def invalidate_after_read(*args):
+                value = read(*args)
+                path.write_bytes(b"{invalid history")
+                changed.append(self.storage_snapshot(root))
+                return value
+            with patch.object(run_repository, "_read_empty_history", side_effect=invalidate_after_read) as inspect, patch.object(
+                run_repository, "connect", side_effect=AssertionError("writable open reached")
+            ):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$") as rejected:
+                    run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual(len(changed), 1)
+            self.assertEqual(self.storage_snapshot(root), changed[0])
+            self.assertFalse(database_path(root).exists())
+            self.assertIsInstance(rejected.exception.__cause__, run_repository.PrivateStateError)
 
     def test_current_sql_authority_never_opens_hostile_stale_history(self):
         with TemporaryDirectory() as temporary:
@@ -502,14 +537,12 @@ class RunRepositoryTests(unittest.TestCase):
             target.write_text('{"schema_version":3,"runs":[]}', encoding="utf-8")
             target.chmod(0o600)
             path.symlink_to(target)
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                self.assertIsNone(RunRepository(connection).authority_receipt())
-            finally:
-                connection.close()
+            before = self.storage_snapshot(root)
+            with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                    run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(self.storage_snapshot(root), before)
+            self.assertFalse(database_path(root).exists())
 
     @unittest.skipIf(os.name == "nt", "POSIX hardlink semantics")
     def test_hardlinked_legacy_history_is_rejected_without_changing_external_inode(self):
@@ -523,12 +556,14 @@ class RunRepositoryTests(unittest.TestCase):
             target.chmod(0o644)
             os.link(target, path)
             before_mode = stat.S_IMODE(target.stat().st_mode)
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-
+            before = self.storage_snapshot(root)
+            with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                    run_repository.ensure_run_sqlite_authority(root, path)
             self.assertEqual(target.read_bytes(), original)
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), before_mode)
+            self.assertEqual(self.storage_snapshot(root), before)
+            self.assertFalse(database_path(root).exists())
 
     def test_malformed_nonempty_history_fails_without_claiming_authority(self):
         with TemporaryDirectory() as tmpdir:
@@ -536,18 +571,13 @@ class RunRepositoryTests(unittest.TestCase):
             path = history_path(root)
             path.parent.mkdir(parents=True)
             path.write_text('{"schema_version":3,"runs":["bad"]}', encoding="utf-8")
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                receipt = RunRepository(connection).authority_receipt()
-                count = connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0]
-            finally:
-                connection.close()
-
-        self.assertIsNone(receipt)
-        self.assertEqual(count, 0)
+            path.chmod(0o600)
+            before = self.storage_snapshot(root)
+            with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                    run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(self.storage_snapshot(root), before)
+            self.assertFalse(database_path(root).exists())
 
     def test_summary_sync_round_trips_from_sqlite_without_touching_history(self):
         with TemporaryDirectory() as tmpdir:
