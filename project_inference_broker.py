@@ -279,6 +279,8 @@ class QualificationInferenceBroker:
         # an owned scope remains ineligible for private backup capture.
         RunRepository(connection).validate(private_qualification_proposals=True)
         journal._live_generation(connection, self._run, self._generation)
+        from project_output_reservations import require_output_reservation
+        require_output_reservation(connection, self._run, self._generation)
         if self._run not in journal.qualification_proposal_ids(connection):
             _fail("synthetic")
         if type(self._scope) is SyntheticScope:

@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2866,6 +2866,27 @@ MIGRATIONS += ((44, """
         BEGIN SELECT RAISE(ABORT,'scope_journal.retained'); END;
 """),)
 
+MIGRATIONS += ((45, """
+    CREATE TABLE mentat_project_output_reservations (
+        run_id TEXT NOT NULL PRIMARY KEY,
+        generation TEXT NOT NULL CHECK(length(generation)=32),
+        authority_epoch BLOB NOT NULL CHECK(typeof(authority_epoch)='blob' AND length(authority_epoch)=32),
+        input_manifest_digest TEXT NOT NULL CHECK(length(input_manifest_digest)=64),
+        policy_digest TEXT NOT NULL CHECK(length(policy_digest)=64),
+        blob_slots INTEGER NOT NULL CHECK(typeof(blob_slots)='integer' AND blob_slots=1),
+        max_bytes INTEGER NOT NULL CHECK(typeof(max_bytes)='integer' AND max_bytes BETWEEN 1 AND 32768),
+        metadata_charge INTEGER NOT NULL CHECK(typeof(metadata_charge)='integer' AND metadata_charge=131072),
+        holder_token_hash TEXT NOT NULL CHECK(length(holder_token_hash)=64),
+        reservation_digest TEXT NOT NULL CHECK(length(reservation_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000),
+        FOREIGN KEY(run_id,generation) REFERENCES mentat_project_worker_generations(run_id,generation) ON DELETE RESTRICT
+    );
+    CREATE TRIGGER mentat_project_output_reservation_immutable BEFORE UPDATE ON mentat_project_output_reservations
+        BEGIN SELECT RAISE(ABORT,'output_reservation.immutable'); END;
+    CREATE TRIGGER mentat_project_output_reservation_retained BEFORE DELETE ON mentat_project_output_reservations
+        BEGIN SELECT RAISE(ABORT,'output_reservation.retained'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37, 41})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -3222,6 +3243,7 @@ _RUN_NONFK_REFERENCE_TABLES = frozenset({
 _SCHEMA42_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_proposal_input_files"})
 _SCHEMA43_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_calls"})
 _SCHEMA44_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_scopes"})
+_SCHEMA45_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_output_reservations"})
 
 
 def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tuple[str, int, str, int], ...]:
@@ -3249,6 +3271,8 @@ def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tupl
         expected_nonfk = expected_nonfk | _SCHEMA43_RUN_NONFK_REFERENCE_TABLES
     if "mentat_project_worker_scopes" in names:
         expected_nonfk = expected_nonfk | _SCHEMA44_RUN_NONFK_REFERENCE_TABLES
+    if "mentat_project_output_reservations" in names:
+        expected_nonfk = expected_nonfk | _SCHEMA45_RUN_NONFK_REFERENCE_TABLES
     if nonfk != expected_nonfk:
         raise MentatDatabaseError("Mentat Run reference inventory changed")
     dependent.update(nonfk)
@@ -3419,7 +3443,7 @@ def migrate(
             int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
             if version == 41 else None
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3571,6 +3595,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 42 cannot be safely upgraded")
                 if version == 44 and schema_signature_state(connection, 43) != "expected":
                     raise MentatDatabaseError("Mentat schema 43 cannot be safely upgraded")
+                if version == 45 and schema_signature_state(connection, 44) != "expected":
+                    raise MentatDatabaseError("Mentat schema 44 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)

@@ -72,6 +72,7 @@ passing ancestor as current-head acceptance.
 | 317 | `91dfdc5` | `63ec45f` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 17 targeted tests discovered; 12 pass; 5 platform/build skips. Hosted and integrated acceptance remain pending. |
 | 318 | `21295c8` | `e57795a` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 41 targeted tests discovered; 26 pass; 15 platform/build skips. Hosted and integrated acceptance remain pending. |
 | 319 | `d636cda` | `10bd439` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 46 targeted tests discovered; 26 pass; 20 platform/build skips. Hosted and integrated acceptance remain pending. |
+| 320 | `7fc1017` | `4aa9646` | Guarded historical literal-set union preserves original44 and schema45 output-reservation feature. Cache, all12 native files and shared fixtures exact reviewed parent.57 targeted methods:41pass,16platformskips. Hosted and integrated acceptance pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

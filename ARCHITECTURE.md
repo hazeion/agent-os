@@ -1326,6 +1326,23 @@ omits scope authority. Scope bookkeeping adds no launcher, signal route, Run,
 capacity, provider or output authority; production proposal guards remain closed
 and restart recovery still requires separately qualified kernel reconciliation.
 
+Private synthetic broker qualification uses a separate exact dormant-source
+consistency check. It requires the committed owned scope row to match the
+original held scope witness before debit or cached replay. Active scope receipts
+remain ineligible for archival capture; qualification does not grant a live Run.
+
+Schema 45 adds one immutable output-capacity hold per exact proposal generation.
+It charges one retained blob slot, the policy's bounded response byte ceiling
+and 128 KiB of future output/receipt metadata before any new scope or call.
+Project/Task retention, Console binding and Project staging count these holds
+against the shared 100-blob/24-MiB limits, including after restore fencing.
+Only the once-issued holder token's hash is persisted. There is no release,
+capture or token-recovery operation in this prerequisite. Historical schema-44
+work migrates without invented holds and cannot be retrofitted after launch or
+debit. Backup preserves charges; restore rotates authority and schema-5 export
+omits the reservation graph. Production admission, registered producing output
+and owner Apply remain separate required capabilities, with source guards closed.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

@@ -188,10 +188,12 @@ def prepare_scope(connection, *, run_id, generation, plan_witness, now=None):
         if prior[1] != generation or prior[4] != plan_json:
             _fail('conflict')
         return _receipt(prior)
+    from project_output_reservations import require_output_reservation
+    output = require_output_reservation(connection, run_id, generation)
     if connection.execute('SELECT COUNT(*) FROM mentat_project_worker_scopes').fetchone()[0] >= MAX_SCOPES:
         _fail('capacity')
     created = time.time() if now is None else now
-    if not journal._timestamp(created) or created < parent[10]:
+    if not journal._timestamp(created) or created < parent[10] or created < output[10]:
         _fail()
     created = float(created)
     token = secrets.token_hex(32)
@@ -230,6 +232,8 @@ def transition_scope(connection, *, run_id, generation, claim_token, expected_re
         _fail('conflict')
     if target in {'starting','owned'}:
         journal._live_generation(connection,run_id,generation)
+        from project_output_reservations import require_output_reservation
+        require_output_reservation(connection,run_id,generation)
     identity_json, identity_hash = row[11:13]
     if supplied is not None:
         encoded = _identity(supplied,plan)

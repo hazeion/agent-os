@@ -36,7 +36,7 @@ class ProjectWorkerJournalTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.root = self.fixture.root
 
-    def _prepare(self):
+    def _prepare(self, *, reserve_output=True):
         # Temporary historical fixture only: source INSERT guard is restored by
         # the existing helper. No production Run/admission or model is invoked.
         ensure_run_sqlite_authority(self.root, history_path(self.root))
@@ -56,6 +56,10 @@ class ProjectWorkerJournalTests(unittest.TestCase):
                                (row[20], row[21], run_id))
             connection.execute(sql)
             journal.create_generation(connection, run_id=run_id, generation=GENERATION, policy=POLICY, model_snapshot=SNAPSHOT)
+            if reserve_output:
+                from project_output_reservations import reserve_output as reserve
+                created = connection.execute('SELECT created_at FROM mentat_project_worker_generations WHERE run_id=?', (run_id,)).fetchone()[0]
+                self.output_reservation = reserve(connection, run_id=run_id, generation=GENERATION, now=created)
             connection.commit()
         return run_id
 
@@ -370,6 +374,8 @@ class ProjectWorkerJournalTests(unittest.TestCase):
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DROP TRIGGER mentat_project_worker_generation_retained")
+            connection.execute("DROP TRIGGER mentat_project_output_reservation_retained")
+            connection.execute("DELETE FROM mentat_project_output_reservations")
             connection.execute("DELETE FROM mentat_project_worker_generations")
             with self.assertRaises(journal.WorkerJournalError):
                 journal.archival_proposal_ids(connection)

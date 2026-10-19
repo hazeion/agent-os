@@ -190,10 +190,13 @@ class ScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
     def test_exact_schema43_private_capture_validates_then_upgrades_without_losing_graph(self):
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute('BEGIN IMMEDIATE')
+            connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
+            connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
+            connection.execute('DROP TABLE mentat_project_output_reservations')
             connection.execute('DROP TRIGGER mentat_project_worker_scope_immutable')
             connection.execute('DROP TRIGGER mentat_project_worker_scope_retained')
             connection.execute('DROP TABLE mentat_project_worker_scopes')
-            connection.execute('DELETE FROM schema_migrations WHERE version=44')
+            connection.execute('DELETE FROM schema_migrations WHERE version>=44')
             connection.commit()
             self.assertEqual(mentat_db.schema_signature_state(connection,43),'expected')
             before = journal.validate_worker_journal_connection(connection)
@@ -205,7 +208,7 @@ class ScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
             with closing(sqlite3.connect(copied)) as connection:
                 self.assertEqual(mentat_db.schema_signature_state(connection,43),'expected')
         with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection,44),'expected')
+            self.assertEqual(mentat_db.schema_signature_state(connection,45),'expected')
             self.assertEqual(journal.validate_worker_journal_connection(connection),before)
             self.assertEqual(scopes.validate_scope_journal_connection(connection),[])
 
@@ -346,7 +349,7 @@ class LinuxScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
             with patch.object(project_context,'_encoded',side_effect=measured):
                 project_context.validate_project_context_connection(connection)
             exact_budget = max(encoded_sizes)
-        with patch.object(project_context,'WORKER_JOURNAL_MAX_METADATA_BYTES',exact_budget):
+        with patch.object(project_context,'OUTPUT_RESERVATION_MAX_METADATA_BYTES',exact_budget):
             started = self.move(first,'starting')
             self.scope.start_inert()
             owned = self.move(scopes.ScopeReceipt(first.run_id,first.generation,started.state,started.revision,False,first.claim_token),

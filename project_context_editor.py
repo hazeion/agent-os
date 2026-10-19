@@ -45,7 +45,13 @@ def _staging_capacity(connection):
         '(SELECT attachment_id FROM mentat_retained_attachments UNION SELECT attachment_id FROM mentat_project_context_staged) r '
         'ON r.attachment_id=a.id)'
     ).fetchone()
-    if row[0] > attachments.MAX_RETAINED_BLOBS or row[1] > attachments.MAX_RETAINED_BLOB_BYTES:
+    from project_output_reservations import pending_capacity
+    from project_worker_journal import WorkerJournalError
+    try:
+        slots, reserved_bytes = pending_capacity(connection)
+    except WorkerJournalError:
+        _fail('capacity')
+    if row[0] + slots > attachments.MAX_RETAINED_BLOBS or row[1] + reserved_bytes > attachments.MAX_RETAINED_BLOB_BYTES:
         _fail('capacity')
 
 

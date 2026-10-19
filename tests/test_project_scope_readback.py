@@ -75,6 +75,20 @@ class ReferenceReadbackTests(_ScopeJournalFixture,unittest.TestCase):
         self.assertEqual((result.state,result.reason),('unknown','no_kernel_identity'),result)
         self.assertEqual(self.fingerprint(),before)
 
+    def test_historical_schema44_readback_preserves_source_without_migration(self):
+        first=self.prepare()
+        with closing(mentat_db.connect(self.root)) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
+            connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
+            connection.execute('DROP TABLE mentat_project_output_reservations')
+            connection.execute('DELETE FROM schema_migrations WHERE version=45')
+            connection.commit()
+        before=self.fingerprint()
+        result=inspector.inspect_scope(self.root,run_id=self.run,generation=GENERATION,expected_revision=first.revision)
+        self.assertEqual((result.state,result.reason),('unknown','no_kernel_identity'),result)
+        self.assertEqual(self.fingerprint(),before)
+
     def test_uncommitted_change_is_not_observed_and_exact_references_fail_closed(self):
         self.prepare()
         with closing(mentat_db.connect(self.root)) as connection:

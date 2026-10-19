@@ -131,7 +131,7 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 44)
+        self.assertEqual(SCHEMA_VERSION, 45)
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue(
             {
@@ -150,6 +150,7 @@ class RunRepositoryTests(unittest.TestCase):
                 "mentat_project_worker_generations",
                 "mentat_project_worker_calls",
                 "mentat_project_worker_scopes",
+                "mentat_project_output_reservations",
             }.issubset(tables)
         )
 

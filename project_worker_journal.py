@@ -336,6 +336,8 @@ def reserve_call(connection: sqlite3.Connection, *, run_id: str, generation: str
     if _HEX64.fullmatch(str(request_digest)) is None:
         _fail()
     claim = _live_generation(connection, run_id, generation)
+    from project_output_reservations import require_output_reservation
+    output = require_output_reservation(connection, run_id, generation)
     prior = connection.execute("SELECT call_id,generation,request_digest,state,response_text,disposition "
                                "FROM mentat_project_worker_calls WHERE run_id=?", (run_id,)).fetchone()
     if prior is not None:
@@ -343,7 +345,7 @@ def reserve_call(connection: sqlite3.Connection, *, run_id: str, generation: str
             _fail("conflict")
         return CallReceipt(prior[0], prior[3], False, prior[4], prior[5])
     created = time.time() if now is None else now
-    if not _timestamp(created) or created < claim[10]:
+    if not _timestamp(created) or created < claim[10] or created < output[10]:
         _fail()
     created = float(created)
     call_id = uuid.uuid4().hex
@@ -372,6 +374,8 @@ def record_submission(connection: sqlite3.Connection, *, call_id: str, generatio
     _validate_shared_graph(connection)
     row = _exact_result_owner(connection, call_id, generation, request_digest, settlement_token)
     _live_generation(connection, row[1], generation)
+    from project_output_reservations import require_output_reservation
+    require_output_reservation(connection, row[1], generation)
     if row[6] != "reserved":
         return False
     connection.execute("UPDATE mentat_project_worker_calls SET state='unknown' WHERE call_id=?", (call_id,))
