@@ -195,7 +195,7 @@ def _reference_snapshot(root, run_id, generation, revision, deadline):
     with _read_database_snapshot(path,private) as connection:
         connection.execute('BEGIN')
         version=connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-        if version not in {44,45}:
+        if version not in {44,45,46}:
             raise ScopeReadbackError('scope_readback.schema')
         if schema_signature_state(connection,version)!='expected':
             raise ScopeReadbackError('scope_readback.schema')

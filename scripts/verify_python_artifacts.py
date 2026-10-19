@@ -54,6 +54,7 @@ PUBLIC_MODULES = {
 }
 PUBLIC_PACKAGES = {"mentat", "deploy", "deploy.caddy"}
 PUBLIC_MODULES.add("project_output_reservations")
+PUBLIC_MODULES.add("project_producers")
 PUBLIC_DATA_FILES = {destination: set(sources) for destination, sources in PACKAGE_PUBLIC_DATA_FILES.items()}
 
 

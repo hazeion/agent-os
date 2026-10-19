@@ -73,6 +73,7 @@ passing ancestor as current-head acceptance.
 | 318 | `21295c8` | `e57795a` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 41 targeted tests discovered; 26 pass; 15 platform/build skips. Hosted and integrated acceptance remain pending. |
 | 319 | `d636cda` | `10bd439` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 46 targeted tests discovered; 26 pass; 20 platform/build skips. Hosted and integrated acceptance remain pending. |
 | 320 | `7fc1017` | `4aa9646` | Guarded historical literal-set union preserves original44 and schema45 output-reservation feature. Cache, all12 native files and shared fixtures exact reviewed parent.57 targeted methods:41pass,16platformskips. Hosted and integrated acceptance pending. |
+| 321 | `2324cb1` | `12fc75d` | Exact reviewed bounded recipe-cache wrapper retained over prior max1 wrapper; original45 literal support and schema46 producer/migrations/output/backup tests preserved. Generic template/native/shared fixtures match reviewed parent.51 targeted schema/cache/backup/webhook tests pass, no skips. Publication held for combined side-branch integration and current hosted checks. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

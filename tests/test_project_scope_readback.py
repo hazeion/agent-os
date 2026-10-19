@@ -80,6 +80,8 @@ class ReferenceReadbackTests(_ScopeJournalFixture,unittest.TestCase):
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute('BEGIN IMMEDIATE')
             connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
+            from tests.producer_schema_support import remove_schema46
+            remove_schema46(connection)
             connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
             connection.execute('DROP TABLE mentat_project_output_reservations')
             connection.execute('DELETE FROM schema_migrations WHERE version=45')

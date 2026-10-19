@@ -32,6 +32,14 @@ def _fail(code='invalid'):
     raise ScopeJournalError('scope_journal.' + code)
 
 
+def _producer_scope_guard(connection,run_id,context):
+    version=connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
+    if version>=46 and connection.execute('SELECT 1 FROM mentat_project_producer_bindings WHERE run_id=?',(run_id,)).fetchone():
+        from project_producers import _SCOPE_MUTATION
+        if context is not _SCOPE_MUTATION:
+            _fail('producer_transaction_required')
+
+
 def _encoded(value):
     return journal._encoded(value)
 
@@ -173,9 +181,10 @@ def read_scope(connection, run_id):
 
 
 @journal._atomic_mutation
-def prepare_scope(connection, *, run_id, generation, plan_witness, now=None):
+def prepare_scope(connection, *, run_id, generation, plan_witness, now=None, producer_context=None):
     """Record private intent only. Commit before any separately admitted work."""
     journal._validate_shared_graph(connection)
+    _producer_scope_guard(connection,run_id,producer_context)
     parent = journal._live_generation(connection,run_id,generation)
     plan = _witness(plan_witness,'planned')
     plan_json = _plan(plan)
@@ -209,9 +218,10 @@ def prepare_scope(connection, *, run_id, generation, plan_witness, now=None):
 
 
 @journal._atomic_mutation
-def transition_scope(connection, *, run_id, generation, claim_token, expected_revision, target, witness=None, now=None):
+def transition_scope(connection, *, run_id, generation, claim_token, expected_revision, target, witness=None, now=None, producer_context=None):
     """One-way bookkeeping; changed=True never grants launch/signal authority."""
     journal._validate_shared_graph(connection)
+    _producer_scope_guard(connection,run_id,producer_context)
     row = _row(connection,run_id)
     if (row[1] != generation or not isinstance(claim_token,str) or journal._HEX64.fullmatch(claim_token) is None
             or not hmac.compare_digest(row[7],hashlib.sha256(claim_token.encode('ascii')).hexdigest())):

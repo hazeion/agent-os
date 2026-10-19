@@ -176,7 +176,7 @@ def _validate_shared_graph(connection: sqlite3.Connection) -> None:
     validate_project_context_connection(connection)
 
 
-def _dormant_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
+def _dormant_proposal_ids(connection: sqlite3.Connection, *, exclude_ids=frozenset()) -> frozenset[str]:
     """Exact historical fixture shape, never admitted Run/source authority."""
     version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
     if version < 43:
@@ -189,6 +189,14 @@ def _dormant_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
     # This slice records no execution handoff. Accept only exact dormant Run
     # shape, not arbitrary planted live/terminal proposal state or runtime refs.
     for row in connection.execute("SELECT * FROM mentat_runs WHERE source='project_proposal'"):
+        if row['id'] in exclude_ids:
+            continue
+        prepared_capacity = row['capacity_scope_digest'] is not None
+        if prepared_capacity:
+            from run_repository import default_runtime_capacity_evidence
+            if (version<46 or (row['capacity_scope_digest'],row['admitted_capacity_limit'])!=
+                    default_runtime_capacity_evidence(runtime_type=row['runtime_type'],binding_digest=row['runtime_binding_digest'])):
+                _fail()
         if (row["status"] != "reserved" or row["dispatch_state"] != "reserved"
                 or row["details_json"] != "{}" or row["state_revision"] != 1
                 or row["partial"] != 0 or row["terminal_finalized"] != 0
@@ -200,8 +208,10 @@ def _dormant_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
                     "task_id", "task_revision", "task_snapshot_json", "conversation_id", "turn_id",
                     "runtime_run_ref", "started_at", "completed_at", "truncation_reason",
                     "reconcile_lease_owner", "reconcile_lease_until", "retry_of_run_id", "resume_of_run_id",
-                    "capacity_scope_digest", "admitted_capacity_limit", "agent_revision", "runtime_config_revision",
+                    "agent_revision", "runtime_config_revision",
                     "execution_config_json", "execution_config_digest", "runtime_execution_json", "runtime_execution_digest"))):
+            _fail()
+        if not prepared_capacity and row['admitted_capacity_limit'] is not None:
             _fail()
         identifier = row["id"]
         for table, column in (("mentat_agent_events", "run_id"), ("mentat_dispatch_reservations", "run_id"),
@@ -211,11 +221,14 @@ def _dormant_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
         attention = connection.execute("SELECT item_id,revision FROM mentat_run_attention WHERE run_id=?", (identifier,)).fetchall()
         if len(attention) != 1 or tuple(attention[0]) != (None, 0):
             _fail()
-    return frozenset(runs)
+    return frozenset(runs) - exclude_ids
 
 
 def archival_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
     """Private backup eligibility remains separately closed for active scopes."""
+    if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] >= 46:
+        from project_producers import producer_ids
+        return producer_ids(connection,archival=True)
     identifiers = _dormant_proposal_ids(connection)
     from project_scope_journal import require_archival_scopes
     if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] >= 44:
@@ -225,6 +238,9 @@ def archival_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
 
 def qualification_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
     """Synthetic-only source consistency; grants no archival/live eligibility."""
+    if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] >= 46:
+        from project_producers import producer_ids
+        return producer_ids(connection)
     return _dormant_proposal_ids(connection)
 
 
@@ -277,6 +293,8 @@ def _live_generation(connection: sqlite3.Connection, run_id: str, generation: st
 
 
 def _check_live_generation(connection: sqlite3.Connection, run_id: str, generation: str) -> tuple:
+    from project_producers import require_forward
+    require_forward(connection,run_id,generation)
     from agent_registry import _canonical_agent_records
     from project_leads import _binding_digest, _current_context
     from project_repository import ProjectRepository
@@ -336,6 +354,8 @@ def reserve_call(connection: sqlite3.Connection, *, run_id: str, generation: str
     if _HEX64.fullmatch(str(request_digest)) is None:
         _fail()
     claim = _live_generation(connection, run_id, generation)
+    from project_producers import require_inference_phase
+    require_inference_phase(connection,run_id,generation)
     from project_output_reservations import require_output_reservation
     output = require_output_reservation(connection, run_id, generation)
     prior = connection.execute("SELECT call_id,generation,request_digest,state,response_text,disposition "
@@ -374,6 +394,8 @@ def record_submission(connection: sqlite3.Connection, *, call_id: str, generatio
     _validate_shared_graph(connection)
     row = _exact_result_owner(connection, call_id, generation, request_digest, settlement_token)
     _live_generation(connection, row[1], generation)
+    from project_producers import require_inference_phase
+    require_inference_phase(connection,row[1],generation)
     from project_output_reservations import require_output_reservation
     require_output_reservation(connection, row[1], generation)
     if row[6] != "reserved":

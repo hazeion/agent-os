@@ -2,7 +2,9 @@
 from dataclasses import dataclass, field
 import hashlib
 import json
+import math
 import re
+import time
 
 from mentat.project_scope_evidence import witness_metadata
 
@@ -21,6 +23,7 @@ class NamespaceCompletionWitness:
     _scope_witness: object = field(repr=False)
     _origin: object = field(repr=False)
     _issuer: object = field(repr=False)
+    _deadline: float | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if self._issuer is not _ISSUER or type(self._context) is not tuple or len(self._context) != 4:
@@ -38,10 +41,12 @@ class NamespaceCompletionWitness:
         if type(output_bytes) is not int or not 0 <= output_bytes <= MAX_OUTPUT:
             raise ValueError('namespace_completion.invalid')
         witness_metadata(self._scope_witness, 'closed')
+        if type(self._deadline) not in (float, int) or not math.isfinite(self._deadline) or self._deadline <= 0:
+            raise ValueError('namespace_completion.invalid')
 
 
 def _issue(origin, context, result, scope_witness):
-    return NamespaceCompletionWitness(context, result, scope_witness, origin, _ISSUER)
+    return NamespaceCompletionWitness(context, result, scope_witness, origin, _ISSUER, origin._verified_deadline)
 
 
 def completion_metadata(value):
@@ -52,6 +57,9 @@ def completion_metadata(value):
             or value._origin._completion_witness is not value
             or value._origin._handoff_context != value._context
             or value._origin._verified_result != value._result
+            or value._origin._verified_deadline != value._deadline
+            or value._origin._original_deadline != value._deadline
+            or value._origin._scope._deadline != value._deadline
             or getattr(value._origin._scope, '_namespace_worker', None) is not value._origin
             or value._origin._scope.deadline_hit):
         raise ValueError('namespace_completion.invalid')
@@ -63,3 +71,15 @@ def completion_metadata(value):
     return {'version': 1, 'query_digest': query, 'image_digest': image,
             'runtime_image_digest': runtime, 'sealed_libraries': libraries,
             'scope': scope, 'result': result, 'terminal_digest': hashlib.sha256(_encoded(result)).hexdigest()}
+
+
+def completion_acceptance_deadline(value):
+    """Original wall boundary for conversion; historical evidence cannot extend it."""
+    completion_metadata(value)
+    with value._origin._scope._lock:
+        completion_metadata(value)
+        deadline = value._deadline
+        if (type(deadline) not in (float, int) or not math.isfinite(deadline)
+                or time.monotonic() >= deadline):
+            raise ValueError('namespace_completion.expired')
+        return deadline

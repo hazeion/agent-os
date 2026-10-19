@@ -1343,6 +1343,34 @@ debit. Backup preserves charges; restore rotates authority and schema-5 export
 omits the reservation graph. Production admission, registered producing output
 and owner Apply remain separate required capabilities, with source guards closed.
 
+Schema 46 couples private canonical proposal lifecycle with immutable registered
+output. An explicitly synthetic qualification binding freezes the existing Run,
+input, generation, Agent capacity, original private-root identity and sealed
+runtime/query/model snapshot before scope intent. Scope start/ownership and safe
+Run Events commit together. Stop records durable intent before signaling; an
+unknown scope or provider outcome retains its active Run and storage charge.
+Exact Stop replay returns the same intent without another Event or signal.
+
+Natural output requires the original completion/closure witness and the pinned
+scope deadline. Python publishes one bounded response blob through private
+no-follow descriptors, then atomically commits the output receipt, retained
+attachment, stopped scope, parser snapshot, terminal Run, Events and attention.
+The last acceptance fence runs after identity verification immediately before
+COMMIT. An uncertain acknowledgment resolves through validated immutable receipt
+readback; it cannot extend the deadline or repeat inference. Failed parsing
+retains exact output as failure evidence. Questions remain in the snapshot.
+
+The strict private producer validator supersedes schema44's archival refusal
+only for complete schema46 producer graphs. Backup retains active, unknown and
+completed evidence, verifies query/image provenance from retained input bytes,
+and excludes producers from legacy JSON. Restore rotates authority, retains
+spending and holds, never reconstructs tokens/witnesses, and refuses activation
+while original work remains unverified. Producer Runs and Events cannot be
+pruned by ordinary Console retention. Schema5 export omits producer authority.
+Qualification output is permanently distinguished from production intake:
+source insertion, ordinary Run/Inbox getters, provider dispatch, owner Apply
+and approval remain closed pending their separate qualified contracts.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

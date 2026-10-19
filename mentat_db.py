@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2887,6 +2887,58 @@ MIGRATIONS += ((45, """
         BEGIN SELECT RAISE(ABORT,'output_reservation.retained'); END;
 """),)
 
+MIGRATIONS += ((46, """
+    CREATE TABLE mentat_project_producer_bindings (
+        run_id TEXT NOT NULL PRIMARY KEY REFERENCES mentat_runs(id) ON DELETE RESTRICT,
+        generation TEXT NOT NULL CHECK(length(generation)=32),
+        body_json TEXT NOT NULL CHECK(length(CAST(body_json AS BLOB)) BETWEEN 1 AND 8192),
+        receipt_digest TEXT NOT NULL CHECK(length(receipt_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000),
+        FOREIGN KEY(run_id,generation) REFERENCES mentat_project_worker_generations(run_id,generation) ON DELETE RESTRICT,
+        FOREIGN KEY(run_id) REFERENCES mentat_project_output_reservations(run_id) ON DELETE RESTRICT
+    );
+    CREATE TABLE mentat_project_producer_stops (
+        run_id TEXT NOT NULL PRIMARY KEY REFERENCES mentat_project_producer_bindings(run_id) ON DELETE RESTRICT,
+        expected_revision INTEGER NOT NULL CHECK(typeof(expected_revision)='integer' AND expected_revision BETWEEN 1 AND 8),
+        intent_digest TEXT NOT NULL CHECK(length(intent_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000)
+    );
+    CREATE TABLE mentat_project_producer_outputs (
+        run_id TEXT NOT NULL PRIMARY KEY REFERENCES mentat_project_producer_bindings(run_id) ON DELETE RESTRICT,
+        call_id TEXT REFERENCES mentat_project_worker_calls(call_id) ON DELETE RESTRICT,
+        scope_run_id TEXT REFERENCES mentat_project_worker_scopes(run_id) ON DELETE RESTRICT,
+        attachment_id TEXT REFERENCES attachments(id) ON DELETE RESTRICT,
+        blob_id TEXT REFERENCES blobs(id) ON DELETE RESTRICT,
+        body_json TEXT NOT NULL CHECK(length(CAST(body_json AS BLOB)) BETWEEN 1 AND 98304),
+        receipt_digest TEXT NOT NULL CHECK(length(receipt_digest)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000),
+        CHECK(scope_run_id IS NULL OR scope_run_id=run_id),
+        CHECK((attachment_id IS NULL)=(blob_id IS NULL))
+    );
+    CREATE TRIGGER mentat_project_producer_binding_immutable BEFORE UPDATE ON mentat_project_producer_bindings
+        BEGIN SELECT RAISE(ABORT,'producer.immutable'); END;
+    CREATE TRIGGER mentat_project_producer_binding_retained BEFORE DELETE ON mentat_project_producer_bindings
+        BEGIN SELECT RAISE(ABORT,'producer.retained'); END;
+    CREATE TRIGGER mentat_project_producer_stop_immutable BEFORE UPDATE ON mentat_project_producer_stops
+        BEGIN SELECT RAISE(ABORT,'producer.immutable'); END;
+    CREATE TRIGGER mentat_project_producer_stop_retained BEFORE DELETE ON mentat_project_producer_stops
+        BEGIN SELECT RAISE(ABORT,'producer.retained'); END;
+    CREATE TRIGGER mentat_project_producer_output_immutable BEFORE UPDATE ON mentat_project_producer_outputs
+        BEGIN SELECT RAISE(ABORT,'producer.immutable'); END;
+    CREATE TRIGGER mentat_project_producer_output_retained BEFORE DELETE ON mentat_project_producer_outputs
+        BEGIN SELECT RAISE(ABORT,'producer.retained'); END;
+    DROP VIEW mentat_retained_attachments;
+    CREATE VIEW mentat_retained_attachments AS
+        SELECT attachment_id FROM run_attachments
+        UNION SELECT attachment_id FROM mentat_project_context_files
+        UNION SELECT attachment_id FROM mentat_task_input_files
+        UNION SELECT attachment_id FROM mentat_run_input_files
+        UNION SELECT attachment_id FROM mentat_deliverable_files
+        UNION SELECT attachment_id FROM mentat_project_planning_input_files
+        UNION SELECT attachment_id FROM mentat_project_proposal_input_files
+        UNION SELECT attachment_id FROM mentat_project_producer_outputs WHERE attachment_id IS NOT NULL;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37, 41})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -3244,6 +3296,7 @@ _SCHEMA42_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_proposal_input
 _SCHEMA43_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_calls"})
 _SCHEMA44_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_scopes"})
 _SCHEMA45_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_output_reservations"})
+_SCHEMA46_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_producer_stops", "mentat_project_producer_outputs"})
 
 
 def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tuple[str, int, str, int], ...]:
@@ -3273,6 +3326,8 @@ def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tupl
         expected_nonfk = expected_nonfk | _SCHEMA44_RUN_NONFK_REFERENCE_TABLES
     if "mentat_project_output_reservations" in names:
         expected_nonfk = expected_nonfk | _SCHEMA45_RUN_NONFK_REFERENCE_TABLES
+    if "mentat_project_producer_outputs" in names:
+        expected_nonfk = expected_nonfk | _SCHEMA46_RUN_NONFK_REFERENCE_TABLES
     if nonfk != expected_nonfk:
         raise MentatDatabaseError("Mentat Run reference inventory changed")
     dependent.update(nonfk)
@@ -3443,7 +3498,7 @@ def migrate(
             int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
             if version == 41 else None
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3597,6 +3652,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 43 cannot be safely upgraded")
                 if version == 45 and schema_signature_state(connection, 44) != "expected":
                     raise MentatDatabaseError("Mentat schema 44 cannot be safely upgraded")
+                if version == 46 and schema_signature_state(connection, 45) != "expected":
+                    raise MentatDatabaseError("Mentat schema 45 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)

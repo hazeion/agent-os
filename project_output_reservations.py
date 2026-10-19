@@ -67,6 +67,12 @@ def pending_capacity(connection):
     version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
     if version < 45:
         return 0, 0
+    if version >= 46:
+        from project_producers import producer_ids
+        producer_ids(connection,consumed_only=True)
+        return tuple(connection.execute('SELECT COALESCE(SUM(blob_slots),0),COALESCE(SUM(max_bytes),0) '
+            'FROM mentat_project_output_reservations h WHERE NOT EXISTS '
+            '(SELECT 1 FROM mentat_project_producer_outputs o WHERE o.run_id=h.run_id)').fetchone())
     return tuple(connection.execute('SELECT COALESCE(SUM(blob_slots),0),COALESCE(SUM(max_bytes),0) '
                                     'FROM mentat_project_output_reservations').fetchone())
 

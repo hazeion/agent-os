@@ -117,6 +117,7 @@ py-modules = [
   "project_worker_journal",
   "project_scope_journal",
   "project_output_reservations",
+  "project_producers",
   "project_inference_broker",
   "run_attention",
   "run_repository",

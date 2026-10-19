@@ -15,6 +15,7 @@ except ImportError:  # Unsupported platforms fail before opening snapshots.
     fcntl = None
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -322,12 +323,15 @@ def receive_ready(endpoint, deadline):
 
 class NamespaceWorker:
     """Private output evidence, never canonical Run completion authority."""
-    def __init__(self, scope, lifecycle, exports, runtime_image=None, *, handoff_context=None):
+    def __init__(self, scope, lifecycle, exports, runtime_image=None, *, handoff_context=None, original_deadline=None):
         self._scope, self._lifecycle, self.exports_descriptor = scope, lifecycle, exports
         self._consumed = False
         self._runtime_image = runtime_image
         self._handoff_context = handoff_context
         self._verified_result = None
+        self._verified_deadline = None
+        candidate = getattr(scope, '_deadline', None) if original_deadline is None else original_deadline
+        self._original_deadline = candidate if type(candidate) in (int, float) and math.isfinite(candidate) and candidate > 0 else None
         self._completion_witness = None
 
     def wait(self):
@@ -335,12 +339,12 @@ class NamespaceWorker:
         from mentat.project_worker_scope import LinuxWorkerScope
         if type(self._scope) is LinuxWorkerScope and getattr(self._scope, '_namespace_worker', None) is not self:
             raise WorkerScopeError("worker_namespace.terminal")
-        if self._consumed or self._scope._deadline is None:
+        if self._consumed or self._original_deadline is None or self._scope._deadline != self._original_deadline:
             raise WorkerScopeError("worker_namespace.terminal")
         self._consumed = True  # Lost/malformed outcomes never trigger a new worker.
         if self._runtime_image is not None:
             self._runtime_image.verify()
-        deadline = self._scope._deadline
+        deadline = self._original_deadline
         self._lifecycle.settimeout(_remaining(deadline))
         data, ancillary, flags, _ = self._lifecycle.recvmsg(MAX_REPLY + 512, socket.CMSG_SPACE(MAX_DESCRIPTORS * 4),
                                                           socket.MSG_CMSG_CLOEXEC)
@@ -376,7 +380,10 @@ class NamespaceWorker:
         if self._runtime_image is not None:
             self._runtime_image.verify()
         _remaining(deadline)
+        if self._scope._deadline != deadline:
+            raise WorkerScopeError("worker_namespace.terminal")
         self._verified_result = (result["text"], result["output_bytes"])
+        self._verified_deadline = deadline
         return result
 
     def completion_witness(self):

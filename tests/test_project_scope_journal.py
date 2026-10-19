@@ -191,6 +191,8 @@ class ScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute('BEGIN IMMEDIATE')
             connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
+            from tests.producer_schema_support import remove_schema46
+            remove_schema46(connection)
             connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
             connection.execute('DROP TABLE mentat_project_output_reservations')
             connection.execute('DROP TRIGGER mentat_project_worker_scope_immutable')
@@ -208,7 +210,7 @@ class ScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
             with closing(sqlite3.connect(copied)) as connection:
                 self.assertEqual(mentat_db.schema_signature_state(connection,43),'expected')
         with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection,45),'expected')
+            self.assertEqual(mentat_db.schema_signature_state(connection,46),'expected')
             self.assertEqual(journal.validate_worker_journal_connection(connection),before)
             self.assertEqual(scopes.validate_scope_journal_connection(connection),[])
 
