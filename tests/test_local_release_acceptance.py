@@ -14,6 +14,9 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
         self.closed = patch.object(acceptance, "listener_closed", return_value=True)
         self.port.start()
         self.closed.start()
+        self.groups = patch.object(acceptance, "process_group_absent", return_value=True)
+        self.groups.start()
+        self.addCleanup(self.groups.stop)
         self.addCleanup(self.port.stop)
         self.addCleanup(self.closed.stop)
 
@@ -66,6 +69,47 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertIs(journey.process, owned)
             self.assertFalse(journey.cleanup())
             owned.terminate.assert_called_once()
+
+    def test_early_launcher_exit_with_live_owned_group_refuses_cleanup(self):
+        with TemporaryDirectory() as directory:
+            journey = acceptance.Journey(Path(directory))
+            self.addCleanup(journey.launch_output.close)
+            launcher = unittest.mock.Mock(pid=23456)
+            launcher.poll.return_value = 7
+            journey.process = launcher
+            journey.launcher_groups.add(launcher.pid)
+            self.assertEqual(journey.children, ())
+            with patch.object(acceptance, "process_group_absent", return_value=False) as absent:
+                self.assertFalse(journey.cleanup())
+            launcher.terminate.assert_not_called()
+            absent.assert_called_once_with(23456)
+
+    def test_start_records_owned_group_before_early_health_failure(self):
+        with TemporaryDirectory() as directory:
+            journey = acceptance.Journey(Path(directory))
+            self.addCleanup(journey.launch_output.close)
+            launcher = unittest.mock.Mock(pid=23456)
+            launcher.poll.return_value = 7
+            with patch.object(acceptance.subprocess, "Popen", return_value=launcher) as spawn:
+                with self.assertRaisesRegex(acceptance.AcceptanceFailure, "launcher_exited"):
+                    journey.start()
+            self.assertIs(spawn.call_args.kwargs["start_new_session"], True)
+            self.assertEqual(journey.launcher_groups, {23456})
+
+    def test_incomplete_cleanup_preserves_owned_directory_and_fails_report(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "owned"
+            root.mkdir()
+            with patch.object(acceptance.tempfile, "mkdtemp", return_value=str(root)), patch.object(
+                acceptance.Journey, "run", side_effect=acceptance.AcceptanceFailure("launcher_exited")
+            ), patch.object(acceptance.tempfile, "TemporaryFile", return_value=unittest.mock.Mock()), patch.object(acceptance.Journey, "cleanup", return_value=False), patch.object(
+                acceptance.shutil, "rmtree"
+            ) as remove, patch("builtins.print") as output:
+                self.assertEqual(acceptance.main([]), 1)
+                remove.assert_not_called()
+                self.assertIn('"owned_state_removed": false', output.call_args.args[0])
+                self.assertIn('"cleanup_incomplete"', output.call_args.args[0])
+            self.assertTrue(root.is_dir())
 
     def test_restart_wait_has_a_deadline_and_does_not_relaunch(self):
         with patch.object(acceptance.time, "monotonic", side_effect=[0, 76]), patch.object(

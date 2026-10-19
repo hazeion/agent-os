@@ -73,3 +73,25 @@ previously failed with `gateway_port_unavailable`, so this branch retains that
 open production gate. No processes from the completed acceptance runs remain
 owned by this runner. Independent reviews and an immediate-restart rerun after
 the separate production fix are still required.
+
+## Immediate restart integration and cleanup correction
+
+Normal merge head `10f342440acdd20f6d0634df7493bce305a70b51` integrates the
+separately twice-reviewed production port fix `7362f851`. On that exact code,
+46 focused tests passed and the actual default CLI/Next/Chrome command passed
+all four scenarios, with `immediate_restart_acceptance:true`, no dispatch,
+no restore confirmation and owned state removed. No diagnostic wait was used.
+The bounded report is saved outside the checkout at
+`/private/tmp/mentat-local-release-immediate-report.json`.
+
+Independent harness review then found a failure-path gap: children were
+captured only after readiness, so an early launcher exit could leave an orphan
+bridge unrepresented while cleanup deleted its data. The runner now launches
+Mentat in a new private process session and records that owned group
+immediately after Popen, before readiness. Stop and cleanup require group
+absence, in addition to exact captured child/listener checks. No discovered
+PID or group is terminated. A surviving group preserves state and fails the
+report even when the launcher is terminal and the public listener closed.
+Three new regressions prove early group capture, refusal with a live orphan
+group, and preservation of owned files on incomplete cleanup. All 12 focused
+harness tests pass. Final corrected-code actual acceptance remains pending.

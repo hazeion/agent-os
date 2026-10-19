@@ -118,6 +118,7 @@ class Journey:
                         "--obsidian-vault", str(root / "vault")]
         self.process: subprocess.Popen | None = None
         self.children: tuple[int, ...] = ()
+        self.launcher_groups: set[int] = set()
         self.browser: subprocess.Popen | None = None
         self.launch_output = tempfile.TemporaryFile()
         self.opener = build_opener(ProxyHandler({}))
@@ -163,7 +164,10 @@ class Journey:
         require(self.process is None, "already_started")
         self.process = subprocess.Popen([sys.executable, "-m", "mentat.cli", "start", *self.options],
                                         cwd=REPO, env=self.environment,
-                                        stdout=self.launch_output, stderr=self.launch_output)
+                                        stdout=self.launch_output, stderr=self.launch_output, start_new_session=True)
+        # Record the owned group immediately, before any readiness observation.
+        # Its absence remains required even if the launcher exits early.
+        self.launcher_groups.add(self.process.pid)
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             require(self.process.poll() is None, "launcher_exited")
@@ -190,6 +194,7 @@ class Journey:
         except subprocess.TimeoutExpired:
             raise AcceptanceFailure("launcher_stop_timeout") from None
         require(self.process.returncode in {0, 128 + signal.SIGTERM}, "launcher_stop_failed")
+        require(process_group_absent(self.process.pid), "owned_launcher_group_remains")
         require(all(process_absent(pid) for pid in self.children), "owned_child_remains")
         require(listener_closed(self.port), "listener_remains")
         require(not (self.data / "runtime" / "server-state.json").exists(), "runtime_state_remains")
@@ -280,7 +285,8 @@ class Journey:
             except subprocess.TimeoutExpired:
                 clean = False
         self.launch_output.close()
-        return clean and all(process_absent(pid) for pid in self.children) and listener_closed(self.port)
+        return (clean and all(process_group_absent(group) for group in self.launcher_groups)
+                and all(process_absent(pid) for pid in self.children) and listener_closed(self.port))
 
 
 def main(argv: list[str] | None = None) -> int:

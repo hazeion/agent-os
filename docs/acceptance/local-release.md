@@ -27,8 +27,9 @@ Required scenarios:
 Success emits a bounded JSON report containing fixed scenario names and
 booleans only. Raw process output, private paths, IDs and restore tokens are
 never printed. Failure emits a fixed phase/code and exits nonzero. Temporary
-files are removed only after the owned launcher and listening socket have
-closed. The runner never kills a process found by a port number or PID file.
+files are removed only after the owned launcher, its private process group and
+listening socket have closed. The group is recorded before readiness so early
+startup failures cannot hide an orphan bridge. The runner never kills a process found by a port number or PID file.
 A failed cleanup preserves temporary state and reports that fact.
 
 This local synthetic journey does not qualify the Linux pidfd boundary, native
@@ -47,3 +48,7 @@ for that exact port to become bindable, then makes one restart attempt. It does
 not silently change ports or retry a failed launch. The default run attempts immediate same-port restart and exposes this failure.
 A successful diagnostic run explicitly reports `immediate_restart_acceptance: false`
 and does not satisfy release restart acceptance.
+
+The reviewed POSIX preflight repair is integrated on this branch. The default
+immediate same-port restart journey now passes; the TIME_WAIT discussion above
+retains the baseline failure and diagnostic distinction.
