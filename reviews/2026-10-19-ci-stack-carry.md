@@ -10,6 +10,7 @@ passing ancestor as current-head acceptance.
 | PR | Original head | Parent repair | Resolution and local evidence |
 | --- | --- | --- | --- |
 | 244 | `b83137c` | `fefd987` | Only package manifest/lock conflicts. Both take the byte-identical reviewed parent dependency graph. Agent DDL and Node contract repairs merge normally. Preserve Task/Run completion/navigation and the existing fixed-minute auth fixtures. All 17 Node-contract, recovery-budget and Task-recovery tests pass in one clean run. |
+| 245 | `6e223ab` | `4cd6b44` | Same dependency-only conflict resolution. Preserve responsive Task inspection and transcript changes. Carry the existing reviewed header-only bridge-refusal fixture and urllib3 2.8.0 locks; the historical security failure is the old 2.7.0 lock audit, not a secret finding. All 57 Node-contract and complete bridge route-class tests pass. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret
