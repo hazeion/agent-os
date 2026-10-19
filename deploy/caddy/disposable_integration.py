@@ -336,20 +336,32 @@ class _SseClient:
     def headers(self) -> dict[str, str]:
         return {name.lower(): value for name, value in self.response.getheaders()}
 
-    def read_block(self, timeout: float = 3) -> bytes:
-        self.connection.settimeout(timeout)
-        lines: list[bytes] = []
-        size = 0
+    def read_block(self, timeout: float = 3, *, deadline_at: float | None = None) -> bytes:
+        deadline = time.monotonic() + timeout
+        if deadline_at is not None:
+            deadline = min(deadline, deadline_at)
+        block = bytearray()
+        line = bytearray()
         while True:
-            line = self.response.readline(MAX_SSE_BLOCK_BYTES + 1)
-            if line == b"":
-                return b"" if not lines else b"".join(lines)
-            size += len(line)
-            if size > MAX_SSE_BLOCK_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DisposableIntegrationError("SSE read exceeded the disposable deadline")
+            self.connection.settimeout(remaining)
+            # One payload byte per read prevents a trickling line from resetting
+            # the socket timeout indefinitely. Keep one absolute block budget.
+            value = self.response.read(1)
+            if time.monotonic() >= deadline:
+                raise DisposableIntegrationError("SSE read exceeded the disposable deadline")
+            if value == b"":
+                return bytes(block)
+            block.extend(value)
+            line.extend(value)
+            if len(block) > MAX_SSE_BLOCK_BYTES:
                 raise DisposableIntegrationError("SSE block exceeded the disposable bound")
-            lines.append(line)
-            if line in (b"\n", b"\r\n"):
-                return b"".join(lines)
+            if value == b"\n":
+                if line in (b"\n", b"\r\n"):
+                    return bytes(block)
+                line.clear()
 
     def close(self) -> None:
         self.response.close()
@@ -551,14 +563,28 @@ def _assert_sse_headers(client: _SseClient) -> None:
         raise DisposableIntegrationError("SSE security/no-buffering gate failed")
 
 
-def _expect_sse_block(client: _SseClient, expected: bytes, label: str) -> None:
-    if client.read_block() != expected:
+def _expect_sse_block(client: _SseClient, expected: bytes, label: str, *, deadline_at: float | None = None) -> None:
+    if client.read_block(deadline_at=deadline_at) != expected:
         raise DisposableIntegrationError(f"SSE {label} gate failed")
 
 
 def _expect_sse_eof(client: _SseClient, label: str) -> None:
     if client.read_block() != b"":
         raise DisposableIntegrationError(f"SSE {label} did not close exactly")
+
+
+def _expect_sse_drain(client: _SseClient, deadline_at: float) -> None:
+    # Maintenance reload and its continuity check may leave heartbeat comments
+    # buffered ahead of the backend's close frame. No other block is admissible.
+    while True:
+        block = client.read_block(deadline_at=deadline_at)
+        if block == b": keepalive\n\n":
+            continue
+        if block != b'event: close\ndata: {"reason":"drain"}\n\n':
+            raise DisposableIntegrationError("SSE drain closure gate failed")
+        break
+    if client.read_block(deadline_at=deadline_at) != b"":
+        raise DisposableIntegrationError("SSE drained stream did not close exactly")
 
 
 def run_disposable_integration(*, caddy: Path, certificate: Path, key: Path, host: str) -> None:
@@ -766,7 +792,7 @@ def run_disposable_integration(*, caddy: Path, certificate: Path, key: Path, hos
             _assert_sse_headers(draining)
             _expect_sse_block(draining, b": keepalive\n\n", "pre-drain keepalive")
             draining_stream = backend.wait_for_stream(5)
-            drain_started = time.monotonic()
+            drain_deadline = time.monotonic() + 35
             _atomic_publish(published, maintenance_bytes)
             _reload(caddy, admin_port, published, True, child_env=child_env)
             maintenance_status, maintenance_headers, _ = request_http(
@@ -778,18 +804,18 @@ def run_disposable_integration(*, caddy: Path, certificate: Path, key: Path, hos
             )
             if maintenance_status != 503 or maintenance_headers.get("cache-control") != "no-store":
                 raise DisposableIntegrationError("maintenance reload/drain gate failed")
-            _expect_sse_block(draining, b": keepalive\n\n", "stream continuity during drain")
-            draining_stream.release.set()
-            _expect_sse_block(
-                draining,
-                b"event: close\ndata: {\"reason\":\"drain\"}\n\n",
-                "drain closure",
-            )
-            _expect_sse_eof(draining, "drained stream")
-            draining.close()
+            try:
+                _expect_sse_block(
+                    draining, b": keepalive\n\n", "stream continuity during drain",
+                    deadline_at=drain_deadline,
+                )
+                draining_stream.release.set()
+                _expect_sse_drain(draining, drain_deadline)
+            finally:
+                draining.close()
             if (
-                not draining_stream.closed.wait(3)
-                or time.monotonic() - drain_started > 35
+                not draining_stream.closed.wait(min(3, max(0, drain_deadline - time.monotonic())))
+                or time.monotonic() >= drain_deadline
             ):
                 raise DisposableIntegrationError("SSE drain exceeded the 35-second bound")
 
