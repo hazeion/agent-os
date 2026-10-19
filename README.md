@@ -110,6 +110,7 @@ starting Mentat.
 The setup helper stores settings on your computer. Hermes continues to manage
 provider credentials. To connect Mentat to Hermes on another computer, follow
 the [remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
+Linux host administrators can also follow the [Google owner setup guide](docs/setup/google-owner.md).
 
 ### Optional Vercel connection
 

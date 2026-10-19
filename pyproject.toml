@@ -41,7 +41,7 @@ mentat = "mentat.cli:main"
 version = { attr = "mentat.version.__version__" }
 
 [tool.setuptools]
-packages = ["mentat"]
+packages = ["mentat", "deploy", "deploy.caddy"]
 include-package-data = false
 py-modules = [
   "agent_registry",
@@ -68,6 +68,7 @@ py-modules = [
   "diagnostics_bundle",
   "health_checks",
   "owner_auth",
+  "owner_auth_setup",
   "owner_auth_google",
   "owner_auth_google_transport",
   "owner_auth_google_transactions",
@@ -118,3 +119,6 @@ py-modules = [
   "vercel_infrastructure",
   "vercel_runtime",
 ]
+
+[tool.setuptools.package-data]
+"deploy.caddy" = ["caddy-lock.json"]

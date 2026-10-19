@@ -275,7 +275,7 @@ def release_mentat_server(data_root: Path) -> None:
             import json
 
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("pid") != os.getpid():
+            if not isinstance(payload, dict) or set(payload) != {"schema_version", "pid"} or payload.get("pid") != os.getpid():
                 return
             path.unlink()
         except (FileNotFoundError, OSError, UnicodeError, ValueError, TypeError):

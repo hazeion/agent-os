@@ -127,6 +127,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     owner_auth_bootstrap.add_argument("--origin", required=True)
     _runtime_arguments(owner_auth_bootstrap)
+    owner_google = owner_auth_commands.add_parser('google-setup', help='Enroll, convert or recover the owner through a temporary Linux HTTPS setup gateway.')
+    owner_google.add_argument('--purpose', choices=('enroll', 'convert', 'recover'), required=True)
+    owner_google.add_argument('--origin', required=True)
+    owner_google.add_argument('--client-id', required=True)
+    owner_google.add_argument('--caddy-bin', type=Path, required=True)
+    owner_google.add_argument('--cosign-bin', type=Path, required=True)
+    owner_google.add_argument('--release-dir', type=Path, required=True)
+    owner_google.add_argument('--architecture', choices=('amd64', 'arm64'), required=True)
+    owner_google.add_argument('--tls-cert', type=Path, required=True)
+    owner_google.add_argument('--tls-key', type=Path, required=True)
+    _runtime_arguments(owner_google)
 
     connection = commands.add_parser(
         "connection",
@@ -533,6 +544,9 @@ def run_owner_auth(args: argparse.Namespace) -> int:
     from owner_auth import OwnerAuthError, bootstrap_owner_auth
 
     _runtime_config, config = _load_config(args)
+    if args.owner_auth_command == 'google-setup':
+        from mentat.owner_setup_cli import run_google_setup
+        return run_google_setup(args, config)
     if args.owner_auth_command != "bootstrap":
         raise RuntimeError("unknown owner-auth command")
     try:

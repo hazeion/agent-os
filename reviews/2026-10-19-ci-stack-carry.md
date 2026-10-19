@@ -17,6 +17,7 @@ passing ancestor as current-head acceptance.
 | 254 | `3280e83` | `a6358cd` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 32 targeted Node/feature tests pass; no skips. Hosted and integrated acceptance remain pending. |
 
 | 255 | `24bfe1a` | `a623f5a` | Guard stopped for inherited Google transport changes. Two independent reviews clear the existing absolute-deadline/coarse-clock correction and owned-worker close fixture; the ten-second ceiling, capacity and no-retry policy remain. Session issuance feature unchanged. All 47 Node/session/transport/webhook tests pass without skips. |
+| 258 | `5f25476` | `fb8fb82` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 21 targeted Node/feature tests pass; 1 platform/build skips. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

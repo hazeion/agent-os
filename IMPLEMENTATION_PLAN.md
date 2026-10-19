@@ -77,8 +77,14 @@ authority, and covers private restore/export. Its evidence is in
 are the active slice; see [the transaction review](reviews/2026-09-21-google-login-transactions.md).
 [One-use Google session issuance](https://github.com/hazeion/agent-os/issues/253)
 is implemented for review; see [the session review](reviews/2026-09-21-google-session-issuance.md).
-Verified CLI owner enrollment, conversion and recovery are next; gateway wiring
-and Linux activation follow their verification. Remote serving remains disabled.
+[Host-admin enrollment, conversion and recovery](https://github.com/hazeion/agent-os/issues/256)
+is the active integration slice, including a setup-only browser gateway and HTTPS
+ingress lifecycle. A printed OAuth URL without a working callback is insufficient.
+[Website Google sign-in and authenticated access](https://github.com/hazeion/agent-os/issues/257)
+must provide a visible **Continue with Google** interface, useful error states
+and browser sign-out. The owner explicitly reaffirmed this UI requirement;
+CLI setup is not the everyday sign-in experience. Linux and real-provider
+acceptance follow these slices. Remote serving remains disabled.
 
 ### Implemented baseline and retained boundaries
 
