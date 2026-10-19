@@ -36,7 +36,6 @@ class EmptyConsoleTemplateTests(unittest.TestCase):
                 self.assertEqual(units.validate_private_console_unit(unit), unit)
                 self.assertEqual(database.read_bytes(), raw)
 
-
     def test_historical_schema_33_filters_and_validates_complete_empty_unit(self):
         with TemporaryDirectory() as temporary:
             database = Path(temporary) / "mentat.sqlite3"

@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2654,7 +2654,57 @@ MIGRATIONS += ((40, """
         BEGIN SELECT RAISE(ABORT,'project_input_action.retained'); END;
 """),)
 
-MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37})
+
+def _proposal_source_rebuild_script() -> str:
+    """Derive the exact Run shadow rebuild from the released schema-40 graph."""
+
+    source = sqlite3.connect(":memory:")
+    try:
+        for version, script in MIGRATIONS:
+            if version > 40:
+                break
+            source.executescript(script)
+        row = source.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='mentat_runs'"
+        ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise RuntimeError("schema-40 Run table source is missing")
+        table = row[0]
+        old_create = "CREATE TABLE mentat_runs ("
+        old_source = "source IN ('console', 'task_dispatch')"
+        if table.count(old_create) != 1 or table.count(old_source) != 1:
+            raise RuntimeError("schema-40 Run source constraint changed")
+        shadow = (table.replace(old_create, "CREATE TABLE mentat_runs_next (", 1)
+                  .replace(old_source,
+                           "source IN ('console', 'task_dispatch', 'project_proposal')", 1))
+        owned = [str(item[0]) for item in source.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name='mentat_runs' "
+            "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name"
+        )]
+        if len(owned) != 13:
+            raise RuntimeError("schema-40 Run indexes or triggers changed")
+        return "\n".join((
+            shadow + ";",
+            "INSERT INTO mentat_runs_next SELECT * FROM mentat_runs;",
+            "DROP TABLE mentat_runs;",
+            "PRAGMA legacy_alter_table=ON;",
+            "ALTER TABLE mentat_runs_next RENAME TO mentat_runs;",
+            "PRAGMA legacy_alter_table=OFF;",
+            *(statement + ";" for statement in owned),
+            "CREATE TRIGGER mentat_runs_project_proposal_closed_insert "
+            "BEFORE INSERT ON mentat_runs WHEN NEW.source='project_proposal' "
+            "BEGIN SELECT RAISE(ABORT,'run.proposal_unqualified'); END;",
+            "CREATE TRIGGER mentat_runs_project_proposal_closed_update "
+            "BEFORE UPDATE OF source ON mentat_runs WHEN NEW.source='project_proposal' "
+            "BEGIN SELECT RAISE(ABORT,'run.proposal_unqualified'); END;",
+        ))
+    finally:
+        source.close()
+
+
+MIGRATIONS += ((41, _proposal_source_rebuild_script()),)
+
+MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37, 41})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
     {
@@ -3001,6 +3051,166 @@ def _preflight_plan_version_migration(connection: sqlite3.Connection) -> None:
         raise MentatDatabaseError("Mentat plan migration needs temporary disk headroom")
 
 
+_RUN_NONFK_REFERENCE_TABLES = frozenset({
+    "run_attachments", "mentat_dispatch_reservations", "mentat_task_dispatch_heads",
+    "mentat_conversation_submission_results", "mentat_conversation_run_attempts",
+    "mentat_run_input_files", "mentat_deliverable_versions", "mentat_run_attention",
+})
+
+
+def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tuple[str, int, str, int], ...]:
+    """Hash Run rows and every table with a direct Run foreign key."""
+    names = [str(row[0]) for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )]
+    dependent = {"mentat_runs"}
+    nonfk = set()
+    for name in names:
+        quoted = '"' + name.replace('"', '""') + '"'
+        foreign_keys = {str(row[2]) for row in connection.execute(
+            f"PRAGMA foreign_key_list({quoted})"
+        )}
+        if "mentat_runs" in foreign_keys:
+            dependent.add(name)
+        elif name != "mentat_runs" and any(
+                "run_id" in str(row[1]) for row in connection.execute(
+                    f"PRAGMA table_info({quoted})")):
+            nonfk.add(name)
+    if nonfk != _RUN_NONFK_REFERENCE_TABLES:
+        raise MentatDatabaseError("Mentat Run reference inventory changed")
+    dependent.update(nonfk)
+    snapshot = []
+    for name in sorted(dependent):
+        quoted = '"' + name.replace('"', '""') + '"'
+        columns = [row for row in connection.execute(f"PRAGMA table_info({quoted})")]
+        primary = [str(row[1]) for row in sorted(
+            (row for row in columns if int(row[5]) > 0), key=lambda row: int(row[5])
+        )]
+        ordering = ",".join('"' + item.replace('"', '""') + '"' for item in primary)
+        if not ordering:
+            ordering = "rowid"
+        digest = hashlib.sha256()
+        count = total = 0
+        for row in connection.execute(f"SELECT * FROM {quoted} ORDER BY {ordering}"):
+            encoded = repr(tuple(row)).encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+            count += 1
+            total += len(encoded)
+        snapshot.append((name, count, digest.hexdigest(), total))
+    return tuple(snapshot)
+
+
+_RUN_SOURCE_ROW_BYTES_SQL = (
+    "COALESCE(length(CAST(task_snapshot_json AS BLOB)),0)+"
+    "COALESCE(length(CAST(details_json AS BLOB)),0)+"
+    "COALESCE(length(CAST(execution_config_json AS BLOB)),0)+"
+    "COALESCE(length(CAST(runtime_execution_json AS BLOB)),0)+"
+    "COALESCE(length(CAST(capabilities_json AS BLOB)),0)+"
+    "length(CAST(id AS BLOB))+4096"
+)
+
+
+def _preflight_run_source_migration(connection: sqlite3.Connection,
+                                    snapshot: tuple[tuple[str, int, str, int], ...]) -> None:
+    """Reserve room for one exact Run shadow and rollback journal."""
+    database = connection.execute("PRAGMA database_list").fetchone()
+    if database is None or not database[2]:
+        return
+    run_bytes = next((row[3] for row in snapshot if row[0] == "mentat_runs"), 0)
+    max_row_bytes = int(connection.execute(
+        f"SELECT COALESCE(MAX({_RUN_SOURCE_ROW_BYTES_SQL}),0) FROM mentat_runs"
+    ).fetchone()[0])
+    database_path = Path(str(database[2]))
+    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+    page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    free_pages = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    # The guarded migration moves roughly 1 MiB batches, but one valid Run
+    # may carry two 1 Mi-character JSON fields with multibyte UTF-8 payloads.
+    shadow_bytes = max(1024 * 1024, min(
+        2 * run_bytes, max(3 * 1024 * 1024, max_row_bytes + 1024 * 1024),
+    ))
+    projected_pages = page_count + max(0, (shadow_bytes + page_size - 1) // page_size - free_pages)
+    if projected_pages * page_size > MAX_READONLY_DATABASE_BYTES:
+        raise MentatDatabaseError("Mentat Run source migration exceeds database headroom")
+    # WAL retains changed pages until commit even when old Run pages are
+    # reused in the main database. Reserve the complete source size several
+    # times over for WAL, its checkpoint, and rollback/recovery headroom.
+    required = max(64 * 1024 * 1024, 3 * page_count * page_size + 32 * 1024 * 1024)
+    try:
+        available = shutil.disk_usage(database_path.parent).free
+    except OSError as exc:
+        raise MentatDatabaseError("Mentat Run source migration cannot verify disk headroom") from exc
+    if available < required:
+        raise MentatDatabaseError("Mentat Run source migration needs temporary disk headroom")
+
+
+def _execute_run_source_chunked_migration(connection: sqlite3.Connection) -> None:
+    """Move exact Run rows in bounded batches while reusing old table pages."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='mentat_runs'"
+    ).fetchone()
+    if row is None or not isinstance(row[0], str):
+        raise MentatDatabaseError("Mentat Run source table is missing")
+    old_create = "CREATE TABLE mentat_runs ("
+    old_source = "source IN ('console', 'task_dispatch')"
+    table = row[0]
+    if table.count(old_create) != 1 or table.count(old_source) != 1:
+        raise MentatDatabaseError("Mentat Run source constraint changed")
+    shadow = (table.replace(old_create, "CREATE TABLE mentat_runs_next (", 1)
+              .replace(old_source,
+                       "source IN ('console', 'task_dispatch', 'project_proposal')", 1))
+    owned = [(str(item[0]), str(item[1]), str(item[2])) for item in connection.execute(
+        "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='mentat_runs' "
+        "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name"
+    )]
+    if len(owned) != 13 or sum(kind == "trigger" for kind, _name, _sql in owned) != 8:
+        raise MentatDatabaseError("Mentat Run-owned objects changed")
+    connection.execute(shadow)
+    for kind, name, _sql in owned:
+        if kind == "trigger":
+            connection.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+    while True:
+        candidates = connection.execute(
+            f"SELECT id,{_RUN_SOURCE_ROW_BYTES_SQL} "
+            "FROM mentat_runs ORDER BY id LIMIT 256"
+        ).fetchall()
+        if not candidates:
+            break
+        chosen: list[str] = []
+        size = 0
+        for identifier, encoded_bytes in candidates:
+            estimate = int(encoded_bytes)
+            if chosen and size + estimate > 1024 * 1024:
+                break
+            chosen.append(str(identifier))
+            size += estimate
+        placeholders = ",".join("?" for _ in chosen)
+        connection.execute(
+            f"INSERT INTO mentat_runs_next SELECT * FROM mentat_runs "
+            f"WHERE id IN ({placeholders})", chosen,
+        )
+        connection.execute(
+            f"DELETE FROM mentat_runs WHERE id IN ({placeholders})", chosen,
+        )
+    connection.execute("DROP TABLE mentat_runs")
+    connection.execute("PRAGMA legacy_alter_table=ON")
+    connection.execute("ALTER TABLE mentat_runs_next RENAME TO mentat_runs")
+    connection.execute("PRAGMA legacy_alter_table=OFF")
+    for _kind, _name, sql in owned:
+        connection.execute(sql)
+    connection.execute(
+        "CREATE TRIGGER mentat_runs_project_proposal_closed_insert "
+        "BEFORE INSERT ON mentat_runs WHEN NEW.source='project_proposal' "
+        "BEGIN SELECT RAISE(ABORT,'run.proposal_unqualified'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER mentat_runs_project_proposal_closed_update "
+        "BEFORE UPDATE OF source ON mentat_runs WHEN NEW.source='project_proposal' "
+        "BEGIN SELECT RAISE(ABORT,'run.proposal_unqualified'); END"
+    )
+
+
 def migrate(
     connection: sqlite3.Connection,
     *,
@@ -3032,7 +3242,11 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40}
+        legacy_alter_before = (
+            int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
+            if version == 41 else None
+        )
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3176,12 +3390,25 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 38 cannot be safely upgraded")
                 if version == 40 and schema_signature_state(connection, 39) != "expected":
                     raise MentatDatabaseError("Mentat schema 39 cannot be safely upgraded")
+                if version == 41 and schema_signature_state(connection, 40) != "expected":
+                    raise MentatDatabaseError("Mentat schema 40 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)
-                _execute_script_in_active_transaction(connection, script)
+                if version == 41:
+                    run_snapshot = _run_source_migration_snapshot(connection)
+                    _preflight_run_source_migration(connection, run_snapshot)
+                if version == 41:
+                    _execute_run_source_chunked_migration(connection)
+                else:
+                    _execute_script_in_active_transaction(connection, script)
                 if version == 37 and _plan_version_migration_snapshot(connection) != plan_snapshot:
                     raise MentatDatabaseError("Mentat plan migration changed retained evidence")
+                if version == 41:
+                    if _run_source_migration_snapshot(connection) != run_snapshot:
+                        raise MentatDatabaseError("Mentat Run source migration changed retained evidence")
+                    if schema_signature_state(connection, 41) != "expected":
+                        raise MentatDatabaseError("Mentat Run source migration changed schema")
             else:
                 # executescript otherwise commits before running its statements.
                 # Open the transaction inside the script and leave it active so
@@ -3234,6 +3461,10 @@ def migrate(
             connection.rollback()
             raise
         finally:
+            if legacy_alter_before is not None:
+                connection.execute(
+                    f"PRAGMA legacy_alter_table = {legacy_alter_before}"
+                )
             if requires_disabled_foreign_keys and foreign_keys_were_enabled:
                 connection.execute("PRAGMA foreign_keys = ON")
                 restored_row = connection.execute("PRAGMA foreign_keys").fetchone()

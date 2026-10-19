@@ -49,6 +49,10 @@ def validate_run_attention_connection(connection: sqlite3.Connection) -> None:
     version = int(connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0])
     if version < 36:
         return
+    if version >= 41 and connection.execute(
+        "SELECT 1 FROM mentat_runs WHERE source NOT IN ('console','task_dispatch') LIMIT 1"
+    ).fetchone() is not None:
+        _fail()
     rows = connection.execute(
         "SELECT a.run_id,a.incarnation,a.item_id,a.revision,a.created_at,a.updated_at,a.read_at,"
         "a.acknowledged_at,a.resolved_at,a.last_action_digest,a.last_expected_revision,a.retired_at,"

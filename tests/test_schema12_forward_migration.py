@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import closing
 import re
 import sqlite3
+import sys
 import threading
+import traceback
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -871,12 +873,14 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
             with closing(connection):
                 original_classifier = mentat_db.schema_signature_state
                 racer_outcomes: list[str] = []
+                gated_versions: list[int] = []
 
                 def classify_with_racer(
                     gated_connection: sqlite3.Connection,
                     schema_version: int,
                 ) -> str:
                     state = original_classifier(gated_connection, schema_version)
+                    gated_versions.append(schema_version)
                     completed = threading.Event()
 
                     def race_schema_writer() -> None:
@@ -895,8 +899,16 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
 
                     writer = threading.Thread(target=race_schema_writer)
                     writer.start()
-                    self.assertTrue(completed.wait(timeout=2))
-                    writer.join(timeout=2)
+                    try:
+                        self.assertTrue(completed.wait(timeout=2))
+                    finally:
+                        writer.join(timeout=2)
+                        if writer.is_alive():
+                            frame = sys._current_frames().get(writer.ident)
+                            stalled = "".join(traceback.format_stack(frame, limit=12))[:4096] if frame else "writer exited during capture"
+                            print("Slow schema writer:\n" + stalled, file=sys.stderr)
+                            writer.join(timeout=25)
+                        self.assertFalse(writer.is_alive())
                     return state
 
                 with mock.patch.object(
@@ -913,11 +925,73 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
                     )
                 }
 
-        self.assertEqual(len(racer_outcomes), SCHEMA_VERSION - 12)
+        expected_gates = list(range(12, SCHEMA_VERSION))
+        if SCHEMA_VERSION >= 41:
+            # The Run-table rebuild verifies schema 41 again before committing
+            # its receipt. That exact post-rewrite gate must also reject a
+            # competing writer; it is not an extra migration or a race leak.
+            expected_gates.insert(expected_gates.index(40) + 1, 41)
+        self.assertEqual(gated_versions, expected_gates)
+        self.assertEqual(len(racer_outcomes), len(expected_gates))
         self.assertTrue(
             all("locked" in outcome.lower() for outcome in racer_outcomes)
         )
         self.assertNotIn("raced_payload", columns)
+
+    def test_schema_race_assertion_failure_drains_writer_before_root_cleanup(self):
+        owned = []
+        cleanup_observations = []
+        finish = threading.Event()
+        original_thread = threading.Thread
+        original_temporary = TemporaryDirectory
+
+        def tracked_writer(*args, **kwargs):
+            target = kwargs.pop("target")
+
+            def held_writer():
+                target()
+                finish.wait(timeout=30)
+
+            writer = original_thread(*args, target=held_writer, **kwargs)
+            original_join = writer.join
+            calls = 0
+
+            def delayed_join(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return  # Model a writer outliving the initial short join.
+                finish.set()
+                return original_join(*args, **kwargs)
+
+            writer.join = delayed_join
+            owned.append((writer, original_join))
+            return writer
+
+        class ObservedTemporaryDirectory(original_temporary):
+            def __exit__(temporary, *args):
+                cleanup_observations.append([writer.is_alive() for writer, _join in owned])
+                # Observe before a safety drain, so regressing the fixture
+                # fails this test without leaking its controlled writer.
+                finish.set()
+                for _writer, join in owned:
+                    join(timeout=5)
+                return super().__exit__(*args)
+
+        inner = Schema12ForwardMigrationTests("test_schema_writer_cannot_race_exact_gate_and_rewrite")
+        result = unittest.TestResult()
+        with (
+            mock.patch.object(threading, "Thread", side_effect=tracked_writer),
+            mock.patch.object(sys.modules[__name__], "TemporaryDirectory", ObservedTemporaryDirectory),
+            mock.patch.object(inner, "assertTrue", side_effect=AssertionError("injected schema ordering assertion")),
+            mock.patch.object(sys, "stderr"),
+        ):
+            inner.run(result)
+        self.assertEqual(len(result.failures), 1)
+        self.assertEqual(result.errors, [])
+        self.assertIn("injected schema ordering assertion", result.failures[0][1])
+        self.assertEqual(cleanup_observations, [[False]])
+        self.assertTrue(all(not writer.is_alive() for writer, _join in owned))
 
     def test_active_caller_transaction_is_never_committed_by_schema_rewrite(self):
         for foreign_keys in (0, 1):

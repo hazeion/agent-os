@@ -435,6 +435,13 @@ incarnations without exposing that identity. Save requires the current active
 Project revision, context, lead, Agent binding and grant and verifies every
 selected file. Neither the receipt nor saved input grants a proposal Run.
 
+Schema 41 reserves `project_proposal` as a distinct canonical Run source but
+keeps it closed behind temporary SQLite INSERT/source-UPDATE guards. No
+browser, Console, Task or adapter path may create or project such a Run yet;
+owner Inbox/Run-attention reads reject a tampered proposal row. A later exact
+Project Run-input receipt and qualified Linux adapter gate must replace the
+guard and add proposal-specific retention and Inbox handling before admission.
+
 Home planning selectors stage locally until explicit Apply or Clear and remain
 blocked by active/finalizing Runs or queue-active Turns. Planning suggestions
 may fill an empty draft but never Send. The right rail shows only a capped safe

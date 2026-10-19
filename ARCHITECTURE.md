@@ -1126,6 +1126,16 @@ receipts; only later owner receipts carry action tokens. Private backup
 validation requires one receipt per input and recomputes owner request digests,
 including action ID, from immutable input and file evidence.
 
+Schema 41 reserves a separate `project_proposal` canonical Run source through
+an exact schema-40 table rebuild. The migration preserves every existing
+Run/Event reference and recreates all Run-owned indexes and triggers. SQLite
+INSERT and source-UPDATE guards reject the new source until a later exact
+Project planning-input/Run receipt and qualified runtime admission exist.
+Run-attention and owner Inbox validation also reject any proposal row planted
+while a guard was absent, so ordinary dashboard paths remain closed. Before
+real proposal Runs are admitted, the Run-attention retired-source constraint,
+retention logic and Inbox projection must be extended with that receipt.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance
