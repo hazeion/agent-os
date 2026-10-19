@@ -32,8 +32,8 @@ The older foundation is merged through [PR #231](https://github.com/hazeion/agen
 and [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow remains a stack of full, open PRs starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243), most recently
-[PR #316](https://github.com/hazeion/agent-os/pull/316), with the subsequent
-private [Linux helper origin slice](reviews/2026-09-30-linux-helper-origin.md).
+[PR #317](https://github.com/hazeion/agent-os/pull/317), with the subsequent
+private [namespace completion evidence](reviews/2026-09-30-namespace-completion-evidence.md).
 Open PRs, passing local
 checks and clean mergeability are not merged-product or issue-close evidence.
 Hosted CI, normal review and integrated acceptance remain gates. No blanket
@@ -85,6 +85,7 @@ residual QA based on a fixture or an unmerged change alone.
    delegation ledger, not its dispatcher. [Official release compatibility](reviews/2026-09-29-official-hermes-compatibility.md),
    [worker scope](reviews/2026-09-30-project-worker-scope.md),
    [namespace handoff](reviews/2026-09-30-project-worker-namespace.md),
+   [immutable local completion evidence](reviews/2026-09-30-namespace-completion-evidence.md),
    [durable journal](reviews/2026-09-30-project-worker-journal.md),
    [durable scope bookkeeping](reviews/2026-09-30-project-scope-journal.md),
    [private restart scope readback](reviews/2026-09-30-project-scope-readback.md),

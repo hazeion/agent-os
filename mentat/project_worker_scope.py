@@ -165,6 +165,7 @@ class LinuxWorkerScope:
         self.deadline_hit = False
         self.deadline_cleanup_verified = False
         self._namespace_handed_off = False
+        self._namespace_worker = None
         self._namespace_handles: list[int | socket.socket] = []
         self._runtime_image = None
         self._closed_witness = None
@@ -450,7 +451,10 @@ class LinuxWorkerScope:
                 prepared.handoff(self._control, broker, child, self.limits.wall_seconds, self._deadline)
                 exports = receive_ready(parent, min(self._deadline, time.monotonic() + 2))
                 self._namespace_handles.append(exports)
-                return NamespaceWorker(self, parent, exports, prepared._runtime_image)
+                handle = NamespaceWorker(self, parent, exports, prepared._runtime_image,
+                                         handoff_context=prepared._handoff_context)
+                self._namespace_worker = handle
+                return handle
             finally:
                 child.close()
 
