@@ -197,7 +197,15 @@ have clear independent reviews; hosted timing gains remain unverified.
    Both independent final reviews are clear after recursive library-path,
    overlapping ELF mapping and noncanonical alias refusals. Static ELF closure
    and negative loader-path checks do not prove package origin
-   or complete dynamic-loading behavior. Next implement supported host credential custody, complete runtime/model
+   or complete dynamic-loading behavior. The
+   [public-origin qualification](reviews/2026-09-30-project-runtime-origin.md)
+   rebuilds a fresh candidate from the pinned official Git/Python archives and
+   111 verified public wheels, checks the exact upstream versus supplemental
+   provenance relation, and exercises the same fixed isolated operation.
+   It excludes local generated metadata and modified Python sysconfig bytes.
+   This is selected artifact-origin evidence only; complete loader behavior,
+   system/helper provenance and provider/model readiness remain separate.
+   Next implement supported host credential custody, complete runtime/model
    qualification and durable scope admission, then
    exact Project execution admission and generated-output provenance.
 3. Extend the canonical Project/Run sources for generated deliverable

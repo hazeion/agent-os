@@ -276,6 +276,9 @@ class LinuxRuntimeImageTests(unittest.TestCase):
         fixture._prepare_image_fixture()
         inputs = fixture.inputs
         roots = namespaces.RuntimeRoots(*(Path(value) for value in values[:3]))
+        if os.environ.get("MENTAT_TEST_PUBLIC_ORIGIN") == "1":
+            from mentat.project_runtime_origin import VIRTUAL
+            roots = namespaces.RuntimeRoots(*(Path(VIRTUAL) / kind for kind in ("source", "venv", "python")))
         lease = images.ImmutableRuntimeImage(Path(values[3]), values[4])
         self.addCleanup(lease.close)
         sealed_libraries = os.environ.get("MENTAT_TEST_SEALED_LIBRARIES") == "1"
