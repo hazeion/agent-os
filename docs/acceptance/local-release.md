@@ -91,3 +91,19 @@ its disposable state because browser-group absence was false at cleanup.
 Later group absence does not change that result. Its final-only output lost the
 predicate state at timeout; the progress reporting change has only mock-test
 verification until a separately authorized actual run is recorded.
+
+The browser starts at owned `about:blank`. After verifying its exact loopback
+CDP listener/group, the fixed helper enables Runtime and Page, enables focus
+emulation, sets the fixed desktop metrics, then performs one initial navigation
+to the configured local origin's `/tasks`. It never reloads, retries navigation
+or accepts another target URL. A navigation error yields a fixed failure code.
+Progress includes fixed ready-state/location categories, snapshot count and
+observer-relative elapsed milliseconds; counters/time do not trigger progress
+emission. The parent's Chrome-spawn deadline remains authoritative.
+
+After waiting for owned browser/helper leaders, cleanup may observe their groups
+and the debug listener settling within the same existing 15-second window.
+It never grants a fresh window, resends a stop, or signals a discovered PID.
+Listener probes use only remaining time and require explicit connection refusal;
+an in-progress or unrelated network error does not prove the listener closed.
+This does not change any prior failed cleanup result.

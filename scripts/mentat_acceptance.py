@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import os
@@ -120,10 +121,10 @@ def browser_listener_owned(browser: subprocess.Popen, port: int, environment: di
         return False
 
 
-def listener_closed(port: int) -> bool:
+def listener_closed(port: int, *, timeout: float = 0.2) -> bool:
     with socket.socket() as connection:
-        connection.settimeout(0.2)
-        return connection.connect_ex(("127.0.0.1", port)) != 0
+        connection.settimeout(timeout)
+        return connection.connect_ex(("127.0.0.1", port)) == errno.ECONNREFUSED
 
 
 def wait_for_reusable_port(port: int, timeout: float = 75) -> None:
@@ -169,6 +170,7 @@ class Journey:
         self.browser_stop_requested: set[int] = set()
         self.browser_checks: dict[str, bool] = {}
         self.browser_diagnostics: dict[str, bool] = {}
+        self.browser_observation: dict = {}
         self.cleanup_observations: dict[str, bool] = {}
         self.launch_output = tempfile.TemporaryFile()
         self.opener = build_opener(ProxyHandler({}))
@@ -271,6 +273,21 @@ class Journey:
                 process.terminate()
         return self.browser_cleanup_deadline
 
+    def browser_quiescence(self, deadline: float) -> tuple[bool, bool, bool]:
+        while True:
+            browser_absent = self.browser is None or process_group_absent(self.browser.pid)
+            helper_absent = self.browser_helper is None or process_group_absent(self.browser_helper.pid)
+            remaining = deadline - time.monotonic()
+            debug_closed = self.browser_debug_port is None or (remaining > 0 and listener_closed(self.browser_debug_port, timeout=min(0.2, remaining)))
+            if self.browser_debug_port is not None and time.monotonic() > deadline:
+                debug_closed = False
+            if browser_absent and helper_absent and debug_closed:
+                return browser_absent, helper_absent, debug_closed
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return browser_absent, helper_absent, debug_closed
+            time.sleep(min(0.05, remaining))
+
     def capture_browser_evidence(self, output, *, require_final: bool) -> dict | None:
         # Positional reads never move the stdout descriptor shared with the child.
         raw = os.pread(output.fileno(), 16385, 0)
@@ -290,6 +307,7 @@ class Journey:
         progress_count = progress_bytes = 0
         latest = None
         diagnostics = None
+        observation = None
         for line in lines:
             try:
                 value = json.loads(line, object_pairs_hook=unique_members)
@@ -301,26 +319,34 @@ class Journey:
                     and all(type(check) is bool for check in value["checks"].values())
                     and isinstance(value.get("diagnostics"), dict) and set(value["diagnostics"]) == BROWSER_DIAGNOSTICS
                     and all(type(item) is bool for item in value["diagnostics"].values()), "browser_output_invalid")
+            observed = value.get("observation")
+            require(isinstance(observed, dict) and set(observed) == {"ready_state", "location_category", "snapshots", "observer_elapsed_ms"}
+                    and isinstance(observed["ready_state"], str) and observed["ready_state"] in {"unknown", "loading", "interactive", "complete", "other"}
+                    and isinstance(observed["location_category"], str) and observed["location_category"] in {"unknown", "tasks", "blank", "browser_error", "auth", "other"}
+                    and type(observed["snapshots"]) is int and 0 <= observed["snapshots"] <= 512
+                    and type(observed["observer_elapsed_ms"]) is int and 0 <= observed["observer_elapsed_ms"] <= 40000, "browser_output_invalid")
             if "event" in value:
                 progress_count += 1
                 progress_bytes += len(line) + 1
                 require(progress_count <= 16 and progress_bytes <= 12288, "browser_output_limit")
-                require(set(value) == {"schema_version", "event", "checks", "diagnostics"}
+                require(set(value) == {"schema_version", "event", "checks", "diagnostics", "observation"}
                         and value["event"] == "progress", "browser_output_invalid")
             else:
                 require(len(line) + 1 <= 4096, "browser_output_limit")
-                require(set(value) == {"schema_version", "ready", "code", "checks", "diagnostics"}
+                require(set(value) == {"schema_version", "ready", "code", "checks", "diagnostics", "observation"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
                         and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed",
-                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid"},
+                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_navigation_failed"},
                         "browser_output_invalid")
                 final = value
             latest = dict(value["checks"])
             diagnostics = dict(value["diagnostics"])
+            observation = dict(observed)
         require(not require_final or final is not None, "browser_final_evidence_missing")
         if latest is not None:
             self.browser_checks = latest
             self.browser_diagnostics = diagnostics
+            self.browser_observation = observation
         return final
 
     def render_browser(self, chrome: Path, project_id: str, task_id: str) -> None:
@@ -337,7 +363,7 @@ class Journey:
             str(chrome), "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
             "--disable-background-networking", "--window-size=1440,1000",
             "--remote-debugging-address=127.0.0.1", f"--remote-debugging-port={self.browser_debug_port}",
-            "--user-data-dir=" + str(self.root / "browser-profile"), self.origin + "/tasks",
+            "--user-data-dir=" + str(self.root / "browser-profile"), "about:blank",
         ], env=self.environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         owned = False
         while self.browser.poll() is None and time.monotonic() < deadline - 1:
@@ -379,8 +405,7 @@ class Journey:
         except subprocess.TimeoutExpired:
             raise AcceptanceFailure("browser_stop_timeout") from None
         require(self.browser.returncode in {0, -signal.SIGTERM, 128 + signal.SIGTERM}, "browser_stop_failed")
-        require(process_group_absent(self.browser.pid) and process_group_absent(self.browser_helper.pid)
-                and listener_closed(self.browser_debug_port), "browser_cleanup_incomplete")
+        require(all(self.browser_quiescence(cleanup_deadline)), "browser_cleanup_incomplete")
 
     def run(self, chrome: Path | None = None, *, diagnostic_port_wait: bool = False) -> dict:
         require(self.cli("setup").get("ok") is True, "setup_failed")
@@ -445,10 +470,7 @@ class Journey:
                 self.browser_helper.stdin.close()
             except OSError:
                 pass
-        if self.browser is not None:
-            browser_group_absent = process_group_absent(self.browser.pid)
-        if self.browser_helper is not None:
-            helper_group_absent = process_group_absent(self.browser_helper.pid)
+        browser_group_absent, helper_group_absent, debug_closed = self.browser_quiescence(browser_deadline)
         if self.process is not None:
             # Only signal the Popen handle we created, never a discovered PID or listener.
             if self.process.poll() is None:
@@ -465,7 +487,7 @@ class Journey:
             "browser_group_absent": browser_group_absent,
             "browser_helper_terminal": helper_terminal,
             "browser_helper_group_absent": helper_group_absent,
-            "browser_debug_listener_closed": self.browser_debug_port is None or listener_closed(self.browser_debug_port),
+            "browser_debug_listener_closed": debug_closed,
             "launcher_terminal": launcher_terminal,
             "launcher_groups_absent": all(process_group_absent(group) for group in self.launcher_groups),
             "captured_children_absent": all(process_absent(pid) for pid in self.children),
@@ -507,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
         if journey is not None and journey.browser_checks:
             report["browser_checks"] = journey.browser_checks
             report["browser_diagnostics"] = journey.browser_diagnostics
+            report["browser_observation"] = journey.browser_observation
         if not cleaned:
             primary_phase = report.get("phase", "complete")
             primary_code = report.get("code", "none")

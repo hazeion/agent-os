@@ -1,4 +1,4 @@
-// Source-checkout acceptance only. No browser launch, arbitrary eval or navigation.
+// Source-checkout acceptance only. One fixed owned Tasks navigation; no arbitrary evaluation.
 import { writeSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -49,6 +49,10 @@ export function expression(config) {
       project_selected: project?.getAttribute('aria-current') === 'true',
       project_visible: projectText?.textContent.trim() === 'Disposable acceptance Project' && visible(projectText),
       task_visible: taskText?.textContent.trim() === 'Disposable acceptance Task' && visible(taskText),
+      observation: {
+        ready_state: ['loading','interactive','complete'].includes(document.readyState) ? document.readyState : 'other',
+        location_category: location.origin === ${JSON.stringify(config.origin)} && location.pathname === '/tasks' ? 'tasks' : location.href === 'about:blank' ? 'blank' : location.protocol === 'chrome-error:' ? 'browser_error' : location.origin === ${JSON.stringify(config.origin)} && ['/login','/auth','/owner'].includes(location.pathname) ? 'auth' : 'other'
+      },
       diagnostics: {
         project_exists: Boolean(project), project_text_matches: projectText?.textContent.trim() === 'Disposable acceptance Project',
         project_renderable: renderable(projectText), project_intersects_viewport: intersects(projectText),
@@ -76,12 +80,14 @@ export async function observe(input, dependencies = {}) {
   let socket, sequence = 1, exceptions = 0;
   const pending = new Map();
   const diagnostics = Object.fromEntries(DIAGNOSTICS.map(key => [key, false]));
-  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', checks, diagnostics };
+  const observation = { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 };
+  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', checks, diagnostics, observation };
   let progressCount = 0, progressBytes = 0, lastProgress;
   const publish = () => {
-    const progress = { schema_version: 1, event: 'progress', checks: { ...checks }, diagnostics: { ...diagnostics } };
-    const fingerprint = JSON.stringify(progress);
-    const bytes = Buffer.byteLength(fingerprint) + 1;
+    const progress = { schema_version: 1, event: 'progress', checks: { ...checks }, diagnostics: { ...diagnostics }, observation: { ...observation } };
+    const fingerprint = JSON.stringify({ checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
+    const encoded = JSON.stringify(progress);
+    const bytes = Buffer.byteLength(encoded) + 1;
     // Reserve 4KiB for the fixed final record within the parent's 16KiB cap.
     if (progressCount < 16 && progressBytes + bytes <= 12288 && fingerprint !== lastProgress) {
       progressCount++; progressBytes += bytes; lastProgress = fingerprint;
@@ -90,7 +96,7 @@ export async function observe(input, dependencies = {}) {
   };
   publish();
   function call(method, params) {
-    if (!['Runtime.enable','Runtime.evaluate','Emulation.setDeviceMetricsOverride'].includes(method)) throw new Error('browser_protocol_failed');
+    if (!['Runtime.enable','Page.enable','Emulation.setFocusEmulationEnabled','Runtime.evaluate','Emulation.setDeviceMetricsOverride','Page.navigate'].includes(method)) throw new Error('browser_protocol_failed');
     const id = sequence++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(new Error('browser_readiness_timeout')); }, Math.max(1, Math.min(500, remaining())));
@@ -112,8 +118,7 @@ export async function observe(input, dependencies = {}) {
         if (!Array.isArray(pages) || pages.length > 16) throw new Error('browser_protocol_failed');
         for (const page of pages) {
           if (page.type !== 'page' || typeof page.url !== 'string' || typeof page.webSocketDebuggerUrl !== 'string') continue;
-          const url = new URL(page.url);
-          if (url.origin !== config.origin || url.pathname !== '/tasks') continue;
+          if (page.url !== 'about:blank') continue;
           const ws = new URL(page.webSocketDebuggerUrl);
           if (ws.protocol !== 'ws:' || ws.hostname !== '127.0.0.1' || Number(ws.port) !== config.debug_port || !/^\/devtools\/page\/[A-Za-z0-9-]+$/.test(ws.pathname) || ws.search || ws.hash || ws.username || ws.password) throw new Error('browser_protocol_failed');
           endpoint = ws.href; break;
@@ -138,14 +143,19 @@ export async function observe(input, dependencies = {}) {
       } else if (message.method === 'Runtime.exceptionThrown') exceptions++;
     };
     await call('Runtime.enable', {});
+    await call('Page.enable', {});
+    await call('Emulation.setFocusEmulationEnabled', { enabled: true });
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const navigation = await call('Page.navigate', { url: config.origin + '/tasks' });
+    if (navigation.errorText) { result.code = 'browser_navigation_failed'; return result; }
     while (remaining() > 0 && socket.readyState === 1) {
       const snapshot = await call('Runtime.evaluate', { expression: expression(config), returnByValue: true, awaitPromise: false, timeout: 250 });
-      const { diagnostics: observedDiagnostics, ...observedChecks } = snapshot.result?.value || {};
+      const { diagnostics: observedDiagnostics, observation: observedObservation, ...observedChecks } = snapshot.result?.value || {};
       const value = { ...observedChecks, no_js_exceptions: exceptions === 0 && !snapshot.exceptionDetails };
-      if (!validChecks(value) || !validDiagnostics(observedDiagnostics)) { result.code = 'browser_readiness_invalid'; return result; }
+      if (!validChecks(value) || !validDiagnostics(observedDiagnostics) || !observedObservation || Object.keys(observedObservation).sort().join(',') !== 'location_category,ready_state' || !['loading','interactive','complete','other'].includes(observedObservation.ready_state) || !['tasks','blank','browser_error','auth','other'].includes(observedObservation.location_category)) { result.code = 'browser_readiness_invalid'; return result; }
       Object.assign(checks, value);
       Object.assign(diagnostics, observedDiagnostics);
+      Object.assign(observation, observedObservation, { snapshots: observation.snapshots + 1, observer_elapsed_ms: Math.max(0, Math.min(40000, Math.floor(config.remaining_ms - remaining()))) });
       publish();
       if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; return result; }
       if (exceptions) { result.code = 'browser_js_exception'; return result; }
@@ -169,7 +179,7 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let result;
   try { result = await main(); }
-  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])) }; }
+  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])), observation: { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 } }; }
   // Never wait for a CDP close handshake to release the exact owned helper.
   writeSync(1, JSON.stringify(result) + '\n');
   process.exit(result.ready ? 0 : 1);

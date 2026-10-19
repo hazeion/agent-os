@@ -12,6 +12,10 @@ from unittest.mock import patch
 from scripts import mentat_acceptance as acceptance
 
 
+LISTENER_PROBE = acceptance.listener_closed
+OBSERVATION = {"ready_state": "complete", "location_category": "tasks", "snapshots": 1, "observer_elapsed_ms": 1}
+
+
 class LocalReleaseAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.port = patch.object(acceptance, "free_port", return_value=54321)
@@ -189,6 +193,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             def fail(journey, *_args, **_kwargs):
                 journey.phase = "browser"
                 journey.browser, journey.process = browser, launcher
+                journey.browser_cleanup_deadline = 0
                 journey.launcher_groups = {launcher.pid}
                 journey.children = (45678, 56789)
                 raise acceptance.AcceptanceFailure("browser_child_remains")
@@ -277,9 +282,10 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             helper.stdin.write.side_effect = BrokenPipeError
             with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                 acceptance, "browser_listener_owned", return_value=True
-            ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]):
+            ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]) as spawned:
                 with self.assertRaises(BrokenPipeError):
                     journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+            self.assertEqual(spawned.call_args_list[0].args[0][-1], "about:blank")
             self.assertIs(journey.browser, browser)
             self.assertIs(journey.browser_helper, helper)
             self.assertTrue(journey.cleanup())
@@ -299,7 +305,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 helper = unittest.mock.Mock(pid=34567, returncode=0)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 checks["task_visible"] = invalid
-                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}}
+                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION)}
                 output = unittest.mock.MagicMock()
                 output.__enter__.return_value = output
                 output.read.return_value = (json.dumps(result) + "\n").encode()
@@ -325,7 +331,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             checks = {name: True for name in acceptance.BROWSER_CHECKS}
             output = unittest.mock.MagicMock()
             output.__enter__.return_value = output
-            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}}) + "\n").encode()
+            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION)}) + "\n").encode()
             with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                 acceptance, "browser_listener_owned", return_value=True
             ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
@@ -344,7 +350,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
     def test_progress_capture_is_bounded_positional_and_never_final_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
         with TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
             journey = acceptance.Journey(Path(directory))
             self.addCleanup(journey.launch_output.close)
@@ -365,9 +371,9 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
     def test_invalid_framing_diagnostics_and_duplicate_final_refuse_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics}
+        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
         line = (json.dumps(final) + "\n").encode()
-        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
         progress_line = (json.dumps(progress) + "\n").encode()
         for raw in (line + line, line + b"unframed", b"x" * 16385,
                     progress_line * 17,
@@ -376,6 +382,10 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                     line.replace(b'"ready": true', b'"ready": false, "ready": true'),
                     progress_line.replace(b'"event": "progress"', b'"event": "other", "event": "progress"') + line,
                     line.replace(b'"task_exists": true', b'"task_exists": false, "task_exists": true'),
+                    (json.dumps({**final, "observation": {**OBSERVATION, "location_category": "http://private.invalid"}}) + "\n").encode(),
+                    (json.dumps({**final, "observation": {**OBSERVATION, "ready_state": []}}) + "\n").encode(),
+                    (json.dumps({**final, "observation": {**OBSERVATION, "snapshots": True}}) + "\n").encode(),
+                    (json.dumps({**final, "observation": {**OBSERVATION, "observer_elapsed_ms": 40001}}) + "\n").encode(),
                     (json.dumps({**final, "diagnostics": {**diagnostics, "raw_dom": "private"}}) + "\n").encode()):
             with self.subTest(raw_length=len(raw)), TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
                 journey = acceptance.Journey(Path(directory))
@@ -392,7 +402,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 self.addCleanup(journey.launch_output.close)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics}
+                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
                 record.update({"ready": True, "code": "ready"} if late else {"event": "progress"})
                 raw = (json.dumps(record) + "\n").encode()
                 browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
@@ -422,6 +432,54 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
         self.assertEqual(result.returncode, 0, result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace"))
 
+    def test_listener_probe_requires_refusal_not_uncertain_connection_failure(self):
+        for code, expected in ((0, False), (acceptance.errno.ECONNREFUSED, True),
+                               (acceptance.errno.EINPROGRESS, False), (acceptance.errno.ENETUNREACH, False)):
+            with self.subTest(code=code), patch.object(acceptance.socket, "socket") as factory:
+                connection = factory.return_value.__enter__.return_value
+                connection.connect_ex.return_value = code
+                self.assertIs(LISTENER_PROBE(54322, timeout=0.01), expected)
+                connection.settimeout.assert_called_once_with(0.01)
+                connection.connect_ex.assert_called_once_with(("127.0.0.1", 54322))
+
+    def test_debug_listener_quiescence_caps_probe_to_remaining_original_budget(self):
+        with TemporaryDirectory() as directory:
+            journey = acceptance.Journey(Path(directory))
+            self.addCleanup(journey.launch_output.close)
+            journey.browser_debug_port = 54322
+            with patch.object(acceptance.time, "monotonic", return_value=14.99), patch.object(
+                acceptance, "listener_closed", return_value=True
+            ) as probe:
+                self.assertTrue(all(journey.browser_quiescence(15)))
+                self.assertLessEqual(probe.call_args.kwargs["timeout"], 0.011)
+            with patch.object(acceptance.time, "monotonic", return_value=15), patch.object(
+                acceptance, "listener_closed"
+            ) as probe:
+                self.assertFalse(journey.browser_quiescence(15)[2])
+                probe.assert_not_called()
+
+    def test_browser_quiescence_observes_owned_groups_within_original_deadline_only(self):
+        for remains in (False, True):
+            with self.subTest(permanent_group=remains), TemporaryDirectory() as directory:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                journey.browser = unittest.mock.Mock(pid=23456)
+                journey.browser.poll.return_value = 0
+                journey.browser_cleanup_deadline = 15
+                clock = [14.9]
+                def pause(seconds):
+                    clock[0] += seconds
+                with patch.object(acceptance.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
+                    acceptance.time, "sleep", side_effect=pause
+                ), patch.object(acceptance, "process_group_absent", side_effect=lambda _: not remains and clock[0] >= 14.95):
+                    self.assertEqual(journey.browser_quiescence(15)[0], not remains)
+                    self.assertLessEqual(clock[0], 15)
+                    self.assertEqual(journey.browser_cleanup_deadline, 15)
+                    if remains:
+                        self.assertFalse(journey.browser_quiescence(journey.begin_browser_cleanup())[0])
+                        self.assertEqual(clock[0], 15)
+                journey.browser.terminate.assert_not_called()
+
     def test_restart_wait_has_a_deadline_and_does_not_relaunch(self):
         with patch.object(acceptance.time, "monotonic", side_effect=[0, 76]), patch.object(
             acceptance.socket, "socket"
@@ -440,6 +498,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             launcher = unittest.mock.Mock()
             launcher.poll.return_value = None
             journey.browser, journey.process = browser, launcher
+            journey.browser_cleanup_deadline = 0
             with patch.object(acceptance, "process_group_absent", return_value=False):
                 self.assertFalse(journey.cleanup())
             browser.terminate.assert_called_once()
