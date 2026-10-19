@@ -344,6 +344,15 @@ reach EOF, triggering the same local cleanup; this must be tested with real
 Linux ownership rules before qualification. No claim is made that a killed
 parent can publish cleanup evidence. The external supervisor must treat that
 interruption as unqualified until reconciliation, not replay a previous lease.
+For normal completion, observe the exact leader's exit0 with waitid WNOWAIT
+while its identity remains pinned, then reap it and perform only read-only
+owned-group absence probes. If any group remains after reap, refuse the lease
+and retain CLEANUP_UNCERTAIN evidence. Never signal that numeric group after
+leader reap: it may have been reused. Failure-path termination is permitted
+only while the exact original leader remains unreaped and pinned. No poll or
+wait operation may accidentally reap it before that signal authority ends.
+This protocol does not promise that every failure can be cleaned automatically.
+
 A successful lease owns its17 FDs until explicit close; close is idempotent and
 must not release a descriptor while any private read is active.
 
@@ -360,6 +369,10 @@ F_GET_SEALS result. Exercise shared-offset changes, incorrect hash/size/seals,
 failed ACK after parent receive, worker exit after send before ACK, decoder
 survival, parent death, deadline at every transition and cleanup uncertainty.
 Assert exact ownership/FD counts and no lease publication on each failure.
+Include a normal-exit0 leader with surviving descendant and a reused-group
+observation after reap: both must refuse, retain uncertainty and issue no
+post-reap signal. Instrument poll/wait paths so premature reaping cannot hide
+an unsafe cleanup signal.
 
 Portable tests may substitute credentials/seals only to test refusal logic and
 must identify that substitution. Actual Linux positive qualification requires
