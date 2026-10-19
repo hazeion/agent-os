@@ -102,12 +102,15 @@ class PreparedNamespace:
     """
     def __init__(self, roots: RuntimeRoots, query: bytes, query_digest: str,
                  model: str, *, vision: bool = False, image: bytes | None = None,
-                 image_digest: str | None = None, image_extension: str = "", runtime_image=None):
+                 image_digest: str | None = None, image_extension: str = "", runtime_image=None,
+                 sealed_libraries: bool = False):
         if (not IS_LINUX or not callable(getattr(os, "memfd_create", None))
                 or type(roots) is not RuntimeRoots or type(vision) is not bool
                 or not isinstance(model, str) or _MODEL.fullmatch(model) is None
                 or "://" in model or model.startswith("-")):
             raise WorkerScopeError("worker_namespace.unsupported")
+        if type(sealed_libraries) is not bool or sealed_libraries and runtime_image is None:
+            raise WorkerScopeError("worker_namespace.runtime")
         _snapshot(query, query_digest, 1024 * 1024)
         try:
             query.decode("utf-8")
@@ -130,13 +133,14 @@ class PreparedNamespace:
                 from mentat.project_runtime_image import ImmutableRuntimeImage
                 if type(runtime_image) is not ImmutableRuntimeImage:
                     raise WorkerScopeError("worker_namespace.runtime")
-                self._fds.extend(runtime_image.acquire_roots(check_bootstrap=True))
+                self._fds.extend(runtime_image.acquire_roots(check_bootstrap=True, sealed_libraries=sealed_libraries))
                 self._runtime_image = runtime_image
             else:
                 for path in (roots.source, roots.venv, roots.python):
                     self._fds.append(_open_directory(path))
-            for path in (Path("/usr/lib"), Path("/usr/lib64")):
-                self._fds.append(_open_directory(path))
+            if not sealed_libraries:
+                for path in (Path("/usr/lib"), Path("/usr/lib64")):
+                    self._fds.append(_open_directory(path))
             # Fixed installation sentinels; release/content qualification remains
             # a separate prerequisite owned by the trusted host controller.
             for root_fd, name in ((self._fds[0], "hermes_cli/main.py"), (self._fds[1], "pyvenv.cfg")):
@@ -179,7 +183,11 @@ class PreparedNamespace:
             self._runtime_image.verify()
         config = {"model": self._model, "vision": self._vision, "venv": self._paths[1],
                   "image_extension": self._extension, "image_digest": self._image_digest,
-                  "wall_seconds": wall_seconds}
+                  "wall_seconds": wall_seconds, "unreachable_libraries": []}
+        if self._runtime_image is not None:
+            from mentat.project_runtime_libraries import validate_unreachable_paths
+            config["unreachable_libraries"] = list(validate_unreachable_paths(self._runtime_image.unreachable_paths,
+                                                  tuple(Path(value) for value in self._paths)))
         config_fd = _sealed(_encoded(config), "mentat-config")
         try:
             descriptors = (*self._fds, config_fd, broker.fileno(), lifecycle.fileno())

@@ -189,7 +189,15 @@ have clear independent reviews; hosted timing gains remain unverified.
    public candidate through canonical image inputs and the durable fake broker.
    This proves byte/lifecycle containment only; installed dependency origin,
    system-library closure and helper/model qualification remain unproved.
-   Next implement supported host credential custody, complete runtime/model
+   The [sealed library projection](reviews/2026-09-30-project-runtime-libraries.md)
+   extends image-backed qualification to all five runtime/library roots with no
+   raw host library opens. The final 110-test actual Linux group passes, including
+   unchanged stock/PIL/canonical image and durable fake-broker flow. Fixed native
+   synthetic setup removes repeated CLI startups without widening the wall.
+   Both independent final reviews are clear after recursive library-path,
+   overlapping ELF mapping and noncanonical alias refusals. Static ELF closure
+   and negative loader-path checks do not prove package origin
+   or complete dynamic-loading behavior. Next implement supported host credential custody, complete runtime/model
    qualification and durable scope admission, then
    exact Project execution admission and generated-output provenance.
 3. Extend the canonical Project/Run sources for generated deliverable

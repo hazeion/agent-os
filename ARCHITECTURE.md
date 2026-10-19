@@ -1237,6 +1237,33 @@ source/dependency provenance or real model/credential qualification. Host
 system-library closure and helper provenance remain separate production gates;
 this image component adds no Agent capability or Run/provider authority.
 
+Image-backed qualification may also select a five-root sealed-library mode:
+source, venv, Python and both system-library roots must come from the same
+read-only image mount. That mode opens no raw host /usr/lib or /usr/lib64 and
+refuses missing roots/report rather than falling back. A bounded nonexecuting
+ELF64 scanner inventories direct dependencies and validates unique contiguous
+string mappings, ORIGIN containment, interpreter paths and recursive loader
+paths. Selected root-owned system bytes and aliases are bounded and hashed;
+the result is a static dependency superset, not complete dlopen/plugin proof.
+
+Unreachable public build-time RPATH components remain in unchanged binaries,
+but are recorded as negative mount invariants and never used as dependency
+sources. Canonical path validation excludes writable/input/process roots and
+runtime/system mount ancestors or aliases, including double-slash spellings.
+The namespace verifies their absence before executing the CLI. Synthetic
+settings use the same fixed supported stock set/get APIs in one bounded child,
+with exact typed readback and no owner-home access. Source/dependency origin,
+helper/model qualification and actual Run admission remain separate gates.
+
+The qualified candidate test exercises the unchanged official CLI, Python/PIL,
+accepted native image and durable fake-broker flow with only the five sealed
+roots. Both initial and recursively selected system ELF loader paths share the
+same audit. String-table mapping checks every LOAD boundary, including
+identically translated overlaps, and rejects uint64 overflow. Negative mount
+invariants reject noncanonical double-slash aliases before prefix comparison.
+This evidence covers the exercised operation only and grants no live-provider
+or production Run readiness.
+
 Schema 43 stores immutable Project proposal controller generations and one
 durable inference-call reservation per generation in the private database.
 The generation binds the exact schema-42 Run/input/binding graph, fixed policy,
