@@ -98,7 +98,10 @@ residual QA based on a fixture or an unmerged change alone.
    a lost token, settle a Run, prove durable closure or release capacity.
    Implement reviewed atomic admission with shared
    cross-source capacity, exact inputs and durable scope/work receipts; then
-   registered proposal output and owner Apply. The schema-41 no-dispatch guard
+   registered proposal output and owner Apply. The existing Task/Console gate
+   now preserves [canonical Agent capacity continuity](reviews/2026-09-30-agent-capacity-continuity.md)
+   across changed adapter scopes; this is a shared admission prerequisite, not
+   complete Project reservation. The schema-41 no-dispatch guard
    and default live proposal validation remain closed until their complete
    admission/provenance/Inbox/backup requirements pass.
 
