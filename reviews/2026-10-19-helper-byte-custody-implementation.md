@@ -98,3 +98,34 @@ actual-Linux skip in 0.772 seconds, with ResourceWarnings as errors. Log:
 /private/tmp/mentat-helper-byte-custody-corrective-focused.log. Tests are stopped
 for the next coordinated browser window. Independent corrective source review,
 scanner/package gates and actual Linux qualification remain pending.
+
+## Exact component package gate
+
+After both independent source reviews cleared d9dfbe1, the unchanged tracked
+secret gate passed with the existing 245-entry baseline and no additions.
+Root then authorized one scratch wheel/sdist build at exact source pin
+d9dfbe119160d658c76f14cfa6f3680888001faa. That gate passed; no additional test
+batch or runtime process was launched.
+
+Evidence root: /private/tmp/mentat-helper-byte-custody-package.es019sv4.
+Its result.json records artifact SHA256 values and sizes, exact source/runtime
+manifests, strict verifier output and fresh offline installation results.
+All 1,112 tracked Git blobs matched before and after the build; all 2,636 public
+sdist source members matched that component's archived source. Strict wheel
+and sdist membership, RECORD integrity and private exclusions passed without
+an inventory-policy change. Six installed component modules matched source;
+the Mac unsupported-host call refused before socket creation or process spawn.
+
+Only the byte-verified frozen standalone runtime was reused. Component web
+sources and Node pins were identical to frozen QA1c33. All 2,451 runtime files,
+24,817,140 bytes, matched the existing ffef manifest before copying, after
+copying, after normal staging and after the build. The frozen checkout stayed
+clean at its original head. No Node rebuild, network, real custody worker,
+signature/decoder, helper ELF, library load, FUSE or Linux execution occurred.
+
+This is exact component Mac packaging/import/refusal evidence, not an aggregate
+QA artifact or operational qualification. Actual Linux descriptor/seal and
+ownership behavior, authenticated signature execution, immutable loader
+namespace, helper execution, privilege/FUSE teardown and production admission
+remain separate unresolved gates. This evidence-only review change is outside
+the packaged public inventory; the source and artifact gate pin remains d9dfbe1.
