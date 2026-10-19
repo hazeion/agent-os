@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -30,8 +31,8 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                         "GOOGLE_APPLICATION_CREDENTIALS": "/owner/key", "HTTPS_PROXY": "http://proxy"}, clear=True):
             environment = acceptance.isolated_environment(Path("/disposable"))
         self.assertEqual(environment["PATH"], "/tool/bin")
-        self.assertEqual(environment["HOME"], "/disposable/home")
-        self.assertEqual(environment["HERMES_HOME"], "/disposable/hermes")
+        self.assertEqual(environment["HOME"], str(Path("/disposable") / "home"))
+        self.assertEqual(environment["HERMES_HOME"], str(Path("/disposable") / "hermes"))
         for key in ("OPENAI_API_KEY", "MENTAT_DATA_DIR", "MENTAT_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "HTTPS_PROXY"):
             self.assertNotIn(key, environment)
 
@@ -54,6 +55,17 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                             journey.run()
                         self.assertEqual(cli.call_count, 2)
                         self.assertNotIn("offline_backup_validated_by_restore_preview", journey.completed)
+
+    def test_unsupported_host_refuses_before_journey_or_process_creation(self):
+        with patch.object(acceptance, "os", SimpleNamespace(name="nt")), patch.object(
+            acceptance, "Journey"
+        ) as journey, patch.object(acceptance.subprocess, "Popen") as spawn, patch("builtins.print") as output:
+            self.assertEqual(acceptance.main([]), 1)
+            journey.assert_not_called()
+            spawn.assert_not_called()
+        report = json.loads(output.call_args.args[0])
+        self.assertEqual(report["code"], "posix_host_required")
+        self.assertTrue(report["owned_state_removed"])
 
     def test_nonfixed_requests_fail_before_network(self):
         with TemporaryDirectory() as directory:
@@ -119,6 +131,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertIs(spawn.call_args.kwargs["start_new_session"], True)
             self.assertEqual(journey.launcher_groups, {23456})
 
+    @unittest.skipUnless(acceptance.os.name == "posix", "POSIX-only main lifecycle boundary")
     def test_incomplete_cleanup_preserves_owned_directory_and_fails_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "owned"
@@ -137,6 +150,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 self.assertEqual(report["primary_code"], "launcher_exited")
             self.assertTrue(root.is_dir())
 
+    @unittest.skipUnless(acceptance.os.name == "posix", "POSIX-only main lifecycle boundary")
     def test_browser_timeout_retains_primary_failure_without_command_disclosure(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "owned"
@@ -163,6 +177,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertNotIn("/private/command", output.call_args.args[0])
             self.assertTrue(root.is_dir())
 
+    @unittest.skipUnless(acceptance.os.name == "posix", "POSIX-only main lifecycle boundary")
     def test_cleanup_report_checks_every_owned_boundary_after_browser_group_failure(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "owned"
@@ -205,6 +220,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertNotIn("23456", output.call_args.args[0])
             self.assertNotIn(str(root), output.call_args.args[0])
 
+    @unittest.skipUnless(acceptance.os.name == "posix", "POSIX-only main lifecycle boundary")
     def test_cleanup_exception_preserves_primary_code_without_exception_data(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "owned"
@@ -248,7 +264,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 acceptance.shutil, "which", return_value="/lsof"
             ), patch.object(acceptance.subprocess, "run", return_value=unittest.mock.Mock(
                 returncode=0, stdout=b"p23456\nn" + address + b"\n"
-            )), patch.object(acceptance.os, "getpgid", return_value=group):
+            )), patch.object(acceptance.os, "getpgid", return_value=group, create=True):
                 self.assertIs(acceptance.browser_listener_owned(browser, 54322, {}), expected)
         browser.terminate.assert_not_called()
 
@@ -291,7 +307,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                     acceptance, "browser_listener_owned", return_value=True
                 ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
                     acceptance.tempfile, "TemporaryFile", return_value=output
-                ), patch.object(acceptance.os, "pread", side_effect=lambda *_: output.read.return_value):
+                ), patch.object(acceptance.os, "pread", side_effect=lambda *_: output.read.return_value, create=True):
                     with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_(readiness_failed|output_invalid)"):
                         journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
                 browser.terminate.assert_not_called()
@@ -314,7 +330,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 acceptance, "browser_listener_owned", return_value=True
             ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
                 acceptance.tempfile, "TemporaryFile", return_value=output
-            ), patch.object(acceptance.os, "pread", side_effect=lambda *_: output.read.return_value), patch.object(acceptance.time, "monotonic", return_value=0):
+            ), patch.object(acceptance.os, "pread", side_effect=lambda *_: output.read.return_value, create=True), patch.object(acceptance.time, "monotonic", return_value=0):
                 with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_stop_timeout"):
                     journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
             self.assertEqual(journey.browser_cleanup_deadline, 15)
@@ -324,6 +340,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             browser.terminate.assert_called_once()
             self.assertEqual([call.kwargs["timeout"] for call in browser.wait.call_args_list], [15, 0])
 
+    @unittest.skipUnless(hasattr(acceptance.os, "pread"), "Native positional descriptor reads require POSIX")
     def test_progress_capture_is_bounded_positional_and_never_final_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
@@ -350,19 +367,27 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
         final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics}
         line = (json.dumps(final) + "\n").encode()
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics}
+        progress_line = (json.dumps(progress) + "\n").encode()
         for raw in (line + line, line + b"unframed", b"x" * 16385,
+                    progress_line * 17,
+                    b" " * 12288 + progress_line,
+                    b" " * 4096 + line,
+                    line.replace(b'"ready": true', b'"ready": false, "ready": true'),
+                    progress_line.replace(b'"event": "progress"', b'"event": "other", "event": "progress"') + line,
+                    line.replace(b'"task_exists": true', b'"task_exists": false, "task_exists": true'),
                     (json.dumps({**final, "diagnostics": {**diagnostics, "raw_dom": "private"}}) + "\n").encode()):
             with self.subTest(raw_length=len(raw)), TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
                 journey = acceptance.Journey(Path(directory))
                 self.addCleanup(journey.launch_output.close)
                 output.write(raw); output.flush()
-                with self.assertRaises(acceptance.AcceptanceFailure):
+                with patch.object(acceptance.os, "pread", return_value=raw, create=True), self.assertRaises(acceptance.AcceptanceFailure):
                     journey.capture_browser_evidence(output, require_final=True)
                 self.assertEqual(journey.browser_checks, {})
 
     def test_browser_timeout_retains_progress_without_promoting_it_or_late_final(self):
-        for late in (False, True):
-            with self.subTest(late_final=late), TemporaryDirectory() as directory:
+        for late, capture_fault in ((False, False), (True, False), (False, True)):
+            with self.subTest(late_final=late, capture_fault=capture_fault), TemporaryDirectory() as directory:
                 journey = acceptance.Journey(Path(directory))
                 self.addCleanup(journey.launch_output.close)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
@@ -381,12 +406,12 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                     acceptance, "browser_listener_owned", return_value=True
                 ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
-                    acceptance.os, "pread", return_value=raw
+                    acceptance.os, "pread", return_value=raw, side_effect=OSError("private read failure") if capture_fault else None, create=True
                 ), patch.object(acceptance.time, "monotonic", side_effect=lambda: clock[0]):
                     with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_readiness_timeout"):
                         journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
-                self.assertEqual(journey.browser_checks, checks)
-                self.assertEqual(journey.browser_diagnostics, diagnostics)
+                self.assertEqual(journey.browser_checks, {} if capture_fault else checks)
+                self.assertEqual(journey.browser_diagnostics, {} if capture_fault else diagnostics)
                 self.assertNotIn("isolated_browser_render", journey.completed)
                 browser.terminate.assert_not_called()
 
@@ -442,6 +467,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(acceptance.AcceptanceFailure, "launcher_stop_failed"):
                     journey.stop()
 
+    @unittest.skipUnless(acceptance.os.name == "posix", "POSIX-only main lifecycle boundary")
     def test_failure_report_never_prints_exception_data_or_private_paths(self):
         with patch.object(acceptance.Journey, "run", side_effect=OSError("secret /owner/path")), patch(
             "builtins.print"

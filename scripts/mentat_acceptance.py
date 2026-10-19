@@ -279,12 +279,20 @@ class Journey:
         tail = lines.pop()
         require(not require_final or not tail, "browser_output_invalid")
         require(len(lines) <= 17, "browser_output_limit")
+        def unique_members(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate_member")
+                value[key] = item
+            return value
         final = None
+        progress_count = progress_bytes = 0
         latest = None
         diagnostics = None
         for line in lines:
             try:
-                value = json.loads(line)
+                value = json.loads(line, object_pairs_hook=unique_members)
             except (ValueError, UnicodeError):
                 raise AcceptanceFailure("browser_output_invalid") from None
             require(isinstance(value, dict) and final is None
@@ -294,9 +302,13 @@ class Journey:
                     and isinstance(value.get("diagnostics"), dict) and set(value["diagnostics"]) == BROWSER_DIAGNOSTICS
                     and all(type(item) is bool for item in value["diagnostics"].values()), "browser_output_invalid")
             if "event" in value:
+                progress_count += 1
+                progress_bytes += len(line) + 1
+                require(progress_count <= 16 and progress_bytes <= 12288, "browser_output_limit")
                 require(set(value) == {"schema_version", "event", "checks", "diagnostics"}
                         and value["event"] == "progress", "browser_output_invalid")
             else:
+                require(len(line) + 1 <= 4096, "browser_output_limit")
                 require(set(value) == {"schema_version", "ready", "code", "checks", "diagnostics"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
                         and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed",
@@ -351,8 +363,8 @@ class Journey:
             except subprocess.TimeoutExpired:
                 try:
                     self.capture_browser_evidence(output, require_final=False)
-                except AcceptanceFailure:
-                    pass  # Malformed diagnostics never replace the authoritative wall timeout.
+                except (AcceptanceFailure, OSError):
+                    pass  # Unavailable or malformed diagnostics never replace the authoritative wall timeout.
                 raise AcceptanceFailure("browser_readiness_timeout") from None
             require(process_group_absent(self.browser_helper.pid), "browser_helper_child_remains")
             result = self.capture_browser_evidence(output, require_final=True)

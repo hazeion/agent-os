@@ -39,3 +39,20 @@ syntax and diff checks passed. Log:
 
 No app/Chrome launch, product source change, cleanup semantic change, rerun or
 acceptance success is claimed. Independent source reviews remain required.
+
+Peer review tightened the parent's independent envelope: no more than16 progress
+records or12KiB of progress, a final record at most4KiB, and duplicate JSON
+members rejected at every nesting level. Regressions reject17 progress frames,
+independently oversized progress/final records and duplicate final/progress/
+nested diagnostic members. A diagnostic pread OSError now preserves the primary
+browser timeout; final-path read errors still refuse success.
+
+Root and peer review also identified test portability edges. Native positional
+FD proof and the five existing POSIX-only main lifecycle tests are individually
+guarded; framing/schema/Node/timeout tests remain portable, using explicit
+create=True OS mocks where necessary. Environment expectations use native Path
+strings. An unsupported-host test proves refusal before Journey/process
+creation. No production Windows fallback or broader authority is introduced.
+Final local verification:26 methods PASS in4.704s, no skips on this POSIX host,
+ResourceWarnings as errors, including seven Node cases; compilation, Node
+syntax and diff checks passed. This is not Windows execution qualification.
