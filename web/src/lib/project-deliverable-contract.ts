@@ -10,15 +10,20 @@ export type DeliverableProject = { project: { id: string; name: string; revision
 export type DeliverablePublished = { slot: DeliverableSlot; slot_id: string; version_id: string; revision: number; origin: "owner_edit"; preview_attachment_id: string | null };
 export type RetiredDeliverable = { id: string; project_id: string; slot: DeliverableSlot; revision: number; origin: "owner_edit"; created_at: number };
 export type DeliverablePreview = { version_id: string; content_base64: string; sha256: string; byte_size: number };
-export type DeliverableOperation = "project" | "version" | "retired-history" | "retired-version" | "preview" | "publish";
-export type DeliverableResults = { project: DeliverableProject; version: DeliverableVersion; "retired-history": { versions: RetiredDeliverable[]; next_offset: number | null }; "retired-version": DeliverableVersion; preview: DeliverablePreview; publish: DeliverablePublished };
-export const DELIVERABLE_READS = new Set<DeliverableOperation>(["project", "version", "retired-history", "retired-version", "preview"]);
+export type DeliverableReviewAction = "accept" | "request_changes";
+export type DeliverableReviewStatus = { project_id: string; project_name: string; status: "incomplete" | "pending" | DeliverableReviewAction; latest: null | { id: string; revision: number; action: DeliverableReviewAction; note: string; affected_slots: DeliverableSlot[]; created_at: number; current: boolean } };
+export type DeliverableReviewPreview = { project_id: string; project_name: string; project_revision: number; action: DeliverableReviewAction; note: string; affected_slots: DeliverableSlot[]; heads: Array<{ slot: DeliverableSlot; version_id: string; revision: number; origin: "owner_edit" }>; confirmation_id: string };
+export type DeliverableReviewConfirmed = { id: string; revision: number; action: DeliverableReviewAction; project_id: string; duplicate: boolean };
+export type DeliverableOperation = "project" | "version" | "retired-history" | "retired-version" | "preview" | "publish" | "review-status" | "review-preview" | "review-confirm";
+export type DeliverableResults = { project: DeliverableProject; version: DeliverableVersion; "retired-history": { versions: RetiredDeliverable[]; next_offset: number | null }; "retired-version": DeliverableVersion; preview: DeliverablePreview; publish: DeliverablePublished; "review-status": DeliverableReviewStatus; "review-preview": DeliverableReviewPreview; "review-confirm": DeliverableReviewConfirmed };
+export const DELIVERABLE_READS = new Set<DeliverableOperation>(["project", "version", "retired-history", "retired-version", "preview", "review-status"]);
 export const DELIVERABLE_JSON_LIMIT = 128 * 1024;
 export const DELIVERABLE_PREVIEW_LIMIT = 3 * 1024 * 1024;
 
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const TASK = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const VERSION = /^deliverable_version_[0-9a-f]{32}$/u;
+const REVIEW = /^deliverable_review_[0-9a-f]{32}$/u;
 const SLOT_ID = /^deliverable_[0-9a-f]{32}$/u;
 const ATTACHMENT = /^attachment_[0-9a-f]{32}$/u;
 const ITEM = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
@@ -29,6 +34,12 @@ function keys(value: Record<string, unknown>, expected: string): boolean { retur
 function integer(value: unknown, low: number, high: number): value is number { return Number.isSafeInteger(value) && (value as number) >= low && (value as number) <= high; }
 function text(value: unknown, maximum: number, required = false): value is string { return typeof value === "string" && !/[\x00-\x08\x0b-\x1f]/u.test(value) && new TextEncoder().encode(value.trim()).length <= maximum && (!required || !!value.trim()); }
 function slot(value: unknown): value is DeliverableSlot { return typeof value === "string" && SLOTS.has(value); }
+function reviewAction(value: unknown): value is DeliverableReviewAction { return value === "accept" || value === "request_changes"; }
+function affectedSlots(value: unknown): value is DeliverableSlot[] {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 3 && value.every(slot)
+    && value.every((item, index) => index === 0 || ["layout", "products", "steps"].indexOf(value[index - 1]) < ["layout", "products", "steps"].indexOf(item));
+}
+function reviewNote(value: unknown): value is string { return text(value, 2000) && value === value.trim(); }
 function previewId(value: unknown): value is string | null { return value === null || typeof value === "string" && ATTACHMENT.test(value); }
 function sourceId(value: unknown): value is string | null { return value === null || typeof value === "string" && VERSION.test(value); }
 function safeUrl(value: unknown): value is string {
@@ -85,7 +96,7 @@ function version(value: unknown, expectedKind?: DeliverableSlot, listing = false
 }
 export function deliverableRequest(operation: DeliverableOperation, input: unknown): Record<string, unknown> {
   if (!record(input)) throw new DeliverableContractError();
-  const fields = { project: "project_id", version: "project_id,version_id", "retired-history": "", "retired-version": "version_id", preview: "version_id", publish: "project_id,slot,content,expected_project_revision,expected_slot_revision,source_version_id,associated_task_id,expected_task_revision" } as const;
+  const fields = { project: "project_id", version: "project_id,version_id", "retired-history": "", "retired-version": "version_id", preview: "version_id", publish: "project_id,slot,content,expected_project_revision,expected_slot_revision,source_version_id,associated_task_id,expected_task_revision", "review-status": "project_id", "review-preview": "project_id,action,note,affected_slots", "review-confirm": "project_id,action,note,affected_slots,confirmation_id" } as const;
   if (!(operation in fields) || (operation === "retired-history" ? !(keys(input, "") || keys(input, "offset")) : !keys(input, fields[operation]))) throw new DeliverableContractError();
   if (operation === "retired-history" && "offset" in input && (!integer(input.offset, 0, 250) || input.offset % 50 !== 0)) throw new DeliverableContractError();
   if ("project_id" in input && (typeof input.project_id !== "string" || !PROJECT.test(input.project_id)) || "version_id" in input && (typeof input.version_id !== "string" || !VERSION.test(input.version_id))) throw new DeliverableContractError();
@@ -95,6 +106,12 @@ export function deliverableRequest(operation: DeliverableOperation, input: unkno
       || !(input.associated_task_id === null || typeof input.associated_task_id === "string" && TASK.test(input.associated_task_id))
       || !(input.expected_task_revision === null || integer(input.expected_task_revision, 1, Number.MAX_SAFE_INTEGER))
       || (input.associated_task_id === null) !== (input.expected_task_revision === null)) throw new DeliverableContractError();
+  }
+  if (operation === "review-preview" || operation === "review-confirm") {
+    if (!reviewAction(input.action) || !reviewNote(input.note) || !affectedSlots(input.affected_slots)
+        || input.action === "accept" && (input.note !== "" || input.affected_slots.join(",") !== "layout,products,steps")
+        || input.action === "request_changes" && input.note === ""
+        || operation === "review-confirm" && (typeof input.confirmation_id !== "string" || !SHA.test(input.confirmation_id))) throw new DeliverableContractError();
   }
   return structuredClone(input);
 }
@@ -138,6 +155,32 @@ export function deliverableResult<K extends DeliverableOperation>(operation: K, 
         || !integer(value.revision, 1, 32) || value.revision !== (request.expected_slot_revision as number) + 1
         || value.origin !== "owner_edit"
         || !previewId(value.preview_attachment_id) || (value.slot === "layout") !== (value.preview_attachment_id !== null)) throw new DeliverableContractError();
+  } else if (operation === "review-status") {
+    if (!record(value) || !keys(value, "project_id,project_name,status,latest") || value.project_id !== request.project_id
+        || !text(value.project_name, 120, true) || !["incomplete", "pending", "accept", "request_changes"].includes(String(value.status))) throw new DeliverableContractError();
+    if (value.latest !== null) {
+      const latest = value.latest;
+      if (!record(latest) || !keys(latest, "id,revision,action,note,affected_slots,created_at,current") || typeof latest.id !== "string" || !REVIEW.test(latest.id)
+          || !integer(latest.revision, 1, 256) || !reviewAction(latest.action) || !reviewNote(latest.note)
+          || !affectedSlots(latest.affected_slots) || latest.action === "accept" && latest.affected_slots.join(",") !== "layout,products,steps"
+          || latest.action === "accept" && latest.note !== "" || latest.action === "request_changes" && latest.note === ""
+          || typeof latest.created_at !== "number" || !Number.isFinite(latest.created_at) || latest.created_at <= 0
+          || typeof latest.current !== "boolean" || latest.current && value.status !== latest.action) throw new DeliverableContractError();
+    } else if (value.status === "accept" || value.status === "request_changes") throw new DeliverableContractError();
+  } else if (operation === "review-preview") {
+    if (!record(value) || !keys(value, "project_id,project_name,project_revision,action,note,affected_slots,heads,confirmation_id")
+        || value.project_id !== request.project_id || !text(value.project_name, 120, true)
+        || !integer(value.project_revision, 1, Number.MAX_SAFE_INTEGER) || value.action !== request.action || value.note !== request.note
+        || !affectedSlots(value.affected_slots) || value.affected_slots.join(",") !== (request.affected_slots as string[]).join(",")
+        || !Array.isArray(value.heads) || value.heads.length !== 3 || typeof value.confirmation_id !== "string" || !SHA.test(value.confirmation_id)) throw new DeliverableContractError();
+    for (const [index, head] of value.heads.entries()) {
+      if (!record(head) || !keys(head, "slot,version_id,revision,origin") || head.slot !== ["layout", "products", "steps"][index]
+          || typeof head.version_id !== "string" || !VERSION.test(head.version_id) || !integer(head.revision, 1, 32) || head.origin !== "owner_edit") throw new DeliverableContractError();
+    }
+  } else if (operation === "review-confirm") {
+    if (!record(value) || !keys(value, "id,revision,action,project_id,duplicate")
+        || typeof value.id !== "string" || !REVIEW.test(value.id) || !integer(value.revision, 1, 256)
+        || value.action !== request.action || value.project_id !== request.project_id || typeof value.duplicate !== "boolean") throw new DeliverableContractError();
   } else throw new DeliverableContractError();
   return structuredClone(value) as DeliverableResults[K];
 }

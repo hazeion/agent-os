@@ -1024,8 +1024,13 @@ Review history survives confirmed Project deletion, while a new Project using
 the same ID has a distinct incarnation. Restore keeps decisions and rotates
 the private confirmation epoch. These decisions record owner review only;
 they do not certify generated provenance, dispatch an Agent, or create a Task.
-The review authority currently has no browser action; that fixed website
-workflow is a subsequent slice.
+The owner website reaches review status, preview and confirmation through
+fixed same-origin, session-gated Project routes. A review preview can be
+confirmed only after its Project revision and three head version identities
+match the saved content displayed to the owner; it shows every current result
+and the affected slots before an explicit confirmation. A definitive stale
+response discards the preview, while an uncertain transport failure leaves it
+available for exact idempotent retry. Review controls never dispatch an Agent.
 
 The 16-file Project storage ceiling is not an execution limit. Each Task's
 approved input manifest explicitly selects files from its granted context and

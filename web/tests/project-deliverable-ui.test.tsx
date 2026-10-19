@@ -19,7 +19,9 @@ const labels = { layout: "Garage layout", products: "Products and sources", step
 function fixture() {
   const calls: Array<{ path: string; body: Record<string, unknown> | null }> = [];
   const slots = new Map<DeliverableSlot, { id: string; slot: DeliverableSlot; head_revision: number; versions: Array<Record<string, unknown>> }>();
-  const state = { calls, slots, failPublish: false, failRefreshAfterPublish: false, paginateHistory: false, advanceAfterPublish: false };
+  const state = { calls, slots, failPublish: false, failRefreshAfterPublish: false, paginateHistory: false, advanceAfterPublish: false,
+    failReviewConfirm: false, failReviewStatus: false, changePreviewHead: false,
+    reviewDecision: null as null | { id: string; revision: number; action: "accept" | "request_changes"; note: string; affected_slots: DeliverableSlot[]; heads: string[] } };
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input), origin); const path = url.pathname;
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
@@ -28,7 +30,7 @@ function fixture() {
       if (state.failPublish) return Response.json({ schema_version: 1, status: "revision_conflict" }, { status: 409 });
       const kind = body!.slot as DeliverableSlot, previous = slots.get(kind);
       const revision = (previous?.head_revision ?? 0) + 1;
-      const id = `deliverable_version_${String(revision).repeat(32)}`;
+      const id = `deliverable_version_${({ layout: "a", products: "b", steps: "c" } as const)[kind].repeat(31)}${revision}`;
       const current = { id, revision, origin: "owner_edit", source_version_id: body!.source_version_id, content: body!.content,
         created_at: 1790035200 + revision, preview_attachment_id: kind === "layout" ? `attachment_${"a".repeat(32)}` : null };
       slots.set(kind, { id: previous?.id ?? `deliverable_${({ layout: "a", products: "b", steps: "c" } as const)[kind].repeat(32)}`, slot: kind,
@@ -43,6 +45,28 @@ function fixture() {
     }
     if (path === `/api/projects/${projectId}/deliverables`) return state.failRefreshAfterPublish && slots.size ? Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 }) : Response.json({ project: { id: projectId, name: "Garage", revision: 1, status: "active" }, slots: [...slots.values()] });
     if (path === "/api/projects/project_other/deliverables") return Response.json({ project: { id: "project_other", name: "Other", revision: 1, status: "active" }, slots: [] });
+    if (path === `/api/projects/${projectId}/deliverables/review`) {
+      if (state.failReviewStatus) return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 });
+      const currentHeads = (["layout", "products", "steps"] as const).map((slot) => slots.get(slot)?.versions[0].id);
+      const current = !!state.reviewDecision && state.reviewDecision.heads.every((id, index) => id === currentHeads[index]);
+      return Response.json({ project_id: projectId, project_name: "Garage", status: slots.size < 3 ? "incomplete" : current ? state.reviewDecision!.action : "pending",
+        latest: state.reviewDecision ? { id: state.reviewDecision.id, revision: state.reviewDecision.revision, action: state.reviewDecision.action,
+          note: state.reviewDecision.note, affected_slots: state.reviewDecision.affected_slots, created_at: 1790035200, current } : null });
+    }
+    if (path === `/api/projects/${projectId}/deliverables/review/preview`) {
+      if (slots.size < 3) return Response.json({ schema_version: 1, status: "incomplete" }, { status: 409 });
+      return Response.json({ project_id: projectId, project_name: "Garage", project_revision: 1, action: body!.action, note: body!.note,
+        affected_slots: body!.affected_slots, heads: (["layout", "products", "steps"] as const).map((slot) => ({ slot, version_id: state.changePreviewHead && slot === "products" ? `deliverable_version_${"e".repeat(32)}` : slots.get(slot)!.versions[0].id,
+          revision: slots.get(slot)!.head_revision, origin: "owner_edit" })), confirmation_id: "f".repeat(64) });
+    }
+    if (path === `/api/projects/${projectId}/deliverables/review/confirm`) {
+      if (state.failReviewConfirm) return Response.json({ schema_version: 1, status: "stale" }, { status: 409 });
+      const id = `deliverable_review_${"d".repeat(31)}${state.reviewDecision ? "2" : "1"}`;
+      state.reviewDecision = { id, revision: state.reviewDecision ? 2 : 1, action: body!.action as "accept" | "request_changes", note: body!.note as string,
+        affected_slots: body!.affected_slots as DeliverableSlot[],
+        heads: (["layout", "products", "steps"] as const).map((slot) => slots.get(slot)!.versions[0].id as string) };
+      return Response.json({ id, revision: state.reviewDecision.revision, action: body!.action, project_id: projectId, duplicate: false });
+    }
     if (path.startsWith(`/api/projects/${projectId}/deliverables/`)) {
       const id = path.split("/").at(-1); const found = [...slots.values()].flatMap((item) => item.versions.map((value) => ({ ...value, id: value["id"], slot: item.slot }))).find((item) => item.id === id);
       if (!found) throw new Error(`Missing version ${id}`);
@@ -62,11 +86,23 @@ function fixture() {
   };
   return state;
 }
+function seedResults(state: ReturnType<typeof fixture>) {
+  for (const slot of ["layout", "products", "steps"] as const) {
+    const letter = ({ layout: "a", products: "b", steps: "c" } as const)[slot];
+    const content = slot === "layout" ? { width_mm: 6000, depth_mm: 5000, notes: "Bike access",
+      openings: [{ edge: "south", offset_mm: 1300, width_mm: 2400, kind: "garage_door" }],
+      placements: [{ id: "bench", kind: "workbench", label: "Workbench", x_mm: 3900, y_mm: 100, width_mm: 1600, depth_mm: 700 }] }
+      : slot === "products" ? { items: [], notes: "Compare shelving prices" } : { steps: [], notes: "Measure first" };
+    state.slots.set(slot, { id: `deliverable_${letter.repeat(32)}`, slot, head_revision: 1,
+      versions: [{ id: `deliverable_version_${letter.repeat(31)}1`, revision: 1, origin: "owner_edit", source_version_id: null,
+        content, created_at: 1790035200, preview_attachment_id: slot === "layout" ? `attachment_${"a".repeat(32)}` : null }] });
+  }
+}
 function Workspace() {
   const [drafts, setDrafts] = useState<Partial<Record<DeliverableSlot, DeliverableDraft | null>>>({});
   return <ProjectDeliverableEditor projectId={projectId} drafts={drafts} onDraftChange={(slot, update) => setDrafts((current) => ({ ...current, [slot]: update(current[slot] ?? null) }))} />;
 }
-async function open() { render(<Workspace />); fireEvent.click(screen.getByRole("button", { name: "Open results" })); await screen.findByRole("button", { name: "Create result" }); }
+async function open() { render(<Workspace />); fireEvent.click(screen.getByRole("button", { name: "Open results" })); await screen.findByRole("button", { name: /Create result|Edit latest version/u }); }
 
 test("owner builds all three garage results without starting any Agent work", async () => {
   const state = fixture(); await open();
@@ -202,4 +238,89 @@ test("saved products download as Markdown with the exact reviewed source link", 
     assert.ok(blob);
     assert.match(await (blob as Blob).text(), /\[Source\]\(https:\/\/example\.com\/shelf\)/u);
   } finally { URL.createObjectURL = create; URL.revokeObjectURL = revoke; dom.window.HTMLAnchorElement.prototype.click = click; }
+});
+
+test("owner previews and accepts the exact three saved garage results", async () => {
+  const state = fixture(); seedResults(state); await open();
+  await screen.findByText("The current results need your review.");
+  fireEvent.click(screen.getByRole("button", { name: "Accept saved results" }));
+  fireEvent.click(screen.getByRole("button", { name: "Preview acceptance" }));
+  await screen.findByText("Accept these exact saved versions?");
+  assert.equal(screen.getByLabelText("Confirm Project result review").querySelectorAll("section[aria-label$='current review version']").length, 3);
+  assert.match(screen.getByLabelText("Confirm Project result review").textContent ?? "", /Compare shelving prices/u);
+  assert.match(screen.getByLabelText("Confirm Project result review").textContent ?? "", /Workbench \(workbench\): 3900 mm/u);
+  assert.match(screen.getByLabelText("Confirm Project result review").textContent ?? "", /garage door on south wall/u);
+  assert.equal(state.calls.some((call) => call.path.endsWith("/review/confirm")), false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm acceptance" }));
+  await screen.findByText("The current three results are accepted.");
+  assert.equal(state.reviewDecision?.action, "accept");
+  assert.deepEqual(state.calls.find((call) => call.path.endsWith("/review/confirm"))?.body?.affected_slots, ["layout", "products", "steps"]);
+  assert.equal(state.calls.some((call) => /run|dispatch|turn/u.test(call.path)), false);
+});
+
+test("change request selects affected results, keeps a stale preview, and never dispatches", async () => {
+  const state = fixture(); seedResults(state); await open();
+  await screen.findByText("The current results need your review.");
+  fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+  fireEvent.click(screen.getByLabelText("Products and sources", { selector: "input" }));
+  fireEvent.change(screen.getByLabelText("What should change?"), { target: { value: "Check shelf capacity before ordering." } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview change request" }));
+  await screen.findByText("Request changes to these exact saved versions?");
+  state.failReviewConfirm = true;
+  fireEvent.click(screen.getByRole("button", { name: "Send change request" }));
+  await screen.findByText(/results, or review changed/u);
+  assert.equal(screen.queryByLabelText("Confirm Project result review"), null);
+  assert.equal(state.reviewDecision, null);
+  state.failReviewConfirm = false;
+  fireEvent.click(screen.getByRole("button", { name: "Preview change request" }));
+  await screen.findByText("Request changes to these exact saved versions?");
+  fireEvent.click(screen.getByRole("button", { name: "Send change request" }));
+  await screen.findByText("Change request recorded.");
+  await screen.findByText("Requested changes to Products and sources: Check shelf capacity before ordering.");
+  assert.equal((state.reviewDecision as { note: string } | null)?.note, "Check shelf capacity before ordering.");
+  assert.deepEqual(state.calls.find((call) => call.path.endsWith("/review/confirm"))?.body?.affected_slots, ["products"]);
+  assert.equal(state.calls.some((call) => /run|dispatch|turn/u.test(call.path)), false);
+});
+
+test("a newer saved version makes an earlier acceptance visibly pending", async () => {
+  const state = fixture(); seedResults(state);
+  state.reviewDecision = { id: `deliverable_review_${"d".repeat(32)}`, revision: 1, action: "accept", note: "", affected_slots: ["layout", "products", "steps"],
+    heads: (["layout", "products", "steps"] as const).map((slot) => state.slots.get(slot)!.versions[0].id as string) };
+  await open();
+  await screen.findByText("The current three results are accepted.");
+  fireEvent.click(screen.getByRole("button", { name: labels.products }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit latest version" }));
+  fireEvent.change(screen.getByLabelText("Product notes"), { target: { value: "Compare new shelving" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save result version" }));
+  await screen.findByText("The current results need your review.");
+  assert.ok(screen.getByText(/earlier review remains in history/u));
+});
+
+test("a preview naming an unseen newer head cannot be confirmed", async () => {
+  const state = fixture(); seedResults(state); await open();
+  await screen.findByText("The current results need your review.");
+  state.changePreviewHead = true;
+  fireEvent.click(screen.getByRole("button", { name: "Accept saved results" }));
+  fireEvent.click(screen.getByRole("button", { name: "Preview acceptance" }));
+  await screen.findByText(/results, or review changed/u);
+  assert.equal(screen.queryByLabelText("Confirm Project result review"), null);
+  assert.equal(state.calls.some((call) => call.path.endsWith("/review/confirm")), false);
+});
+
+test("failed review-status refresh hides stale decision controls", async () => {
+  const state = fixture(); seedResults(state); await open();
+  await screen.findByText("The current results need your review.");
+  state.failReviewStatus = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh review status" }));
+  await screen.findByText("Mentat could not verify the review. Refresh and try again.");
+  assert.equal(screen.queryByRole("button", { name: "Accept saved results" }), null);
+});
+
+test("same-head results refresh clears old review controls if status cannot reload", async () => {
+  const state = fixture(); seedResults(state); await open();
+  await screen.findByText("The current results need your review.");
+  state.failReviewStatus = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh results" }));
+  await screen.findByText("Review status is unavailable. Refresh before making a decision.");
+  assert.equal(screen.queryByRole("button", { name: "Accept saved results" }), null);
 });

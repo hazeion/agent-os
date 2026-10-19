@@ -9,6 +9,9 @@ export const PROJECT_DELIVERABLE_ROUTES = {
   "retired-history": ["GET", "/api/deliverables/history", {}],
   "retired-version": ["GET", "/api/deliverables/[versionId]", { version_id: "versionId" }],
   preview: ["GET", "/api/deliverables/[versionId]/preview", { version_id: "versionId" }],
+  "review-status": ["GET", "/api/projects/[projectId]/deliverables/review", { project_id: "projectId" }],
+  "review-preview": ["POST", "/api/projects/[projectId]/deliverables/review/preview", { project_id: "projectId" }],
+  "review-confirm": ["POST", "/api/projects/[projectId]/deliverables/review/confirm", { project_id: "projectId" }],
 } as const;
 type RouteName = keyof typeof PROJECT_DELIVERABLE_ROUTES;
 type Params = { params: Promise<Record<string, string>> };

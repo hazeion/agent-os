@@ -17,10 +17,13 @@ from project_deliverables import (
     read_deliverable_version, read_project_deliverables,
     read_retired_deliverable_history, read_retired_deliverable_version,
 )
+from project_deliverable_review import (
+    DeliverableReviewError, confirm_review, preview_review, read_review_status,
+)
 
 
-READ_OPERATIONS = frozenset({"project", "version", "retired-history", "retired-version", "preview"})
-WRITE_OPERATIONS = frozenset({"publish"})
+READ_OPERATIONS = frozenset({"project", "version", "retired-history", "retired-version", "preview", "review-status"})
+WRITE_OPERATIONS = frozenset({"publish", "review-preview", "review-confirm"})
 MAX_ACTION_BYTES = 128 * 1024
 _PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _VERSION = re.compile(r"deliverable_version_[0-9a-f]{32}\Z")
@@ -33,6 +36,9 @@ _FIELDS = {
     "preview": {"version_id"},
     "publish": {"project_id", "slot", "content", "expected_project_revision", "expected_slot_revision",
                 "source_version_id", "associated_task_id", "expected_task_revision"},
+    "review-status": {"project_id"},
+    "review-preview": {"project_id", "action", "note", "affected_slots"},
+    "review-confirm": {"project_id", "action", "note", "affected_slots", "confirmation_id"},
 }
 
 
@@ -81,6 +87,12 @@ def dispatch_project_deliverables(data_dir: Path, operation: str, body: object) 
             content = read_deliverable_preview(data_dir, body["version_id"])
             result = {"version_id": body["version_id"], "content_base64": base64.b64encode(content).decode("ascii"),
                       "sha256": hashlib.sha256(content).hexdigest(), "byte_size": len(content)}
+        elif operation == "review-status":
+            result = read_review_status(data_dir, body["project_id"])
+        elif operation == "review-preview":
+            result = preview_review(data_dir, body["project_id"], body["action"], body["note"], body["affected_slots"])
+        elif operation == "review-confirm":
+            result = confirm_review(data_dir, body["project_id"], body["action"], body["note"], body["affected_slots"], body["confirmation_id"])
         else:
             result = publish_owner_edit(data_dir, body["project_id"], body["slot"], body["content"],
                                         expected_project_revision=body["expected_project_revision"],
@@ -95,6 +107,13 @@ def dispatch_project_deliverables(data_dir: Path, operation: str, body: object) 
                    "project_unavailable", "capacity", "content_invalid", "content_capacity", "preview_unavailable",
                    "preview_capacity", "link_invalid", "slot_invalid", "revision_invalid"}
         return _failure(code if code in allowed else "unavailable", 409)
+    except DeliverableReviewError as exc:
+        code = str(exc).rsplit(".", 1)[-1]
+        if code in {"request_invalid", "confirmation_invalid"}:
+            return _failure("invalid", 400)
+        if code in {"incomplete", "stale", "confirmation_conflict", "capacity", "project_unavailable"}:
+            return _failure(code, 409)
+        return _failure("unavailable", 503)
     except ProjectRepositoryError as exc:
         if exc.code == "project_repository.not_found":
             return _failure("project_unavailable", 404)

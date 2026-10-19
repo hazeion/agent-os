@@ -100,6 +100,8 @@ class ProjectContextBrowserTests(unittest.TestCase):
                     self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_versions').fetchone()[0], 0)
                     self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_task_input_scopes').fetchone()[0], 0)
                     self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_deliverable_versions').fetchone()[0], 3)
+                    self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_deliverable_reviews').fetchone()[0], 2)
+                    self.assertEqual([tuple(row) for row in connection.execute('SELECT action FROM mentat_deliverable_reviews ORDER BY revision')], [('accept',), ('request_changes',)])
             finally:
                 process.terminate()
                 try: process.wait(5)

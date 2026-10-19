@@ -123,8 +123,10 @@ The owner results editor is reviewed and published in
 [PR 270](https://github.com/hazeion/agent-os/pull/270). Schema-32 immutable
 bundle decisions and deletion disclosure are published in
 [PR 271](https://github.com/hazeion/agent-os/pull/271), pending CI and merge.
-The browser review workflow and trusted generated promotion are
-still separate work; no Project Agent execution is enabled by this storage.
+The fixed browser review workflow is reviewed and published in
+[PR 272](https://github.com/hazeion/agent-os/pull/272), pending CI and merge.
+Trusted generated promotion is still separate work; no Project Agent
+execution is enabled by owner review alone.
 The next Project-execution step is exact owner approval and atomic Run/receipt
 reservation against the retained evidence. The current Kanban adapter has no
 qualified operation binding

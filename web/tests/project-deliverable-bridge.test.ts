@@ -34,3 +34,17 @@ test("preview must be one exact PNG with matching bytes and digest", async () =>
     await assert.rejects(() => projectDeliverableCapability("preview", { version_id: versionId }, async () => Response.json({ ...valid, data }), environment), (error: unknown) => error instanceof DeliverableBridgeError && error.status === 502);
   }
 });
+
+test("fixed review confirmation returns only an exact owner decision", async () => {
+  const request = { project_id: "project_garage", action: "accept", note: "", affected_slots: ["layout", "products", "steps"], confirmation_id: "f".repeat(64) };
+  const decision = { id: `deliverable_review_${"d".repeat(32)}`, revision: 1, action: "accept", project_id: "project_garage", duplicate: false };
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), "http://127.0.0.1:43210/bridge/v1/project-deliverables/review-confirm");
+    assert.equal(init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(init?.body)), request);
+    return Response.json({ ...envelope, data: decision });
+  };
+  assert.deepEqual(await projectDeliverableCapability("review-confirm", request, fetcher, environment), decision);
+  await assert.rejects(() => projectDeliverableCapability("review-confirm", request, async () => Response.json({ ...envelope, data: { ...decision, runtime_ref: "private" } }), environment),
+    (error: unknown) => error instanceof DeliverableBridgeError && error.status === 502);
+});
