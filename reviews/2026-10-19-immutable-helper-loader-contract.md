@@ -210,7 +210,8 @@ connection acceptance, external client or caller-supplied socket exists.
 
 Enable SO_PASSCRED on both receiving endpoints before spawning. Every received
 packet must carry exactly one kernel SCM_CREDENTIALS record with the expected
-PID, UID and GID: the parent expects its unreaped owned worker identity, and the
+PID and real UID/GID (not effective IDs): the parent expects its unreaped
+owned worker identity, and the
 worker expects its original parent. Retain the parent's existing start-identity
 and pidfd/group controls. SO_PEERCRED on a pre-fork socketpair identifies the
 creator at socketpair time, so it must not be mistaken for the child's identity.
@@ -269,13 +270,19 @@ not a reusable message or execution framework.
    rules. Only then send one READY packet, without rights, binding nonce,
    manifest digest and final sequence. Worker holds the channel open awaiting
    RELEASE; it must not send another packet or create another child.
-8. Parent accepts READY only after all rows are verified. Send RELEASE, close
-   the sending direction and perform existing exact owned-group closure while
-   retaining all received FDs privately. Drain the receive side through EOF
-   within the original deadline; any packet after READY, including another
-   READY or extra rights, refuses. Publish a private custody lease only after
-   worker/group absence is proved, the channel is closed and the deadline has
-   not expired. No JSON result or saved readiness record can recreate a lease.
+8. Parent accepts READY only after all rows are verified. Send RELEASE and
+   close the sending direction. The worker must close its remaining owned
+   descriptors/channel and exit normally with code0. Parent first waits for
+   that exact owned worker's normal terminal evidence within the same original
+   deadline, retaining all received FDs privately. Drain the receive side
+   through EOF; any packet after READY, including another READY or extra
+   rights, refuses. Success requires normal exit code0, EOF, no extra packets
+   and proved group absence, all before that deadline. A crash, nonzero exit,
+   timeout or parent-forced termination always refuses, even after valid READY.
+   Only failure paths invoke bounded failure cleanup; killing a worker cannot
+   manufacture successful terminal evidence. Publish a private custody lease
+   only after all success conditions hold and the channel is closed. No JSON
+   result or saved readiness record can recreate a lease.
 
 The manifest's identity rows bind received kernel objects to the owned worker's
 verification; they are not portable identities or independently trusted public
@@ -328,7 +335,8 @@ must not release a descriptor while any private read is active.
 
 Source-level tests should cover a complete exact ordered handoff using real
 local descriptors where available, then inject wrong nonce/version/sequence,
-old READY replay, alias substitution, manifest mutation, partial send/EOF,
+old READY replay, crash/nonzero exit after READY, forced termination after
+RELEASE, alias substitution, manifest mutation, partial send/EOF,
 extra packets, missing/multiple rights, truncated payload/control, foreign
 credentials, inherited child endpoint, changed identity and descriptor reuse.
 Require real post-seal write/truncate rejection on Linux, not just a mocked
