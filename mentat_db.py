@@ -2571,10 +2571,22 @@ _SQL_TOKEN = re.compile(
 )
 
 
-@lru_cache(maxsize=512)
 def _sql_token_signature(sql: str) -> str:
     """Canonicalize layout while preserving every meaningful SQL token."""
 
+    # Every fixed current object is below this ceiling. Do not retain arbitrary
+    # large SQL from a malformed source in a process-lifetime comparison cache.
+    if len(sql) <= 8192:
+        return _cached_sql_token_signature(sql)
+    return _uncached_sql_token_signature(sql)
+
+
+@lru_cache(maxsize=512)
+def _cached_sql_token_signature(sql: str) -> str:
+    return _uncached_sql_token_signature(sql)
+
+
+def _uncached_sql_token_signature(sql: str) -> str:
     tokens: list[str] = []
     for match in _SQL_TOKEN.finditer(sql.strip()):
         kind = str(match.lastgroup)
