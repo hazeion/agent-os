@@ -180,6 +180,18 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
                 mentat_db.migrate(connection, fresh_agent_authority_allowed=iter((True, False)).__next__)
             self.assertEqual(connection.execute('SELECT name FROM sqlite_master').fetchall(), [])
 
+    def test_current_initialization_api_does_not_commit_a_callers_transaction(self):
+        with closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
+            mentat_db.migrate(connection)
+            connection.execute('BEGIN')
+            connection.execute('UPDATE mentat_deliverable_review_state SET revision=4')
+            with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'inside a transaction'):
+                mentat_db.migrate(connection)
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 4)
+            connection.rollback()
+            self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 0)
+
     def test_wal_prefix_append_is_allowed_but_rewrite_and_reset_refuse(self):
         path = self.root / 'owned-wal'
         for mutation, accepted in (('append', True), ('rewrite', False), ('reset', False)):
