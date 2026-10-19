@@ -48,7 +48,7 @@ PUBLIC_MODULES = {
     "link_preview_service", "link_preview_transport", "link_preview_webp", "link_preview_worker",
     "link_preview_workers",
     "mentat_db", "mentat_lifecycle", "orchestration_service", "private_console_migration",
-    "owner_auth", "owner_auth_setup", "owner_gateway", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_context", "project_context_access", "project_context_editor", "project_context_http", "project_repository", "project_deliverables", "project_deliverables_http", "project_deliverable_review", "project_plans", "remote_hermes", "runtime_config",
+    "owner_auth", "owner_auth_setup", "owner_gateway", "owner_auth_google", "owner_auth_google_transport", "owner_auth_google_transactions", "owner_auth_google_worker", "owner_auth_webauthn", "private_console_unit", "private_state", "project_context", "project_context_access", "project_context_editor", "project_context_http", "project_repository", "project_deliverables", "project_deliverables_http", "project_deliverable_review", "project_plans", "project_plans_http", "remote_hermes", "runtime_config",
     "run_input_receipts", "run_repository", "server", "task_delegation_receipts", "task_planning", "task_repository", "task_inputs", "task_inputs_http",
     "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }

@@ -138,6 +138,14 @@ prepared files, allowed tools and enforced limits; no Project execution route
 may be advertised until the actual host/runtime combination proves those
 properties. See the qualification inventory in the Task-input review.
 
+The owner Project plan editor is being implemented as the next preparation
+slice. It lets the owner assemble, compare and save immutable plan versions
+from exact prepared Task inputs, inspect old versions and keep an unresolved
+draft after an uncertain save. It grants no approval or execution. See
+[the editor review](reviews/2026-09-24-project-plan-editor.md). Owner approval,
+Agent-authored proposals, runtime qualification and coordinated handoffs remain
+separate gates.
+
 ### Implemented baseline and retained boundaries
 
 Beta QA stabilization merged through

@@ -18,7 +18,7 @@ try {
     else void request.abort();
   });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${port}/tasks`, { waitUntil: 'networkidle0' });
+  await page.goto(`http://127.0.0.1:${port}/tasks`, { waitUntil: 'domcontentloaded' });
   async function click(text, scope = '') {
     const selector = `${scope} ::-p-text(${text})`.trim();
     const element = await page.waitForSelector(selector);
@@ -40,8 +40,14 @@ try {
   await page.click('section[aria-label="Task inputs"] input[type="checkbox"]');
   await page.type('section[aria-label="Task inputs"] textarea', 'Research organization options and preserve bicycle clearance.');
   await click('Save input version'); await waitText('Saved Task input version 1.');
+  await click('Open plan'); await click('Create plan');
+  await page.type('section[aria-label="Project plan"] input[maxlength="120"]', 'Garage organization');
+  await click('Add Research garage organization', 'section[aria-label="Project plan"]');
+  await waitText('Current Task inputs match this plan.');
+  await click('Review Task dependencies'); await waitText('Plan and canonical Task prerequisites match.');
+  await click('Save plan version'); await waitText('Plan version saved. It remains unapproved and cannot start Agent work.');
   await click('Revoke access'); await waitText('Agent access revoked.');
-  await click('Delete Task'); await waitText('Saved Task inputs (1 versions)');
+  await click('Delete Task'); await waitText('Saved Task inputs (1 versions)'); await waitText('Saved Project plans (1 versions)');
   await click('Confirm delete Task'); await waitText('Deleted 0 Projects, 1 Task');
   await click('Open results'); await click('Create result');
   await page.type('section[aria-label="Project results"] input[type="number"]', '6000');
@@ -81,8 +87,8 @@ try {
   await page.screenshot({ path: resolve(output, `${width}.png`), fullPage: true });
   if (width === 390) await click('Projects and saved views');
   await click('Retained Task inputs'); await waitText('Research organization options');
-  await click('View retained input'); await click('Review input removal'); await waitText('This cannot be undone.');
-  await click('Confirm input removal'); await waitText('No retained Task inputs.');
+  await click('View retained input'); await click('Review input removal');
+  await waitText('A saved Project plan still references this input version. Keep it in history.');
   await click('Retained Project history');
   const history = 'section[aria-label="Retained Project history"]';
   assert.equal(await page.$eval(`${history} button`, element => element.getAttribute('aria-expanded')), 'true');
@@ -91,7 +97,7 @@ try {
   await click('Review removal', history); await waitText('This cannot be undone.');
   await click('Confirm removal', history); await waitText('No retained history.');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ width, publish: true, exactGrant: true, revoke: true, retiredPrune: true, garageResults: true, ownerReview: true, overflow: false }));
+  console.log(JSON.stringify({ width, publish: true, exactGrant: true, revoke: true, retainedPlanInputs: true, garageResults: true, ownerReview: true, ownerPlan: true, overflow: false }));
 } catch (error) {
   if (page) {
     console.error(await page.evaluate(() => ({ text: document.body.innerText.slice(-5000), selects: Array.from(document.querySelectorAll('select')).map(node => ({ label: node.parentElement.textContent, value: node.value })) })));
