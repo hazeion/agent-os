@@ -176,14 +176,12 @@ def _validate_shared_graph(connection: sqlite3.Connection) -> None:
     validate_project_context_connection(connection)
 
 
-def archival_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
-    """Private backup allowance only; normal live validators remain closed."""
+def _dormant_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
+    """Exact historical fixture shape, never admitted Run/source authority."""
     version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
     if version < 43:
         return frozenset()
     _validate_shared_graph(connection)
-    from project_scope_journal import require_archival_scopes
-    require_archival_scopes(connection)
     runs = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_runs WHERE source='project_proposal'")}
     claims = {str(row[0]) for row in connection.execute("SELECT run_id FROM mentat_project_worker_generations")}
     if runs != claims or len(runs) > MAX_GENERATIONS:
@@ -214,6 +212,20 @@ def archival_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
         if len(attention) != 1 or tuple(attention[0]) != (None, 0):
             _fail()
     return frozenset(runs)
+
+
+def archival_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
+    """Private backup eligibility remains separately closed for active scopes."""
+    identifiers = _dormant_proposal_ids(connection)
+    from project_scope_journal import require_archival_scopes
+    if connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] >= 44:
+        require_archival_scopes(connection)
+    return identifiers
+
+
+def qualification_proposal_ids(connection: sqlite3.Connection) -> frozenset[str]:
+    """Synthetic-only source consistency; grants no archival/live eligibility."""
+    return _dormant_proposal_ids(connection)
 
 
 def _valid_text(value: object, ceiling: int) -> bool:

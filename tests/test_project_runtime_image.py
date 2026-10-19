@@ -292,8 +292,10 @@ class LinuxRuntimeImageTests(unittest.TestCase):
         host, worker = socket.socketpair()
         actual_broker = None
         thread = None
+        scope_receipt = None
         try:
-            scope.start_inert()
+            from tests.qualification_scope_support import start_recorded_scope, close_recorded_scope
+            scope_receipt = start_recorded_scope(fixture.root, fixture.run, broker_tests.fixtures.GENERATION, scope)
             actual_broker = broker.QualificationInferenceBroker(fixture.root, fixture.run, broker_tests.fixtures.GENERATION,
                                                                fixture.backend, scope)
             thread = threading.Thread(target=actual_broker.serve, args=(host,))
@@ -319,6 +321,8 @@ class LinuxRuntimeImageTests(unittest.TestCase):
                 actual_broker.stop()
             if not scope._closed:
                 scope.close_verified()
+            if scope_receipt is not None:
+                close_recorded_scope(fixture.root, fixture.run, broker_tests.fixtures.GENERATION, scope, scope_receipt)
             host.close()
             worker.close()
             if thread is not None:
