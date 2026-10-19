@@ -11,6 +11,25 @@ import agent_registry
 
 
 class ExpectedEmbeddedAgentSchemaTests(unittest.TestCase):
+    def test_retained_schema_33_registry_validation_preserves_exact_database(self):
+        from private_console_unit import _initialize_database
+
+        with TemporaryDirectory() as temporary:
+            database = Path(temporary) / "mentat.sqlite3"
+            _initialize_database(database, schema_version=33)
+            before = database.read_bytes()
+            connection = sqlite3.connect(database)
+            connection.row_factory = sqlite3.Row
+            try:
+                self.assertEqual(agent_registry.validate_registry_connection(connection), ())
+                self.assertEqual(
+                    connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+                    33,
+                )
+            finally:
+                connection.close()
+            self.assertEqual(database.read_bytes(), before)
+
     def setUp(self):
         agent_registry._cached_expected_embedded_schema_signature.cache_clear()
         self.addCleanup(agent_registry._cached_expected_embedded_schema_signature.cache_clear)
