@@ -31,11 +31,9 @@ from task_repository import (
     confirm_task_export,
     ensure_task_sqlite_authority,
     export_tasks,
-    import_tasks_from_preview,
     normalize_legacy_task_collection,
     normalize_task_collection,
     preview_task_export,
-    preview_task_sqlite_migration,
     read_authoritative_tasks,
     mutate_authoritative_tasks,
 )
@@ -508,53 +506,31 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_preview_is_exact_bounded_and_creates_no_database_or_sidecars(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            source = write_tasks(root, [task("task_a")])
-            before = source.read_bytes()
-            inventory_before = {path.name for path in root.iterdir()}
-            preview_one = preview_task_sqlite_migration(root)
-            preview_two = preview_task_sqlite_migration(root)
-            summary = preview_one.public_summary()
-            self.assertEqual(preview_one, preview_two)
-            self.assertEqual(summary["status"], "ready")
-            self.assertEqual(summary["source"]["task_ids"], ["task_a"])
-            self.assertEqual(summary["destination"]["state"], "missing")
-            self.assertFalse(summary["writes_performed"])
-            self.assertNotIn(os.fspath(root), json.dumps(summary))
-            self.assertEqual(source.read_bytes(), before)
-            self.assertEqual({path.name for path in root.iterdir()}, inventory_before)
-            self.assertFalse(os.path.lexists(database_path(root)))
-            self.assertFalse(os.path.lexists(f"{database_path(root)}-wal"))
-            self.assertFalse(os.path.lexists(f"{database_path(root)}-shm"))
-
-    def test_preview_supports_uri_special_characters_without_writes(self):
+    def test_current_export_supports_uri_special_characters_without_writes(self):
         with TemporaryDirectory() as tmpdir:
             segment = "data # % segment" if os.name == "nt" else "data ?# % segment"
             root = Path(tmpdir) / segment
             write_tasks(root, [task("task_uri")])
-            connection = connect(root)
-            connection.close()
+            ensure_task_sqlite_authority(root)
             before = {
                 path.name: path.read_bytes()
                 for path in database_path(root).parent.iterdir()
                 if path.is_file()
             }
-            preview = preview_task_sqlite_migration(root)
+            exported = export_tasks(root, require_authority=True)
             after = {
                 path.name: path.read_bytes()
                 for path in database_path(root).parent.iterdir()
                 if path.is_file()
             }
-            self.assertEqual(preview.destination.state, "empty")
+            self.assertEqual([item["id"] for item in exported.payload()], ["task_uri"])
             self.assertEqual(after, before)
 
     @unittest.skipIf(
         os.name == "nt",
         "Windows does not permit replacing an open source file",
     )
-    def test_preview_rejects_atomic_source_replacement_during_read(self):
+    def test_fresh_bootstrap_rejects_atomic_source_replacement_during_read(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = write_tasks(root, [task("task_old")])
@@ -580,11 +556,17 @@ class TaskRepositoryTests(unittest.TestCase):
                 patch("task_repository.os.read", side_effect=replace_after_read),
                 self.assertRaises(TaskRepositoryUnavailable),
             ):
-                preview_task_sqlite_migration(root)
+                ensure_task_sqlite_authority(root)
             self.assertEqual(json.loads(source.read_text(encoding="utf-8"))[0]["id"], "task_new")
-            self.assertFalse(os.path.lexists(database_path(root)))
+            connection = connect(root)
+            try:
+                repository = TaskRepository(connection)
+                self.assertEqual(repository.count(), 0)
+                self.assertIsNone(repository.authority_receipt())
+            finally:
+                connection.close()
 
-    def test_preview_reads_committed_live_wal_without_mutating_database_files(self):
+    def test_current_export_reads_committed_live_wal_without_mutating_database_files(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             write_tasks(root, [task("task_a")])
@@ -602,7 +584,7 @@ class TaskRepositoryTests(unittest.TestCase):
                     for candidate in candidates
                     if candidate.exists()
                 }
-                preview = preview_task_sqlite_migration(root)
+                exported = export_tasks(root)
                 after = {
                     candidate.name: (
                         candidate.stat().st_ino,
@@ -611,15 +593,14 @@ class TaskRepositoryTests(unittest.TestCase):
                     for candidate in candidates
                     if candidate.exists()
                 }
-                self.assertEqual(preview.status, "blocked")
-                self.assertEqual(preview.destination.state, "occupied")
-                self.assertEqual(preview.destination.task_count, 1)
+                self.assertEqual(exported.task_count, 1)
+                self.assertEqual([item["id"] for item in exported.payload()], ["task_a"])
                 self.assertEqual(after, before)
             finally:
                 connection.close()
 
     @unittest.skipIf(os.name == "nt", "POSIX link and mode contract")
-    def test_preview_rejects_broad_and_linked_sources_without_writes(self):
+    def test_fresh_bootstrap_rejects_broad_and_linked_sources_without_task_writes(self):
         for kind in ("broad", "symlink", "hardlink"):
             with self.subTest(kind=kind), TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
@@ -633,54 +614,48 @@ class TaskRepositoryTests(unittest.TestCase):
                         source.symlink_to(original)
                     else:
                         os.link(original, source)
+                before = source.read_bytes(), stat.S_IMODE(source.stat().st_mode)
                 with self.assertRaises(TaskRepositoryUnavailable):
-                    preview_task_sqlite_migration(root)
-                self.assertFalse(os.path.lexists(database_path(root)))
+                    ensure_task_sqlite_authority(root)
+                self.assertEqual((source.read_bytes(), stat.S_IMODE(source.stat().st_mode)), before)
+                connection = connect(root)
+                try:
+                    repository = TaskRepository(connection)
+                    self.assertEqual(repository.count(), 0)
+                    self.assertIsNone(repository.authority_receipt())
+                finally:
+                    connection.close()
 
-    def test_import_binds_exact_source_and_requires_empty_destination(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            source = write_tasks(root, [task("task_a")])
-            preview = preview_task_sqlite_migration(root)
-            source.write_text(source.read_text(encoding="utf-8") + " ", encoding="utf-8")
-            if os.name != "nt":
-                source.chmod(0o600)
-            with self.assertRaisesRegex(TaskRepositoryConflict, "source_changed"):
-                import_tasks_from_preview(root, preview)
+    def test_fresh_bootstrap_requires_empty_unclaimed_destination(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = write_tasks(root, [task("task_seed")])
             connection = connect(root)
             try:
-                self.assertEqual(TaskRepository(connection).count(), 0)
+                repository = TaskRepository(connection)
+                repository.insert_collection([task("task_existing")])
+                self.assertIsNone(repository.authority_receipt())
+                before = repository.export().raw
             finally:
                 connection.close()
-
-            write_tasks(root, [task("task_a")])
-            current = preview_task_sqlite_migration(root)
-            exported = import_tasks_from_preview(root, current)
-            self.assertEqual(exported.task_count, 1)
-            occupied_preview = preview_task_sqlite_migration(root)
-            self.assertEqual(occupied_preview.status, "blocked")
-            with self.assertRaises(TaskRepositoryConflict):
-                import_tasks_from_preview(root, occupied_preview)
-
-    def test_import_binds_exact_destination_preview(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            write_tasks(root, [task("task_a")])
-            missing_preview = preview_task_sqlite_migration(root)
+            raw = source.read_bytes()
+            with self.assertRaisesRegex(TaskRepositoryConflict, "occupied"):
+                ensure_task_sqlite_authority(root)
             connection = connect(root)
-            connection.close()
-            with self.assertRaisesRegex(TaskRepositoryConflict, "destination_changed"):
-                import_tasks_from_preview(root, missing_preview)
-            current = preview_task_sqlite_migration(root)
-            self.assertEqual(current.destination.state, "empty")
-            self.assertEqual(import_tasks_from_preview(root, current).task_count, 1)
+            try:
+                repository = TaskRepository(connection)
+                self.assertIsNone(repository.authority_receipt())
+                self.assertEqual(repository.export().raw, before)
+            finally:
+                connection.close()
+            self.assertEqual(source.read_bytes(), raw)
 
     def test_export_is_deterministic_read_only_and_stable_across_reopen(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             write_tasks(root, [task("task_a"), task("task_b", dependencies=[])])
-            preview = preview_task_sqlite_migration(root)
-            imported = import_tasks_from_preview(root, preview)
+            ensure_task_sqlite_authority(root)
+            imported = export_tasks(root, require_authority=True)
             before = database_path(root).stat()
             exported = export_tasks(root)
             after = database_path(root).stat()
@@ -763,9 +738,6 @@ class TaskRepositoryTests(unittest.TestCase):
             second = ensure_task_sqlite_authority(root)
             self.assertEqual(second, receipt)
             self.assertEqual([item["id"] for item in read_authoritative_tasks(root)], ["task_a"])
-            preview = preview_task_sqlite_migration(root)
-            self.assertEqual(preview.status, "already_cut_over")
-            self.assertIsNone(preview.source)
 
     def test_empty_cutover_never_reimports_a_later_seed(self):
         with TemporaryDirectory() as tmpdir:
