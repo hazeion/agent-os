@@ -99,6 +99,7 @@ def _source_files(*, require_runtime: bool = False) -> set[str]:
     }
     files.add('deploy/caddy/caddy-lock.json')
     files.add('deploy/project-runtime-origin-lock.json')
+    files.add('deploy/project-runtime-dependency-candidate.json')
     files.update(f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"])
     for package in project["tool"]["setuptools"]["packages"]:
         files.update(
@@ -120,6 +121,7 @@ def _wheel_files(*, require_runtime: bool = False) -> set[str]:
     files = {f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"]}
     files.add('deploy/caddy/caddy-lock.json')
     files.add('deploy/project-runtime-origin-lock.json')
+    files.add('deploy/project-runtime-dependency-candidate.json')
     for package in project["tool"]["setuptools"]["packages"]:
         files.update(
             path.relative_to(ROOT).as_posix()
