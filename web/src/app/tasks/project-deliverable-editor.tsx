@@ -35,7 +35,7 @@ function downloadDocument(slot: "products" | "steps", content: ProductsContent |
   const revoke = URL.revokeObjectURL.bind(URL);
   document.body.append(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => revoke(url), 1000);
 }
-function resultView(slot: DeliverableSlot, content: DeliverableContent, versionId: string, previewId: string | null) {
+export function resultView(slot: DeliverableSlot, content: DeliverableContent, versionId: string, previewId: string | null) {
   if (slot === "layout") {
     const layout = content as LayoutContent;
     return <><p>{layout.width_mm / 1000} m wide × {layout.depth_mm / 1000} m deep</p>{previewId ? <><img alt="Saved dimensioned garage layout" className="project-deliverable-preview" height={900} src={deliverablePreviewUrl(versionId)} width={1200} /><a download="garage-layout.png" href={deliverablePreviewUrl(versionId)}>Download layout image</a></> : null}<p>{layout.notes}</p><p>Placed objects</p><ul>{layout.placements.map((item) => <li key={item.id}>{item.label} ({item.kind}): {item.x_mm} mm from left, {item.y_mm} mm from top; {item.width_mm} × {item.depth_mm} mm</li>)}</ul>{!layout.placements.length ? <p>No objects placed.</p> : null}<p>Doors and windows</p><ul>{layout.openings.map((item, index) => <li key={index}>{item.kind.replaceAll("_", " ")} on {item.edge} wall: {item.offset_mm} mm from corner; {item.width_mm} mm wide</li>)}</ul>{!layout.openings.length ? <p>No openings recorded.</p> : null}</>;

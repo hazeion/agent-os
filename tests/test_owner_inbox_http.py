@@ -49,6 +49,30 @@ class OwnerInboxCapabilityTests(unittest.TestCase):
         })
         self.assertEqual((status, stale["status"]), (409, "stale"))
 
+    def test_fixed_page_reports_bounded_counts_and_rejects_extra_selectors(self):
+        self.fixture.complete()
+        result, status = dispatch_owner_inbox(self.fixture.root, "page", {"view": "needs_me", "after": None})
+        self.assertEqual((status, len(result["data"]["items"]), result["data"]["counts"]["needs_me"]), (200, 1, 1))
+        for body in ({"view": "all"}, {"view": "all", "after": None, "project_id": "project_mentat"},
+                     {"view": "anything", "after": None}, {"view": "unread", "after": "../private"}):
+            self.assertEqual(dispatch_owner_inbox(self.fixture.root, "page", body)[1], 400)
+
+    def test_item_bound_open_preview_and_confirm_never_select_a_project_id(self):
+        self.fixture.complete()
+        item = dispatch_owner_inbox(self.fixture.root, "page", {"view": "needs_me", "after": None})[0]["data"]["items"][0]
+        opened, status = dispatch_owner_inbox(self.fixture.root, "open", {"item_id": item["id"]})
+        self.assertEqual((status, opened["data"]["review"]["status"]), (200, "pending"))
+        self.assertNotIn("incarnation", json.dumps(opened))
+        action = {"item_id": item["id"], "action": "accept", "note": "",
+                  "affected_slots": ["layout", "products", "steps"]}
+        preview, status = dispatch_owner_inbox(self.fixture.root, "preview", action)
+        self.assertEqual(status, 200)
+        confirmed, status = dispatch_owner_inbox(self.fixture.root, "confirm", {
+            **action, "confirmation_id": preview["data"]["confirmation_id"],
+        })
+        self.assertEqual((status, confirmed["data"]["duplicate"]), (200, False))
+        self.assertEqual(dispatch_owner_inbox(self.fixture.root, "open", {"item_id": item["id"]})[0]["data"]["item"]["state"], "resolved")
+
     def test_unavailable_repository_returns_bounded_failure(self):
         with patch("owner_inbox_http.read_inbox", side_effect=TaskRepositoryUnavailable("task_repository.unavailable")):
             result, status = dispatch_owner_inbox(self.fixture.root, "list", {})
@@ -72,11 +96,29 @@ class OwnerInboxBridgeAdmissionTests(unittest.TestCase):
             self.assertEqual(status, 200)
             dispatch.assert_called_once()
             dispatch.reset_mock()
+            status, _, _ = bridge.request(path="/bridge/v1/owner-inbox/page?view=needs_me", headers=headers)
+            self.assertEqual(status, 200)
+            dispatch.assert_called_once()
+            self.assertEqual(dispatch.call_args.args[1:], ('page', {'view': 'needs_me', 'after': None}))
+            dispatch.reset_mock()
+            status, _, _ = bridge.request(path="/bridge/v1/owner-inbox/open?item_id=inbox_item_" + "a" * 32, headers=headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(dispatch.call_args.args[1:], ('open', {'item_id': 'inbox_item_' + 'a' * 32}))
+            dispatch.reset_mock()
             status, _, _ = bridge.request(method="POST", path="/bridge/v1/owner-inbox/mark",
                                           headers={**headers, "Content-Type": "application/json"}, body=b"{}")
             self.assertEqual(status, 401)
             dispatch.assert_not_called()
             status, _, _ = bridge.request(method="POST", path="/bridge/v1/owner-inbox/mark",
+                                          headers={**headers, "Content-Type": "application/json", "X-Mentat-Owner-Csrf": owner.csrf}, body=b"{}")
+            self.assertEqual(status, 200)
+            dispatch.assert_called_once()
+            dispatch.reset_mock()
+            status, _, _ = bridge.request(method="POST", path="/bridge/v1/owner-inbox/preview",
+                                          headers={**headers, "Content-Type": "application/json"}, body=b"{}")
+            self.assertEqual(status, 401)
+            dispatch.assert_not_called()
+            status, _, _ = bridge.request(method="POST", path="/bridge/v1/owner-inbox/preview",
                                           headers={**headers, "Content-Type": "application/json", "X-Mentat-Owner-Csrf": owner.csrf}, body=b"{}")
             self.assertEqual(status, 200)
             dispatch.assert_called_once()

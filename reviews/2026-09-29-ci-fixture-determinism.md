@@ -1,5 +1,12 @@
 # Deterministic rate-window and discovery-worker fixtures
 
+## Historical PR 277 compatibility note
+
+PR #277 compatibility replay starts at `d33f52d`. The affected auth methods and
+discovery fixture code match the reviewed PR #276 fix; preserve this branch's
+schema-34 expectation. This record's PR #276 scope is historical source evidence.
+
+
 Scope: reviewed test corrections originally on PR #276, with compatible fixture
 and dev-transitive security backports on PR #244. Preserve authentication,
 private locking, discovery order, verifier counts and every test assertion.

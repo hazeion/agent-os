@@ -18,6 +18,7 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
       { href: "/", label: "Home" },
       { href: "/agents", label: "Agents" },
       { href: "/tasks", label: "Projects & Tasks" },
+      { href: "/inbox", label: "Inbox" },
       { href: "/runs", label: "Runs" },
     ],
   );
@@ -26,6 +27,7 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
     ["/", source("src/app/page.tsx")],
     ["/agents", source("src/app/agents/page.tsx")],
     ["/tasks", source("src/app/tasks/page.tsx")],
+    ["/inbox", source("src/app/inbox/page.tsx")],
     ["/runs", source("src/app/runs/page.tsx")],
   ]);
   for (const [href, page] of routeSources) {
@@ -285,7 +287,7 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(source("src/app/shell-runtime-signal.tsx"), /mentat:shell-hydrated/);
 });
 
-test("production keeps two script-light static routes and hydrates Home and Projects & Tasks", () => {
+test("production keeps two script-light static routes and hydrates Home, Projects & Tasks, and Inbox", () => {
   const config = source("next.config.ts");
   const compiler = source("scripts/prepare-standalone.mjs");
   for (const destination of [
@@ -300,8 +302,10 @@ test("production keeps two script-light static routes and hydrates Home and Proj
   assert.match(compiler, /failed its no-hydration contract/);
   assert.doesNotMatch(config, /shell\/home\.html/);
   assert.doesNotMatch(config, /shell\/tasks\.html/);
+  assert.doesNotMatch(config, /shell\/inbox\.html/);
   assert.doesNotMatch(compiler, /home\.html/);
   assert.doesNotMatch(compiler, /tasks\.html/);
+  assert.doesNotMatch(compiler, /inbox\.html/);
   assert.match(config, /agentRules: false/);
   assert.doesNotMatch(config, /unsafe-eval/);
   assert.doesNotMatch(config, /Content-Security-Policy/);

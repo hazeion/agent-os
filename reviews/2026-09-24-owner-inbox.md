@@ -90,7 +90,7 @@ Prune only resolved, acknowledged oldest items when capacity requires it;
 unresolved or unread owner action is retained. At capacity with no safely
 prunable item, reject the originating source transaction before commit rather
 than silently lose a required notification. Show an explicit Inbox capacity
-error and retain the owner's source draft for retry after resolving or
+error and retain the owner's source draft for retry after finishing and
 acknowledging old items. The source authority retains its
 own history. Owner-private inbox state joins the validated backup/restore
 consistency unit; restore preserves notices and read state, rotates action

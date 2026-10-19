@@ -18,6 +18,12 @@ export const SHELL_ROUTES = [
     icon: "tasks",
   },
   {
+    href: "/inbox",
+    label: "Inbox",
+    description: "Needs your review",
+    icon: "inbox",
+  },
+  {
     href: "/runs",
     label: "Runs",
     description: "Execution history",
