@@ -277,6 +277,8 @@ class OwnerAuthAuthority:
             (now,),
         )
         if terminalize_consumed_at_startup:
+            from owner_auth_google_transactions import discard_transactions
+            discard_transactions(connection)
             # A process restart has no verifier in flight.  Every durable
             # consumed marker is therefore an interrupted completion, not a
             # live operation.  Terminalizing every purpose lets the shared
@@ -1013,6 +1015,8 @@ def validate_owner_auth_connection(connection: sqlite3.Connection) -> None:
     """Validate the bounded owner-auth graph while inspecting a private backup."""
 
     try:
+        from owner_auth_google_transactions import validate_transactions
+        validate_transactions(connection)
         _validate_owner_methods(connection)
         states = connection.execute("SELECT state, user_handle, canonical_origin, rp_id, bootstrap_verifier, bootstrap_user_handle, bootstrap_expires_at FROM mentat_owner_auth_state").fetchall()
         if len(states) != 1:
@@ -1068,6 +1072,8 @@ def sanitize_after_restore(connection: sqlite3.Connection, *, now: float | None 
             connection.execute("UPDATE mentat_owner_google_configuration SET requires_reconciliation = 1")
         connection.execute("DELETE FROM mentat_owner_auth_sessions WHERE session_digest IN (SELECT session_digest FROM mentat_owner_auth_sessions WHERE state != 'active' ORDER BY revoked_at DESC, session_digest DESC LIMIT -1 OFFSET ?)", (MAX_TERMINAL_SESSIONS,))
         connection.execute("DELETE FROM mentat_owner_auth_sse_reservations")
+        from owner_auth_google_transactions import discard_transactions
+        discard_transactions(connection)
         connection.execute("UPDATE mentat_owner_auth_ceremonies SET state = 'cancelled', consumed_at = ? WHERE state = 'pending'", (now,))
         connection.execute("UPDATE mentat_owner_auth_recovery_codes SET state = 'active', reserved_ceremony_id = NULL, updated_at = ? WHERE state = 'reserved'", (now,))
         connection.execute("INSERT INTO mentat_owner_auth_notices(notice, created_at) SELECT 'restore_invalidated_sessions', ? WHERE NOT EXISTS (SELECT 1 FROM mentat_owner_auth_notices WHERE notice = 'restore_invalidated_sessions')", (now,))

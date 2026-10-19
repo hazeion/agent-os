@@ -98,6 +98,7 @@ CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION = 22
 PLANNING_DELETION_DATABASE_SCHEMA_VERSION = 23
 OWNER_AUTH_DATABASE_SCHEMA_VERSION = 24
 OWNER_METHOD_DATABASE_SCHEMA_VERSION = 25
+GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION = 26
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -120,6 +121,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     PLANNING_DELETION_DATABASE_SCHEMA_VERSION,
     OWNER_AUTH_DATABASE_SCHEMA_VERSION,
     OWNER_METHOD_DATABASE_SCHEMA_VERSION,
+    GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -1010,6 +1012,9 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             else:
                 _require_empty_unclaimed_run_store(path)
         placeholders = ",".join("?" for _ in retained)
+        if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION:
+            from owner_auth_google_transactions import discard_transactions
+            discard_transactions(connection)
         if schema_version >= 15:
             connection.execute(
                 "DELETE FROM mentat_conversation_staged_attachments"
@@ -1117,6 +1122,8 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
         schema_version = max(versions, default=0)
+        if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0]:
+            raise PrivateConsoleUnitError("private_database_not_filtered")
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
         signature_state = _schema_signature_state(connection, schema_version)
@@ -1568,6 +1575,7 @@ def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsole
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_ceremonies WHERE state = 'pending'").fetchone()[0])
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_recovery_codes WHERE state = 'reserved'").fetchone()[0])
                 or version >= OWNER_METHOD_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_configuration").fetchone()[0])
+                or version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0])
             )
             if not live:
                 return unit
