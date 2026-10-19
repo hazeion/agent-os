@@ -8,6 +8,7 @@ include scripts/verify_macos_architecture.py
 include web/scripts/owner-setup-gateway.mjs
 include deploy/caddy/caddy-lock.json
 include deploy/project-runtime-origin-lock.json
+include deploy/project-runtime-dependency-candidate.json
 recursive-include packaging *.md *.py *.spec *.iss
 include public/app.js
 include public/core.js
