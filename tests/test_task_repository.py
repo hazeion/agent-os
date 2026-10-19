@@ -198,7 +198,10 @@ class TaskRepositoryTests(unittest.TestCase):
         for alias in ("open", "ready", "done", "TODO", "in_progress"):
             variants.append((alias, {**task("alias"), "status": alias}))
         variants.append(("priority-alias", {**task("priority"), "priority": "HIGH"}))
-        variants.append(("unbound-delegation", {**task("delegation"), "delegation": {"state": "queued"}}))
+        delegated = {**task("delegation"), "delegation": deepcopy(full_task()["delegation"])}
+        self.assertEqual(normalize_task_collection([delegated])[0]["delegation"]["profile_id"], "researcher")
+        del delegated["delegation"]["profile_id"]
+        variants.append(("missing-delegation-profile", delegated))
         for label, document in variants:
             with self.subTest(shape=label), TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)

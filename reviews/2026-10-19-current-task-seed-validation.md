@@ -30,6 +30,9 @@ and no Task authority receipt. Delegation fixtures now construct explicit
 current records and use the strict validator; all existing behavior assertions
 remain. The current missing-connection-binding fixture explicitly retains its
 previous legacy-unbound profile metadata, rather than gaining any new authority.
+The missing-profile refusal starts from a complete delegation that passes the
+current validator, then removes only profile_id; unrelated missing fields
+cannot explain the expected rejection.
 
 Caller inspection also found sparse seed fixtures in other test modules;
 root assigned those to a separate nonoverlapping fixture workstream. No
