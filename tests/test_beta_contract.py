@@ -40,7 +40,7 @@ class BetaContractTests(unittest.TestCase):
         self.assertIn("| Tier-one platforms | macOS and Windows | Approved 2026-07-17 |", decisions)
         self.assertIn("| Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |", decisions)
         self.assertIn("| Python | 3.11 through 3.13 | Approved 2026-07-17 |", decisions)
-        self.assertIn("| Update model | Manual, versioned upgrades with a pre-upgrade backup | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Update model | Manual application replacement with a validated current backup; no older-data conversion | Storage scope superseded 2026-10-19 |", decisions)
         self.assertIn("| Telemetry | Off and absent by default | Approved 2026-07-17 |", decisions)
         self.assertIn("| First version | `0.1.0b1`, displayed to users as `v0.1.0-beta.1` | Approved 2026-07-17 |", decisions)
         self.assertIn("| License | MIT | Approved 2026-07-16 |", decisions)
@@ -142,15 +142,15 @@ class BetaContractTests(unittest.TestCase):
         done = section(ROADMAP, "## Public beta definition of done", "## Work intentionally deferred")
         next_actions = ROADMAP.split("## Current next actions", 1)[1]
 
-        self.assertIn("Repository implementation complete through Milestone 8", ROADMAP)
-        self.assertIn("remaining gaps are external execution evidence", baseline)
+        self.assertIn("current-only storage integration and release QA in progress", ROADMAP)
+        self.assertIn("current-only composed graph still requires integrated QA", baseline)
         self.assertNotIn("there is no installable Python package", baseline.lower())
         self.assertIn("Repository tooling complete; signed clean-machine evidence remains in 6", milestone_map)
         self.assertIn("Repository kit complete; external cohort not started", milestone_map)
         self.assertIn("Repository promotion complete; publication blocked by 6 and 7", milestone_map)
         self.assertIn("Repository tooling complete; signed rehearsal externally gated", milestone_map)
-        self.assertEqual(done.count("- [x]"), 10)
-        self.assertEqual(done.count("- [ ]"), 4)
+        self.assertEqual(done.count("- [x]"), 7)
+        self.assertEqual(done.count("- [ ]"), 7)
         for unfinished in (
             "- [ ] A signed and notarized native installer for macOS",
             "- [ ] Release artifacts, checksums, notes, and rollback instructions",
