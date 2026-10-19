@@ -311,16 +311,14 @@ class RunAttentionStorageTests(unittest.TestCase):
                 self.assertEqual(tuple(restored), tuple(before))
                 validate_run_attention_connection(connection)
 
-    def test_schema_35_private_unit_restores_and_materializes_failure_once(self):
+    def test_current_private_unit_restores_and_materializes_failure_once(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "source"
-            old_migrations = tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 35)
-            with patch.object(mentat_db, "MIGRATIONS", old_migrations), patch.object(mentat_db, "SCHEMA_VERSION", 35):
-                ensure_run_sqlite_authority(root, history_path(root))
-                save_authoritative_run_summaries(root, [
-                    run_fixture("run_schema35_failure", status="failed", bound=False)
-                ])
-                unit = private_console_unit.capture_private_console_unit(root)
+            ensure_run_sqlite_authority(root, history_path(root))
+            save_authoritative_run_summaries(root, [
+                run_fixture("run_current_failure", status="failed", bound=False)
+            ])
+            unit = private_console_unit.capture_private_console_unit(root)
             private_console_unit.validate_private_console_unit(unit)
             target = Path(temporary) / "target"
             (target / "private").mkdir(parents=True)
@@ -331,13 +329,13 @@ class RunAttentionStorageTests(unittest.TestCase):
                 self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 first = connection.execute(
                     "SELECT item_id,revision FROM mentat_run_attention "
-                    "WHERE run_id='run_schema35_failure'"
+                    "WHERE run_id='run_current_failure'"
                 ).fetchone()
                 self.assertIsNotNone(first[0])
                 mentat_db.migrate(connection)
                 second = connection.execute(
                     "SELECT item_id,revision FROM mentat_run_attention "
-                    "WHERE run_id='run_schema35_failure'"
+                    "WHERE run_id='run_current_failure'"
                 ).fetchone()
                 self.assertEqual(tuple(first), tuple(second))
 

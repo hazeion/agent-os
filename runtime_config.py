@@ -90,10 +90,10 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
     """Admit only fresh/current storage before any source mutation."""
 
     from mentat_db import (
-        MentatDatabaseError, connect, legacy_agent_registry_artifacts_present,
+        MentatDatabaseError, connect,
         validate_current_database_root,
     )
-    from private_state import history_path, legacy_private_entries
+    from private_state import fresh_console_storage_issue
 
     unsupported = (
         "Mentat supports only its current database and data format "
@@ -104,12 +104,10 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
     def database_issue(target: Path) -> str | None:
         try:
             current = validate_current_database_root(target)
-            if not current and (
-                legacy_private_entries(target)
-                or legacy_agent_registry_artifacts_present(target)
-                or os.path.lexists(os.fspath(history_path(target)))
-            ):
-                return "unsupported_legacy_private_storage"
+            if not current:
+                issue = fresh_console_storage_issue(target)
+                if issue is not None:
+                    return issue
         except (MentatDatabaseError, OSError):
             return "unsupported_or_invalid_current_database"
         return None
@@ -124,6 +122,11 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         os.path.lexists(os.fspath(config.data_dir / name)) for name in SEED_FILE_NAMES
     ):
         return unsupported
+    try:
+        if schema_preflight == "current" and not validate_current_database_root(config.data_dir):
+            return unsupported
+    except (MentatDatabaseError, OSError):
+        return unsupported
     if restore_startup_status(config.data_dir) != "clear":
         return "Mentat found an incomplete restore (restore_incomplete_or_invalid). Preview the selected current-format backup before startup."
     if private_control_issue(config.data_dir) is not None:
@@ -133,12 +136,28 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         issue = database_issue(target)
         if issue is not None:
             return issue
+        schema = schema_status_under_lock(target, descriptor)
+        allowed = {"current"} if schema_preflight == "current" else {"legacy", "fresh_incomplete", "current"}
+        if schema not in allowed:
+            return "invalid_data_schema"
+        if schema == "current" and not validate_current_database_root(target):
+            return "current_database_missing"
         if restore_status_under_lock(target, descriptor) != "clear":
             return "restore_incomplete_or_invalid"
         return private_control_issue(target)
 
     def prepare(target: Path, descriptor: int | None, plan) -> str | None:
-        return prepare_fresh_schema_initialization(PACKAGED_SEED_DIR, target, descriptor, plan)
+        issue = prepare_fresh_schema_initialization(PACKAGED_SEED_DIR, target, descriptor, plan)
+        if issue is not None:
+            return issue
+        # The fresh reservation remains until JSON publication completes. A crash
+        # can resume it; an established current root cannot recreate a lost DB.
+        try:
+            connection = connect(target)
+            connection.close()
+        except (MentatDatabaseError, OSError):
+            return "unsupported_or_invalid_current_database"
+        return None
 
     verified_identity = None
     verified_schema = None
@@ -162,6 +181,8 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         locked_guard=guard, locked_prepare=prepare, locked_finalize=finalize,
     )
     if result.status not in {"initialized", "existing", "development_override"}:
+        if "restore_incomplete_or_invalid" in result.issues:
+            return "Mentat found an incomplete restore (restore_incomplete_or_invalid). Existing files were not changed."
         return unsupported if any("schema" in issue or "legacy" in issue or "database" in issue for issue in result.issues) else "Mentat could not initialize its current data root (data_initialization_failed)."
     try:
         with _initialization_lock(config.data_dir) as descriptor:
@@ -175,8 +196,9 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                     return unsupported
             elif identity != verified_identity or schema != verified_schema:
                 return "Mentat data root changed after verification (invalid_data_schema)."
-        connection = connect(config.data_dir)
-        connection.close()
+            if result.status == "development_override":
+                connection = connect(config.data_dir)
+                connection.close()
     except (MentatDatabaseError, OSError):
         return unsupported
     return None

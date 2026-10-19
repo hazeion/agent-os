@@ -1,4 +1,4 @@
-"""Schema-35 private identities for exact Run-bound owner attention."""
+"""Current private identities for exact Run-bound owner attention."""
 
 from __future__ import annotations
 
@@ -7,9 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
-from agent_run_history import save_run_summaries
 import mentat_db
 import private_console_unit
 import run_repository
@@ -31,19 +29,12 @@ def _insert_run(connection: sqlite3.Connection, identifier: str) -> None:
 
 
 class RunIdentityTests(unittest.TestCase):
-    def test_schema_34_upgrade_backfills_exact_identity_and_new_insert_reserves_one(self):
+    def test_current_insert_reserves_identity_and_preserves_existing_identity(self):
         connection = sqlite3.connect(":memory:")
         try:
-            for version, script in mentat_db.MIGRATIONS:
-                if version > 34:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version,applied_at) VALUES(?,1)",
-                    (version,),
-                )
+            mentat_db.migrate(connection)
             _insert_run(connection, "run_existing")
-            self.assertEqual(mentat_db.schema_signature_state(connection, 34), "expected")
+            self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
             connection.commit()
             mentat_db.migrate(connection)
             self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
@@ -106,47 +97,19 @@ class RunIdentityTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_schema_34_drift_is_rejected_before_upgrade(self):
-        connection = sqlite3.connect(":memory:")
-        try:
-            for version, script in mentat_db.MIGRATIONS:
-                if version > 34:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version,applied_at) VALUES(?,1)",
-                    (version,),
-                )
-            connection.execute("CREATE TABLE unexpected_run_attention_source(id TEXT)")
-            connection.commit()
-            with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 34"):
-                mentat_db.migrate(connection)
-            self.assertIsNone(connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='mentat_run_identities'"
-            ).fetchone())
-        finally:
-            connection.close()
 
-    def test_old_near_limit_database_has_upgrade_headroom(self):
+    def test_current_near_limit_store_keeps_budget_headroom(self):
         self.assertLessEqual(
             run_repository.RUN_STORE_DATABASE_BUDGET
             + private_console_unit.MAX_HISTORY_BYTES
-            + private_console_unit.MAX_REGISTRY_DATABASE_BYTES
             + private_console_unit.MAX_RETAINED_BLOB_BYTES,
             private_console_unit.MAX_PRIVATE_UNIT_BYTES,
         )
         with TemporaryDirectory() as temporary:
             connection = sqlite3.connect(Path(temporary) / "near-limit.sqlite3")
             try:
-                for version, script in mentat_db.MIGRATIONS:
-                    if version > 34:
-                        break
-                    connection.executescript(script)
-                    connection.execute(
-                        "INSERT INTO schema_migrations(version,applied_at) VALUES(?,1)",
-                        (version,),
-                    )
-                _insert_run(connection, "run_before_upgrade")
+                mentat_db.migrate(connection)
+                _insert_run(connection, "run_current_near_limit")
                 connection.execute("CREATE TABLE padding(data BLOB)")
                 connection.execute("INSERT INTO padding(data) VALUES(zeroblob(?))", (46 * 1024 * 1024,))
                 connection.execute("DROP TABLE padding")
@@ -154,7 +117,7 @@ class RunIdentityTests(unittest.TestCase):
                 page_bytes = lambda: connection.execute("PRAGMA page_size").fetchone()[0] * connection.execute("PRAGMA page_count").fetchone()[0]
                 self.assertLessEqual(page_bytes(), 48 * 1024 * 1024)
                 self.assertGreater(page_bytes(), 46 * 1024 * 1024)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 34), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 mentat_db.migrate(connection)
                 repository = RunRepository(connection)
                 repository._validate_run_identities()
@@ -163,17 +126,10 @@ class RunIdentityTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_maximum_long_run_ids_fit_new_identity_headroom(self):
+    def test_maximum_long_run_ids_keep_current_identity_capacity_and_store_budget(self):
         connection = sqlite3.connect(":memory:")
         try:
-            for version, script in mentat_db.MIGRATIONS:
-                if version > 34:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version,applied_at) VALUES(?,1)",
-                    (version,),
-                )
+            mentat_db.migrate(connection)
             identifiers = (
                 ("run_" + f"{index:05d}" + "x" * 119, _CREATED, _CREATED)
                 for index in range(run_repository.MAX_SOURCE_RUNS)
@@ -186,16 +142,11 @@ class RunIdentityTests(unittest.TestCase):
             )
             connection.commit()
             page_size = connection.execute("PRAGMA page_size").fetchone()[0]
-            old_size = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
-            with patch.object(mentat_db, "MIGRATIONS", tuple(
-                item for item in mentat_db.MIGRATIONS if item[0] <= 35
-            )), patch.object(mentat_db, "SCHEMA_VERSION", 35):
-                mentat_db.migrate(connection)
             new_size = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM mentat_run_identities"
             ).fetchone()[0], run_repository.MAX_SOURCE_RUNS)
-            self.assertLess(new_size - old_size, 8 * 1024 * 1024)
+            self.assertLessEqual(new_size, run_repository.RUN_STORE_DATABASE_BUDGET)
             RunRepository(connection)._validate_run_identities()
         finally:
             connection.close()
@@ -239,31 +190,6 @@ class RunIdentityTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(retained, expected)
 
-    def test_schema_34_private_unit_validates_and_restores_into_schema_35(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "source"
-            previous = tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 34)
-            with patch.object(mentat_db, "MIGRATIONS", previous), patch.object(mentat_db, "SCHEMA_VERSION", 34):
-                save_run_summaries(history_path(root), [{
-                    "id": "run_schema34_backup",
-                    "status": "completed",
-                    "created_at": _CREATED,
-                    "updated_at": "2026-09-24T12:00:01+00:00",
-                    "completed_at": "2026-09-24T12:00:01+00:00",
-                }], data_root=root)
-                ensure_run_sqlite_authority(root, history_path(root))
-                unit = private_console_unit.capture_private_console_unit(root)
-            private_console_unit.validate_private_console_unit(unit)
-            target = Path(temporary) / "target"
-            (target / "private").mkdir(parents=True)
-            private_console_unit.materialize_private_console_unit(
-                target, unit, target / "private" / "console"
-            )
-            with closing(mentat_db.connect(target)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-                self.assertRegex(connection.execute(
-                    "SELECT incarnation FROM mentat_run_identities WHERE run_id='run_schema34_backup'"
-                ).fetchone()[0], r"^[0-9a-f]{32}$")
 
 
 if __name__ == "__main__":
