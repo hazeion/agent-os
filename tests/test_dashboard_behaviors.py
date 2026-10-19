@@ -116,7 +116,9 @@ class DashboardBehaviorTests(unittest.TestCase):
             command_path="/tmp/hermes",
         )
         try:
-            with patch.object(transport, "revalidate"), patch.object(
+            with TemporaryDirectory() as tmpdir, patch.object(
+                server, "DATA_DIR", Path(tmpdir)
+            ), patch.object(transport, "revalidate"), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
             ) as popen, patch.object(
                 server, "persist_agent_console_runs", return_value=True
@@ -158,7 +160,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             scanner = shared_bin / ("tirith.exe" if server.os.name == "nt" else "tirith")
             scanner.write_text("scanner fixture", encoding="utf-8")
             scanner.chmod(0o700)
-            with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
+            with patch.object(server, "DATA_DIR", Path(tmpdir)), patch.object(server, "HERMES_HOME", hermes_home), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
             ) as popen, patch.object(
                 server, "persist_agent_console_runs", return_value=True
