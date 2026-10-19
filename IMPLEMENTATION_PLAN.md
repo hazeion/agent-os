@@ -1,6 +1,6 @@
 # Mentat implementation roadmap
 
-Status: active · updated September 30, 2026
+Status: active · updated October 19, 2026
 
 This is the short resume map, not permission to implement an unspecified slice.
 Read [AGENTS.md](AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md),
@@ -71,14 +71,19 @@ residual QA based on a fixture or an unmerged change alone.
    The [provider compatibility audit](reviews/2026-09-30-project-provider-compatibility.md)
    establishes that stock Codex OAuth omits the existing output-token limit
    and has an outer retry. A configured provider or working Console is not
-   Project qualification. The owner has been asked whether to evaluate the
-   documented ChatGPT-plan OAuth route first or a supported API-key provider
-   through Hermes. Neither is selected or qualified by this map. Credential
-   custody, exact profile/account/model/token/image behavior, fixed transport
+   Project qualification. The owner selected ChatGPT-plan OAuth in the
+   October 3 decisions in [provider decision #239](https://github.com/hazeion/agent-os/issues/239)
+   and [Wayfinder #234](https://github.com/hazeion/agent-os/issues/234).
+   The protected-session and request-based policy design has two independent
+   clearances. Approval to implement that policy, account consent and exact
+   live provider/model/tool qualification remain pending. This route cannot
+   enforce the existing provider-side output-token ceiling; older token-capped
+   approvals must not be reused or silently weakened. Credential custody,
+   exact profile/account/model/token/image behavior, fixed transport
    and unknown-outcome handling need direct evidence. Do not read Hermes
    credential stores directly, change auth, silently drop a policy field or
    create a fallback. Credential use, live provider submission and production
-   provider enablement require the resolved owner choice and proven authority.
+   provider enablement require separate explicit approvals and proven authority.
    Independent credential-free source and synthetic qualification may continue
    within already approved contracts.
 
@@ -158,9 +163,11 @@ The [Google setup guidance slice](reviews/2026-09-30-google-setup-guidance.md)
 adds fixed failure-step guidance to the existing CLI ceremony; it grants no
 authentication or remote activation and does not satisfy live acceptance.
 
-Provider route choice is pending. Google OAuth application configuration,
-HTTPS host activation/security acceptance and actual garage goals, floorplan,
-measurements and budget are not supplied or proven by component tests. Do not
+ChatGPT-plan OAuth is selected. Approval to implement the request-based policy,
+account consent and live qualification remain pending. Google OAuth application
+configuration, HTTPS host activation/security acceptance and actual garage
+goals, floorplan, measurements and budget are not supplied or proven by
+component tests. Do not
 invent them or request secrets in chat. Continue independent authorized CI,
 source qualification and integration work while those inputs are pending;
 elapsed time never approves credential changes or execution.
