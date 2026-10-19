@@ -25,7 +25,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2823,6 +2823,49 @@ MIGRATIONS += ((43, """
         BEGIN SELECT RAISE(ABORT,'worker_journal.retained'); END;
 """),)
 
+MIGRATIONS += ((44, """
+    CREATE TABLE mentat_project_worker_scopes (
+        run_id TEXT NOT NULL PRIMARY KEY,
+        generation TEXT NOT NULL CHECK(length(generation)=32),
+        unit TEXT NOT NULL UNIQUE CHECK(length(unit) BETWEEN 50 AND 80),
+        authority_epoch BLOB NOT NULL CHECK(typeof(authority_epoch)='blob' AND length(authority_epoch)=32),
+        plan_json TEXT NOT NULL CHECK(length(plan_json) BETWEEN 1 AND 2048),
+        plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64),
+        claim_digest TEXT NOT NULL CHECK(length(claim_digest)=64),
+        claim_token_hash TEXT NOT NULL CHECK(length(claim_token_hash)=64),
+        created_at REAL NOT NULL CHECK(created_at>0 AND created_at<1000000000000),
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 5),
+        state TEXT NOT NULL CHECK(state IN ('prepared','starting','owned','unknown','stopped','cancelled')),
+        identity_json TEXT CHECK(identity_json IS NULL OR length(identity_json) BETWEEN 1 AND 2048),
+        identity_digest TEXT CHECK(identity_digest IS NULL OR length(identity_digest)=64),
+        closure_digest TEXT CHECK(closure_digest IS NULL OR length(closure_digest)=64),
+        last_intent_digest TEXT CHECK(last_intent_digest IS NULL OR length(last_intent_digest)=64),
+        updated_at REAL NOT NULL CHECK(updated_at>=created_at AND updated_at<1000000000000),
+        FOREIGN KEY(run_id,generation) REFERENCES mentat_project_worker_generations(run_id,generation) ON DELETE RESTRICT,
+        CHECK((identity_json IS NULL)=(identity_digest IS NULL)),
+        CHECK((state='stopped' AND identity_json IS NOT NULL AND closure_digest IS NOT NULL)
+           OR (state!='stopped' AND closure_digest IS NULL)),
+        CHECK(state!='owned' OR identity_json IS NOT NULL),
+        CHECK(state NOT IN ('prepared','starting','cancelled') OR identity_json IS NULL)
+    );
+    CREATE TRIGGER mentat_project_worker_scope_immutable BEFORE UPDATE ON mentat_project_worker_scopes
+        WHEN NEW.run_id IS NOT OLD.run_id OR NEW.generation IS NOT OLD.generation
+          OR NEW.unit IS NOT OLD.unit OR NEW.authority_epoch IS NOT OLD.authority_epoch
+          OR NEW.plan_json IS NOT OLD.plan_json OR NEW.plan_digest IS NOT OLD.plan_digest
+          OR NEW.claim_digest IS NOT OLD.claim_digest OR NEW.claim_token_hash IS NOT OLD.claim_token_hash
+          OR NEW.created_at IS NOT OLD.created_at OR NEW.revision!=OLD.revision+1
+          OR NEW.updated_at<OLD.updated_at
+          OR (OLD.identity_json IS NOT NULL AND (NEW.identity_json IS NOT OLD.identity_json
+              OR NEW.identity_digest IS NOT OLD.identity_digest))
+          OR NOT ((OLD.state='prepared' AND NEW.state IN ('starting','cancelled'))
+               OR (OLD.state='starting' AND NEW.state IN ('owned','unknown','stopped'))
+               OR (OLD.state='owned' AND NEW.state IN ('unknown','stopped'))
+               OR (OLD.state='unknown' AND NEW.state='stopped'))
+        BEGIN SELECT RAISE(ABORT,'scope_journal.immutable'); END;
+    CREATE TRIGGER mentat_project_worker_scope_retained BEFORE DELETE ON mentat_project_worker_scopes
+        BEGIN SELECT RAISE(ABORT,'scope_journal.retained'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25, 37, 41})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -3178,6 +3221,7 @@ _RUN_NONFK_REFERENCE_TABLES = frozenset({
 
 _SCHEMA42_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_proposal_input_files"})
 _SCHEMA43_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_calls"})
+_SCHEMA44_RUN_NONFK_REFERENCE_TABLES = frozenset({"mentat_project_worker_scopes"})
 
 
 def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tuple[str, int, str, int], ...]:
@@ -3203,6 +3247,8 @@ def _run_source_migration_snapshot(connection: sqlite3.Connection) -> tuple[tupl
         expected_nonfk = expected_nonfk | _SCHEMA42_RUN_NONFK_REFERENCE_TABLES
     if "mentat_project_worker_calls" in names:
         expected_nonfk = expected_nonfk | _SCHEMA43_RUN_NONFK_REFERENCE_TABLES
+    if "mentat_project_worker_scopes" in names:
+        expected_nonfk = expected_nonfk | _SCHEMA44_RUN_NONFK_REFERENCE_TABLES
     if nonfk != expected_nonfk:
         raise MentatDatabaseError("Mentat Run reference inventory changed")
     dependent.update(nonfk)
@@ -3373,7 +3419,7 @@ def migrate(
             int(connection.execute("PRAGMA legacy_alter_table").fetchone()[0])
             if version == 41 else None
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -3523,6 +3569,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 41 cannot be safely upgraded")
                 if version == 43 and schema_signature_state(connection, 42) != "expected":
                     raise MentatDatabaseError("Mentat schema 42 cannot be safely upgraded")
+                if version == 44 and schema_signature_state(connection, 43) != "expected":
+                    raise MentatDatabaseError("Mentat schema 43 cannot be safely upgraded")
                 if version == 37:
                     _preflight_plan_version_migration(connection)
                     plan_snapshot = _plan_version_migration_snapshot(connection)

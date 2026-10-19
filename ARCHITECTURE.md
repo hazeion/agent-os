@@ -1303,6 +1303,24 @@ Default live Run/Inbox validation and proposal SQL insertion guards remain
 closed. Journal evidence grants no Run admission, provider submission,
 generated-output registration, proposal Apply or runtime qualification.
 
+Schema 44 adds one private scope receipt beneath an exact controller generation.
+It retains the fixed unit/boot/UID plan, one-time claim-token hash, bounded
+kernel identity and one-way revision-bound transitions. Duplicate requests
+cannot recover a token or authorize another launch; unknown never resets.
+Forward bookkeeping revalidates current input/grant/binding/epoch, while original
+token cleanup may retain historical evidence without granting stale work.
+Owned identity comes from the held Linux scope; stopped requires that exact
+scope's opaque verified closure witness. Neither supplied metadata nor a token
+alone proves local termination, and local closure cannot settle a provider call.
+The largest identity/closure representation is precharged under the existing
+shared metadata ceiling. Private archival capture may retain only prepared,
+cancelled or witness-bound stopped scope records; active/unknown scopes refuse
+capture until the complete active-source contract exists. Restore preserves
+history without reissuing launch tokens or reconstructing PIDs. Schema-5 export
+omits scope authority. Scope bookkeeping adds no launcher, signal route, Run,
+capacity, provider or output authority; production proposal guards remain closed
+and restart recovery still requires separately qualified kernel reconciliation.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance
