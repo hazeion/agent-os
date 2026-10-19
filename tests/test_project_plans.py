@@ -15,14 +15,14 @@ from project_plans import ProjectPlanError, normalize_owner_plan, publish_owner_
 from task_inputs import TaskInputError, preview_task_input_prune, publish_task_inputs, read_task_input_editor
 from task_inputs_http import dispatch_task_inputs
 from task_repository import mutate_authoritative_tasks
-from tests.test_task_inputs import TaskInputStorageTests
+from tests import test_task_inputs as inputs_tests
 from tests.test_task_repository import task
 from tests.test_project_repository import project
 
 
 class ProjectPlanTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = TaskInputStorageTests(); self.fixture.setUp()
+        self.fixture = inputs_tests.TaskInputStorageTests(); self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.root = self.fixture.root
         self.first = publish_task_inputs(self.root, self.fixture.payload)

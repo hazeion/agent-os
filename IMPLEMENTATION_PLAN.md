@@ -35,11 +35,17 @@ The old Beta/MDA foundation is merged through
 [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow is a stack of **full, open PRs** starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243) and currently ending
-at [PR #290](https://github.com/hazeion/agent-os/pull/290). The PRs being open
+at [PR #294](https://github.com/hazeion/agent-os/pull/294). The PRs being open
 is not merged-product or issue-close evidence. Hosted CI and ordinary review
 remain gates. The reviewed Windows CI-shard correction in
 [PR #276](https://github.com/hazeion/agent-os/pull/276) is integrated into
-PRs #285–#290; hosted reruns remain the timeout acceptance gate.
+the later product branches; hosted reruns remain the timeout acceptance gate.
+[PR #293](https://github.com/hazeion/agent-os/pull/293) independently adds
+bounded overlap of audited Windows tests on the CI base, with 19.6–25.1%
+local subset wall-time savings and a passing 193-test group.
+[PR #294](https://github.com/hazeion/agent-os/pull/294) removes 30 accidental
+duplicate executions while retaining all 2,359 unique current tests. Both
+have clear independent reviews; hosted timing gains remain unverified.
 
 - [Baseline and fresh-install readiness](https://github.com/hazeion/agent-os/issues/235):
   PRs [#243](https://github.com/hazeion/agent-os/pull/243)–[#245](https://github.com/hazeion/agent-os/pull/245)
