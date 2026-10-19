@@ -13,8 +13,9 @@ The existing producer tip already includes AppShell inactive-route prefetch
 control from `ca638f5`. Exact blob inspection confirms original #264 lacks it.
 Original #265 and #266 already contain the identical source through earlier
 `fc5ba51`; first ancestry containing `ca638f5` is not the first occurrence of
-that source. Those descendants require ancestry/document propagation only.
-This branch carries only its two Link prefetch props into #264.
+that source. No child merge, commit or push is needed for #265/#266; their
+existing published heads remain unchanged. This branch carries only its two
+Link prefetch props into #264.
 Every element, label, route, accessibility attribute and normal click behavior
 stays intact. Active/current-page links retain their existing default. The
 complete AppShell blob is `74e790330aca30a8963776e7cd51ef5e7ce365e1`, identical
@@ -94,5 +95,6 @@ including the same performance budget, remains an integration gate.
 The guarded child preparation confirmed both original and currently published
 #265/#266 AppShell blobs already equal `74e79033`. Its initial exact-two-file
 expectation stopped before commit when only this document was staged. The
-history statement above corrects the earlier ancestry-based assumption;
-child merges retain zero production delta and the same original heads.
+history statement above corrects the earlier ancestry-based assumption. The
+owned uncommitted #265 merge was aborted without a child commit or push. No
+#266 merge was started, and both existing published child heads remain exact.
