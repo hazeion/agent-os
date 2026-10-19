@@ -60,6 +60,11 @@ Local isolated Python 3.13.14 evidence so far:
   no test, timeout, assertion or repository CI command was changed to pass.
 - The full Python suite remains running. No completion claim is made from its
   partial output. Hosted current-head verification remains required.
+- The original full run reports one webhook lock-probe subprocess timeout.
+  Cold import profiling identifies installed Hermes CLI discovery. The
+  reviewed [fixture isolation correction](2026-10-19-webhook-lock-order-fixture.md)
+  passes all 19 webhook route tests with the complete original probe and all
+  deadlines unchanged. The original full run retains its error as evidence.
 
 Hosted multi-platform CI, stack propagation, integrated owner workflow,
 provider qualification and real host/garage acceptance remain incomplete.
