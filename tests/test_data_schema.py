@@ -73,7 +73,7 @@ class DataSchemaTests(unittest.TestCase):
         documents = [(name, (root / name).read_bytes()) for name in data_layout.SEED_FILE_NAMES]
         record = {'format_version': 1, 'kind': 'mentat-data-schema-backup',
                   'token_sha256': token, 'from_version': 0, 'to_version': 1,
-                  "items": [{'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+                  'items': [{'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
                             for name, raw in documents]}
         backup = root / 'backups' / name
         with zipfile.ZipFile(backup, 'w', compression=zipfile.ZIP_STORED) as archive:
@@ -84,7 +84,7 @@ class DataSchemaTests(unittest.TestCase):
         manifest_path = root / 'config' / data_schema.SCHEMA_MANIFEST_NAME
         manifest = json.loads(manifest_path.read_bytes())
         manifest.update(origin='schema_migration', applied_steps=[{
-            "id": 'durable-json-v0-to-v1', 'from_version': 0, 'to_version': 1}],
+            'id': 'durable-json-v0-to-v1', 'from_version': 0, 'to_version': 1}],
             backup={'name': name, 'sha256': hashlib.sha256(backup.read_bytes()).hexdigest()})
         manifest_path.write_bytes(data_schema._canonical_json(manifest))
         manifest_path.chmod(0o600)
