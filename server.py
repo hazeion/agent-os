@@ -3888,6 +3888,7 @@ def preview_mentat_planning_deletion(payload: object) -> tuple[dict, int]:
             "target_id": plan.target_id,
             "confirmation_id": plan.confirmation_id,
             "affected": plan.counts.public(),
+            "retained_context_versions": plan.retained_context_versions,
             "has_active_runs": bool(plan.active_run_ids),
         }, 200
     except PlanningDeletionError as exc:

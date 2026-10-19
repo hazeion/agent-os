@@ -19,6 +19,7 @@ export type PublicPlanningDeletionPreview = Readonly<{
   confirmation_id: string;
   affected: PublicPlanningDeletionCounts;
   has_active_runs: boolean;
+  retained_context_versions: number;
 }>;
 
 export type PublicPlanningDeletionMutation = Readonly<{
@@ -41,7 +42,7 @@ const TASK = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const CONFIRMATION = /^[0-9a-f]{64}$/u;
 const COUNT_KEYS = "artifacts,conversations,projects,runs,tasks";
-const PREVIEW_KEYS = "affected,confirmation_id,has_active_runs,runtime,schema_version,service,status,target_id,target_kind";
+const PREVIEW_KEYS = "affected,confirmation_id,has_active_runs,retained_context_versions,runtime,schema_version,service,status,target_id,target_kind";
 const MUTATION_KEYS = "action,deletion,runtime,schema_version,service,status,target_id,target_kind";
 const MAXIMUM_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MILLISECONDS = 8_000;
@@ -65,7 +66,8 @@ export function parsePlanningDeletionPreview(value: unknown, targetKind?: Planni
   if (!record(value) || !keys(value, PREVIEW_KEYS) || !validEnvelope(value) || !validTarget(value.target_kind, value.target_id)
     || targetKind !== undefined && value.target_kind !== targetKind || targetId !== undefined && value.target_id !== targetId
     || typeof value.confirmation_id !== "string" || !CONFIRMATION.test(value.confirmation_id)
-    || !validCounts(value.affected, value.target_kind) || typeof value.has_active_runs !== "boolean") throw new PublicPlanningDeletionError("response_invalid");
+    || !validCounts(value.affected, value.target_kind) || typeof value.has_active_runs !== "boolean"
+    || !Number.isSafeInteger(value.retained_context_versions) || (value.retained_context_versions as number) < 0 || (value.retained_context_versions as number) > 256) throw new PublicPlanningDeletionError("response_invalid");
   return structuredClone(value) as PublicPlanningDeletionPreview;
 }
 

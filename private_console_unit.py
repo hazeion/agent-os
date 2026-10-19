@@ -99,6 +99,7 @@ PLANNING_DELETION_DATABASE_SCHEMA_VERSION = 23
 OWNER_AUTH_DATABASE_SCHEMA_VERSION = 24
 OWNER_METHOD_DATABASE_SCHEMA_VERSION = 25
 GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION = 26
+PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION = 27
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -122,6 +123,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     OWNER_AUTH_DATABASE_SCHEMA_VERSION,
     OWNER_METHOD_DATABASE_SCHEMA_VERSION,
     GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION,
+    PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -964,6 +966,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
         schema_version = max(versions, default=0)
+        retained_table = "mentat_retained_attachments" if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION else "run_attachments"
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
         signature_state = _schema_signature_state(connection, schema_version)
@@ -981,6 +984,12 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 validate_owner_auth_connection(connection)
             except OwnerAuthError as exc:
                 raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
+        if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION:
+            from project_context import ProjectContextError, validate_project_context_connection
+            try:
+                validate_project_context_connection(connection)
+            except ProjectContextError as exc:
+                raise PrivateConsoleUnitError("private_project_context_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -1040,13 +1049,13 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         else:
             connection.execute("DELETE FROM run_attachments")
         connection.execute(
-            "DELETE FROM attachments WHERE id NOT IN (SELECT attachment_id FROM run_attachments)"
+            f"DELETE FROM attachments WHERE id NOT IN (SELECT attachment_id FROM {retained_table})"
         )
         connection.execute(
             "DELETE FROM blobs WHERE id NOT IN (SELECT blob_id FROM attachments WHERE blob_id IS NOT NULL)"
         )
         dangling = connection.execute(
-            "SELECT COUNT(*) FROM run_attachments r "
+            f"SELECT COUNT(*) FROM {retained_table} r "
             "LEFT JOIN attachments a ON a.id = r.attachment_id "
             "LEFT JOIN blobs b ON b.id = a.blob_id "
             "WHERE a.id IS NULL OR b.id IS NULL OR a.state != 'attached' OR b.state != 'ready'"
@@ -1122,6 +1131,7 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
         schema_version = max(versions, default=0)
+        retained_table = "mentat_retained_attachments" if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION else "run_attachments"
         if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0]:
             raise PrivateConsoleUnitError("private_database_not_filtered")
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
@@ -1141,6 +1151,12 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 validate_owner_auth_connection(connection)
             except OwnerAuthError as exc:
                 raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
+        if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION:
+            from project_context import ProjectContextError, validate_project_context_connection
+            try:
+                validate_project_context_connection(connection)
+            except ProjectContextError as exc:
+                raise PrivateConsoleUnitError("private_project_context_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -1215,13 +1231,13 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             if staged_count or not context_runs.issubset(retained) or not context_digests_valid:
                 raise PrivateConsoleUnitError("private_database_not_filtered")
         extra_attachments = connection.execute(
-            "SELECT COUNT(*) FROM attachments WHERE id NOT IN (SELECT attachment_id FROM run_attachments)"
+            f"SELECT COUNT(*) FROM attachments WHERE id NOT IN (SELECT attachment_id FROM {retained_table})"
         ).fetchone()[0]
         extra_blobs = connection.execute(
             "SELECT COUNT(*) FROM blobs WHERE id NOT IN (SELECT blob_id FROM attachments WHERE blob_id IS NOT NULL)"
         ).fetchone()[0]
         dangling = connection.execute(
-            "SELECT COUNT(*) FROM run_attachments r "
+            f"SELECT COUNT(*) FROM {retained_table} r "
             "LEFT JOIN attachments a ON a.id = r.attachment_id "
             "LEFT JOIN blobs b ON b.id = a.blob_id "
             "WHERE a.id IS NULL OR b.id IS NULL OR a.state != 'attached' OR b.state != 'ready'"

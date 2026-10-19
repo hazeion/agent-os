@@ -604,6 +604,11 @@ def bind_staged_context_to_run(
         "DELETE FROM mentat_conversation_staged_attachments WHERE conversation_id = ?",
         (conversation_id,),
     )
+    from project_context import ProjectContextError, validate_retained_capacity
+    try:
+        validate_retained_capacity(connection)
+    except ProjectContextError as exc:
+        raise ConversationAttachmentError("conversation_context.capacity") from exc
     return evidence
 
 

@@ -95,7 +95,9 @@ four native children: [storage and backup](https://github.com/hazeion/agent-os/i
 [owner editor and grants](https://github.com/hazeion/agent-os/issues/261),
 [approved Task inputs](https://github.com/hazeion/agent-os/issues/262), and
 [versioned deliverables](https://github.com/hazeion/agent-os/issues/263).
-The storage child is the next implementation slice. Project execution remains
+The storage child is implemented and has two clean reviews; its verification
+is recorded in the context review above. The owner editor and grants are next.
+Project execution remains
 unavailable until exact admission and runtime qualification are implemented;
 the contract is not completion evidence.
 

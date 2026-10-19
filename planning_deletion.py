@@ -30,6 +30,7 @@ from task_repository import (
     _open_repository_database,
 )
 from project_repository import ProjectRepository
+from project_context import ProjectContextError, retire_project_contexts, validate_project_context_connection
 
 
 TASK_ID_MAX = 160
@@ -84,6 +85,7 @@ class DeletionPlan:
     project_ids: tuple[str, ...]
     artifact_binding_ids: tuple[str, ...]
     attachment_ids: tuple[str, ...]
+    retained_context_versions: int = 0
 
 
 def _canonical(value: object) -> bytes:
@@ -207,6 +209,10 @@ def _closure(connection: sqlite3.Connection, target_kind: str, target_id: str) -
 
 
 def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) -> DeletionPlan:
+    try:
+        validate_project_context_connection(connection)
+    except ProjectContextError as exc:
+        raise PlanningDeletionError("planning.deletion_unavailable") from exc
     task_ids, project_ids = _closure(connection, target_kind, target_id)
     task_sql, task_args = _placeholders(task_ids)
     project_sql, project_args = _placeholders(project_ids)
@@ -283,6 +289,13 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     active_runs = tuple(sorted(
         str(row["id"]) for row in run_rows if str(row["status"]) in ACTIVE_STATUSES
     ))
+    attachment_sql, attachment_args = _placeholders(attachment_ids)
+    context_rows = _rows(connection,
+        "SELECT s.id,s.project_id,s.revision,s.retired_at,v.id,v.revision,v.files_digest "
+        "FROM mentat_project_context_scopes s JOIN mentat_project_context_versions v ON v.scope_id=s.id "
+        f"WHERE (s.project_id IN {project_sql} AND s.retired_at IS NULL) OR EXISTS "
+        f"(SELECT 1 FROM mentat_project_context_files f WHERE f.context_id=v.id AND f.attachment_id IN {attachment_sql}) "
+        "ORDER BY s.id,v.revision", project_args + attachment_args)
     snapshot = {
         "target": [target_kind, target_id],
         "projects": [(str(row["id"]), int(row["revision"])) for row in project_rows],
@@ -297,6 +310,7 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
         "run_attachments": [(str(row["run_id"]), str(row["attachment_id"]), str(row["direction"]), int(row["ordinal"])) for row in run_attachment_rows],
         "staged_attachments": [(str(row["conversation_id"]), str(row["attachment_id"])) for row in staged_rows],
         "attachments": attachment_ids,
+        "retained_project_context": [tuple(row) for row in context_rows],
     }
     # A delegated artifact commonly has both its task mapping and a synthetic
     # run attachment. The public preview reports distinct affected items, not
@@ -305,7 +319,7 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
     target_digest = _digest([target_kind, target_id])
     closure_digest = _digest(snapshot)
     confirmation_id = _digest(["mentat.planning.delete.v1", target_digest, closure_digest])
-    return DeletionPlan(target_kind, target_id, confirmation_id, target_digest, closure_digest, snapshot, counts, active_runs, run_ids, conversation_ids, task_ids, project_ids, artifact_binding_ids, attachment_ids)
+    return DeletionPlan(target_kind, target_id, confirmation_id, target_digest, closure_digest, snapshot, counts, active_runs, run_ids, conversation_ids, task_ids, project_ids, artifact_binding_ids, attachment_ids, len(context_rows))
 
 
 class PlanningDeletionService:
@@ -324,7 +338,7 @@ class PlanningDeletionService:
                         return _snapshot(connection, kind, identifier)
         except PlanningDeletionError:
             raise
-        except (TaskRepositoryError, sqlite3.Error, OSError, ValueError) as exc:
+        except (TaskRepositoryError, ProjectContextError, sqlite3.Error, OSError, ValueError) as exc:
             raise PlanningDeletionError("planning.deletion_unavailable") from exc
 
     def begin_confirmation(self, target_kind: object, target_id: object, confirmation_id: object) -> DeletionPlan:
@@ -367,7 +381,7 @@ class PlanningDeletionService:
                         return DeletionCounts(*(int(row[index]) for index in range(1, 6)))
         except PlanningDeletionError:
             raise
-        except (TaskRepositoryError, sqlite3.Error, OSError, ValueError) as exc:
+        except (TaskRepositoryError, ProjectContextError, sqlite3.Error, OSError, ValueError) as exc:
             raise PlanningDeletionError("planning.deletion_unavailable") from exc
 
     def finalize(self, plan: DeletionPlan) -> DeletionCounts:
@@ -387,6 +401,9 @@ class PlanningDeletionService:
                             counts = DeletionCounts(*(int(existing[index]) for index in range(5)))
                             if counts != plan.counts:
                                 raise PlanningDeletionError("planning.deletion_stale")
+                            table = "mentat_tasks" if plan.target_kind == "task" else "mentat_projects"
+                            if connection.execute(f"SELECT 1 FROM {table} WHERE id=?", (plan.target_id,)).fetchone() is not None:
+                                raise PlanningDeletionError("planning.deletion_stale")
                             return counts
                         current = _snapshot(connection, plan.target_kind, plan.target_id)
                         self._verify_post_stop(plan, current)
@@ -402,7 +419,7 @@ class PlanningDeletionService:
                     return plan.counts
         except PlanningDeletionError:
             raise
-        except (TaskRepositoryError, sqlite3.Error, OSError, ValueError) as exc:
+        except (TaskRepositoryError, ProjectContextError, sqlite3.Error, OSError, ValueError) as exc:
             raise PlanningDeletionError("planning.deletion_unavailable") from exc
 
     @staticmethod
@@ -455,7 +472,7 @@ class PlanningDeletionService:
         )
         if plan.attachment_ids:
             connection.execute(
-                f"UPDATE attachments SET state = 'orphaned', expires_at = NULL, delete_after = 0, updated_at = ? WHERE id IN {attachment_sql} AND state != 'missing' AND NOT EXISTS (SELECT 1 FROM run_attachments r WHERE r.attachment_id = attachments.id)",
+                f"UPDATE attachments SET state = 'orphaned', expires_at = NULL, delete_after = 0, updated_at = ? WHERE id IN {attachment_sql} AND state != 'missing' AND NOT EXISTS (SELECT 1 FROM mentat_retained_attachments r WHERE r.attachment_id = attachments.id)",
                 (_now(),) + attachment_args,
             )
         connection.execute(f"DELETE FROM mentat_conversation_run_attempts WHERE run_id IN {run_sql} OR conversation_id IN {conversation_sql}", run_args + conversation_args)
@@ -464,7 +481,9 @@ class PlanningDeletionService:
             connection.execute("DELETE FROM mentat_runs WHERE id = ?", (run_id,))
         connection.execute(f"DELETE FROM mentat_conversations WHERE id IN {conversation_sql}", conversation_args)
         connection.execute(f"DELETE FROM mentat_tasks WHERE id IN {task_sql}", task_args)
+        retire_project_contexts(connection, plan.project_ids)
         connection.execute(f"DELETE FROM mentat_projects WHERE id IN {project_sql}", project_args)
+        validate_project_context_connection(connection)
         # Both authoritative repositories deliberately require contiguous
         # ordering.  Shift first so the UNIQUE constraint cannot collide while
         # compacting a deleted middle member.

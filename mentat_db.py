@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1929,6 +1929,52 @@ MIGRATIONS += ((26, """
         ON mentat_owner_google_transactions(state, expires_at);
 """),)
 
+MIGRATIONS += ((27, """
+    CREATE TABLE mentat_project_context_scopes (
+        id TEXT NOT NULL PRIMARY KEY CHECK (typeof(id) = 'text' AND length(id) = 46),
+        project_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        created_at REAL NOT NULL CHECK (created_at > 0),
+        retired_at REAL CHECK (retired_at IS NULL OR retired_at > 0)
+    );
+    CREATE UNIQUE INDEX idx_mentat_project_context_live_project
+        ON mentat_project_context_scopes(project_id) WHERE retired_at IS NULL;
+    CREATE TABLE mentat_project_context_versions (
+        id TEXT NOT NULL PRIMARY KEY CHECK (typeof(id) = 'text' AND length(id) = 48),
+        scope_id TEXT NOT NULL REFERENCES mentat_project_context_scopes(id) ON DELETE RESTRICT,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        brief TEXT NOT NULL CHECK (length(CAST(brief AS BLOB)) <= 16384),
+        files_digest TEXT NOT NULL CHECK (typeof(files_digest) = 'text' AND length(files_digest) = 64),
+        created_at REAL NOT NULL CHECK (created_at > 0),
+        UNIQUE(scope_id, revision)
+    );
+    CREATE TABLE mentat_project_context_files (
+        context_id TEXT NOT NULL REFERENCES mentat_project_context_versions(id) ON DELETE RESTRICT,
+        attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE RESTRICT,
+        ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 15),
+        PRIMARY KEY(context_id, attachment_id),
+        UNIQUE(context_id, ordinal)
+    );
+    CREATE INDEX idx_mentat_project_context_attachment
+        ON mentat_project_context_files(attachment_id);
+    CREATE VIEW mentat_retained_attachments AS
+        SELECT attachment_id FROM run_attachments
+        UNION SELECT attachment_id FROM mentat_project_context_files;
+    CREATE TRIGGER mentat_project_context_version_immutable
+        BEFORE UPDATE ON mentat_project_context_versions
+        BEGIN SELECT RAISE(ABORT, 'project_context.immutable'); END;
+    CREATE TRIGGER mentat_project_context_file_immutable
+        BEFORE UPDATE ON mentat_project_context_files
+        BEGIN SELECT RAISE(ABORT, 'project_context.immutable'); END;
+    CREATE TRIGGER mentat_project_context_scope_identity
+        BEFORE UPDATE OF id, project_id, created_at ON mentat_project_context_scopes
+        BEGIN SELECT RAISE(ABORT, 'project_context.immutable'); END;
+    CREATE TRIGGER mentat_project_context_retirement_terminal
+        BEFORE UPDATE OF retired_at ON mentat_project_context_scopes
+        WHEN OLD.retired_at IS NOT NULL OR NEW.retired_at IS NULL
+        BEGIN SELECT RAISE(ABORT, 'project_context.retired'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2265,7 +2311,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2381,6 +2427,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 24 cannot be safely upgraded")
                 if version == 26 and schema_signature_state(connection, 25) != "expected":
                     raise MentatDatabaseError("Mentat schema 25 cannot be safely upgraded")
+                if version == 27 and schema_signature_state(connection, 26) != "expected":
+                    raise MentatDatabaseError("Mentat schema 26 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.

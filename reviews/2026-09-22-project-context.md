@@ -18,8 +18,9 @@ Implementation sequence:
 1. [Immutable Project storage](https://github.com/hazeion/agent-os/issues/260):
    Project briefs/file revisions, scope incarnations, retained
    attachment references, strict quotas and exact backup/restore support.
-   Preserve rejection of unsupported Project deletion and Task moves; cover
-   supported Task deletion and all relevant ID-reuse invariants. No dispatch.
+   Preserve rejection of ordinary collection-removal and Task moves; integrate
+   the separately confirmed Project/Task deletion service and ID-reuse rules.
+   No dispatch.
 2. [Owner editor and grants](https://github.com/hazeion/agent-os/issues/261):
    explicit revision-bound Agent grants, safe file
    access and version pruning preview/confirmation. No grant from assignment.
@@ -72,3 +73,109 @@ This is a documentation/contract slice; no runtime tests or live execution claim
 apply. Implementation and its required acceptance evidence remain open in the
 four native child issues. The first storage child is the next implementation
 slice, with both retention and backup updated together.
+
+## Storage implementation and verification
+
+The active storage branch introduces schema 27, immutable context versions,
+ordered attachment references, exact Project/context revision publication and
+a shared retained-attachment view. GC/release/reconciliation and backup filters
+are being extended to that union. Tests exercise Project-only persistence,
+shared-blob lifetime, stale/concurrent publication, quota rollback, tampering,
+whole-collection rename and exact backup inventory. This completes the first
+storage slice, not the owner editor, grants or execution slices.
+
+Storage review corrections: explicit non-null/type-checked IDs prevent malformed
+SQLite values from escaping bounded validation; an immutable file-list digest
+detects partial reference removal; all schema allowlists retain version 26,
+including the Run repository. A new populated, claimed schema-26 Run-authority
+backup test validates, restores and upgrades the historical state. Both final
+whole-slice reviewers report no remaining actionable concerns.
+
+Verification before publication:
+
+- 196 migration, Task/Run repository, owner-auth and provider tests pass, with
+  eight platform-specific skips on Windows.
+- 46 focused Project-context, Google transaction and owner-method tests pass.
+  The additional two-Project concurrent blob-quota regression also passes.
+- The 53-test private backup/state module passed (one platform-specific skip)
+  in the broader 90-test run. That run exposed two stale current-version
+  assertions in auth tests; both were corrected and pass in the final focused
+  and migration runs above.
+- Real archive backup/restore retains Project-only files. A populated historical
+  schema-26 Run backup validates, restores and upgrades. Compatible schema-5
+  private export omits Project authority/files and leaves source unchanged.
+- Wheel and source archive pass exact inventory/integrity checks. An isolated
+  installed-wheel smoke publishes/reads context, survives GC, and captures and
+  validates the retained backup bytes.
+
+No new browser or Agent execution capability is exposed. Linux platform checks
+remain subject to PR CI; real garage/runtime acceptance is still open.
+
+## Confirmed deletion correction
+
+Following the editor's full call path exposed a gap in the initial review:
+ordinary Project replacement rejects removal, but `planning_deletion.py`
+already implements a separate confirmed deletion capability. The previous
+statement that Project deletion was unavailable was incorrect.
+
+Before the unreleased schema-27 PR merges, its scope table now supports terminal
+retirement and a unique live Project-ID mapping. Confirmed deletion retires
+scope authority atomically while retaining versions/files. Task deletion uses
+the union retention root when orphaning Run files. Previews bind affected
+context manifests and disclose retained history through a bounded count. An
+old deletion receipt cannot be replayed against a recreated target.
+
+New regressions cover Project-only files through deletion/GC/backup/restore,
+fresh context after ID reuse, stale preview after context edits, shared Run and
+Project files through Task deletion, and rollback after both retirement and
+canonical deletion. This refines the draft migration before release; all
+Project data created by this work remains disposable test data. Editor and
+grant work follows this integration correction.
+
+Correction verification: both independent reviews are clean; 88 storage,
+deletion and private-bridge checks passed, followed by 41 focused context,
+deletion and planning-bridge checks including the positive retained-count
+projection. All 386 web tests pass, including the rendered retention notice.
+TypeScript, ESLint and the production build pass. Rebuilt wheel/sdist inventory
+and integrity checks pass; an isolated installed-wheel smoke confirms exact
+deletion, retired owner history, GC protection and backup. Fresh CI remains
+required before merging the draft PR.
+
+## CI worker cleanup correction
+
+The Windows3.11 matrix reported that the immediate-completion test's worker had
+not finished within its five-second join; the temporary-root cleanup then hit
+an open initialization lock. The test now always releases and drains the worker
+in a finally block, captures a bounded stack after five seconds, and allows a
+further25 seconds for cleanup before failing. Exactly-once queue assertions and
+production deadlines are unchanged. The exact test passes locally in about two
+seconds; two independent reviews are clean.
+
+## CI attribution follow-up
+
+The c122da1 run reports a Windows Python 3.12 Conversations GET timeout and
+mobile Lighthouse median 94 against the required 95. The exact HTTP test
+passes locally in about two seconds; aggregate CI timings do not establish a
+production root cause. Add a test-only bounded handler stack on the existing
+30-second timeout and fixed-label numeric Lighthouse attribution to the
+existing failure artifact. No deadline, score threshold or retry behavior is
+changed. The two diagnostic tests and exact HTTP test pass; independent
+backend and performance reviews are clean. Further CI evidence is required.
+
+## Windows webhook and mobile Home follow-up
+
+The next Windows 3.11 CI run failed a webhook concurrency test's five-second
+completion check, then could not delete the fixture database while its request
+worker remained live. The test now warms the disposable database before the
+barrier, captures a bounded worker stack on timeout, and releases/joins workers
+and stops the coordinator before cleanup while the snapshot patch remains
+active. The exact test and all 19 webhook-route tests pass locally. Production
+locking and the five-second assertion are unchanged. Independent review is clean.
+
+Three mobile CI Lighthouse runs remain at 94 against the required 95. A narrow
+Home navigation change disables speculative prefetch for noncurrent sidebar
+routes. Pinned local measurements show four fewer initial requests and roughly
+9 KiB less transfer, but no median score gain (98 before and after). Broader
+loading experiments did not improve median performance and were removed.
+Independent correctness review is clean; the mobile CI gate still needs fresh
+evidence before this change can be called a passing performance fix.
