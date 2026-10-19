@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import io
 import json
 import math
 import os
@@ -205,6 +206,61 @@ def _capture(root, deadline):
         os.close(directory)
 
 
+def _package_index_grammar(raw, deadline):
+    """Validate every deb822 stanza, including unselected packages.
+
+    This private binary-index grammar does not change the existing helper
+    selector. Names are ASCII/case-insensitive; values are strict UTF-8. Only
+    empty physical lines separate stanzas; continuation content is not reparsed
+    as fields and cannot fold any fixed simple coordinate field.
+    """
+    if type(raw) is not bytes or not 0 < len(raw) <= 16 * 1024 * 1024 or not raw.endswith(b"\n\n"):
+        _fail()
+    names = set()
+    previous = None
+    content = False
+    stanza_bytes = 0
+    stanzas = 0
+    simple = {b"package", b"version", b"architecture", b"filename", b"size", b"sha256"}
+    for line in io.BytesIO(raw):
+        origin._remaining(deadline)
+        stanza_bytes += len(line)
+        if len(line) > origin.MAX_LINE or stanza_bytes > origin.MAX_LINE or not line.endswith(b"\n"):
+            _fail()
+        payload = line[:-1]
+        try:
+            payload.decode("utf-8", "strict")
+        except UnicodeError:
+            _fail()
+        if any(byte < 32 and byte != 9 or byte == 127 for byte in payload):
+            _fail()
+        if not payload:
+            if previous is not None and not content:
+                _fail()
+            if names:
+                stanzas += 1
+            names, previous, content, stanza_bytes = set(), None, False, 0
+            continue
+        if payload.startswith((b" ", b"\t")):
+            if previous is None or previous in simple or not payload.strip(b" \t"):
+                _fail()
+            content = True
+            continue
+        if previous is not None and not content:
+            _fail()
+        name, separator, value = payload.partition(b":")
+        if (not separator or not name or name[:1] in {b"#", b"-"}
+                or any(byte < 33 or byte > 126 or byte == 58 for byte in name)):
+            _fail()
+        previous = name.lower()
+        if previous in names:
+            _fail()
+        names.add(previous)
+        content = bool(value.strip(b" \t"))
+    if previous is not None or not stanzas:
+        _fail()
+
+
 def _verify_metadata(captured, deadline):
     for suite, (_size, _digest, index_size, index_digest, date) in SNAPSHOTS.items():
         raw = captured[suite + ".InRelease"]
@@ -227,6 +283,7 @@ def _verify_metadata(captured, deadline):
         index = captured[suite + "-main.Packages"]
         if len(index) != index_size or _sha(index) != index_digest:
             _fail()
+        _package_index_grammar(index, deadline)
         origin._package_stanzas(index, [pin for pin in PINS if pin.suite == suite])
 
 

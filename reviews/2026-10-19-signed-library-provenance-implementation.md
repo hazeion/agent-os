@@ -115,3 +115,32 @@ privilege/FUSE teardown, the separate sealed Hermes/Python14-member image,
 package security currency, provider policy/account/live qualification and Run
 admission remain unclaimed. No model, credential, service, owner configuration,
 production factory, runtime capability or dispatch path was used or changed.
+
+## Source-review correction: complete ignored-stanza grammar
+
+Root and independent source review identified one gap: the reused helper tuple
+selector bounded ignored stanzas but did not validate all their field syntax.
+The library-private predecoder path now validates every deb822 stanza, including
+ignored packages, using UTF-8 values, ASCII field names, case-insensitive duplicate
+rejection, proper continuations and exact line/stanza/termination bounds. Binary-
+index comments, orphan/whitespace-only continuations, folding of the fixed simple
+coordinate fields, malformed/empty fields, invalid controls/UTF-8 and incomplete
+stanzas refuse. Ordinary helper selection/policy remains unchanged. This follows
+the [Debian control-file syntax](https://www.debian.org/doc/debian-policy/ch-controlfields.html#syntax-of-control-files);
+it does not assign semantic authority to ignored package fields.
+
+Three new methods include a complete UTF-8/multiline positive, within-bound
+ignored malformed/duplicate/case-variant/continuation/termination negatives below
+the raw hash guard, and a captured-core failure fixture whose private expected
+hashes are updated to prove that grammar rejection precedes both decoder and
+member-profile calls. Such fixture-only pin patches are not a production input.
+
+The affected group now passes51 methods:50 pass and the same actual-Linux method
+skips, in0.395seconds with ResourceWarnings as errors. Both retained real raw
+indices also pass the private whole-index grammar, unchanged:7581722 and3927317
+bytes with their original pinned SHA256 identities, in2.132seconds combined.
+That is grammar compatibility only, not signature/origin/Linux qualification.
+Logs: /private/tmp/mentat-library-origin-grammar-focused.log and
+/private/tmp/mentat-library-origin-actual-index-grammar.log. The unchanged scanner
+findings and final exact artifact gate are still pending; baseline217 remains
+untouched for explicit public-hash review.

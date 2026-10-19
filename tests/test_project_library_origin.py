@@ -177,6 +177,63 @@ class LibraryOriginTests(unittest.TestCase):
         with self.assertRaises(origin.SystemOriginError):
             origin._package_stanzas(ignored, [pin])
 
+    def test_whole_index_grammar_accepts_complete_selected_and_ignored_utf8_stanzas(self):
+        ignored = ("Package: ignored\nDescription: public\n continuation café\n .\n\tfinal line\n"
+                   "X-Review: first\n second\n\n").encode("utf-8")
+        library._package_index_grammar(ignored + package(library.PINS[0]), self.deadline())
+        library._package_index_grammar(b"Package: ignored\nDescription:\n valid multiline value\n\n", self.deadline())
+
+    def test_ignored_malformed_duplicate_continuation_and_termination_refuse_below_hash_guard(self):
+        good = package(library.PINS[0])
+        malformed = [
+            b"Package: ignored\nmalformed field\n\n",
+            b"Package: ignored\nDescription: one\nDescription: two\n\n",
+            b"Package: ignored\nDescription: one\ndescription: two\n\n",
+            b" orphan continuation\n\n",
+            b"Package: ignored\n folded simple coordinate\n\n",
+            b"Package: ignored\nDescription: one\n \t\n\n",
+            b"Package: ignored\n# invalid binary-index comment\n\n",
+            b"Package: ignored\nBad Name: value\n\n",
+            b"Package: ignored\n-Invalid: value\n\n",
+            b"Package: ignored\n: value\n\n",
+            b"Package: ignored\nDescription: \xff\n\n",
+            b"Package: ignored\nDescription: bad\x00control\n\n",
+            b"Package: ignored\nDescription: empty-next\nEmpty:\n\n",
+        ]
+        for ignored in malformed:
+            with self.subTest(ignored=ignored), self.assertRaises(library.LibraryOriginError):
+                library._package_index_grammar(ignored + good, self.deadline())
+        for truncated in [good[:-1], good[:-2], b"\n\n"]:
+            with self.assertRaises(library.LibraryOriginError):
+                library._package_index_grammar(truncated, self.deadline())
+        for oversized in [b"Package: ignored\nDescription: " + b"x" * 65536 + b"\n\n",
+                          b"Package: ignored\nDescription: start\n" + b" continuation\n" * 6000 + b"\n"]:
+            with self.assertRaises(library.LibraryOriginError):
+                library._package_index_grammar(oversized, self.deadline())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX descriptor/private-mode fixture boundary")
+    def test_authenticated_ignored_grammar_failure_stops_before_decoder_or_profile(self):
+        with TemporaryDirectory() as temporary:
+            root, stack = self.complete_fixture(temporary)
+            with stack:
+                path = root / 'resolute-main.Packages'
+                old = path.read_bytes()
+                altered = b"Package: ignored\nDescription: one\ndescription: duplicate\n\n" + old
+                release_path = root / 'resolute.InRelease'
+                release = release_path.read_bytes().replace(library._sha(old).encode(), library._sha(altered).encode()).replace(
+                    (str(len(old)) + ' main/binary-amd64/Packages').encode(),
+                    (str(len(altered)) + ' main/binary-amd64/Packages').encode())
+                path.write_bytes(altered); release_path.write_bytes(release)
+                selected = dict(library.SNAPSHOTS)
+                selected['resolute'] = (len(release), library._sha(release), len(altered), library._sha(altered), selected['resolute'][4])
+                with patch.object(library, 'SNAPSHOTS', selected), patch.object(origin, '_command') as decoder, patch.object(
+                    library, '_inspect_origin_member') as profile, patch.object(
+                    library, '_package_index_grammar', wraps=library._package_index_grammar) as grammar:
+                    with self.assertRaises(library.LibraryOriginError):
+                        library._verify_core(root, self.deadline())
+                    self.assertGreater(grammar.call_count, 0)
+                    decoder.assert_not_called(); profile.assert_not_called()
+
     def test_selected_regular_and_authenticated_alias_are_not_extracted(self):
         pin = self.one_pin()
         root = pin.roots[0]
