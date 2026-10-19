@@ -66,8 +66,10 @@ because the textual CLI status command itself updates logs and skill metadata.
 The host received only the reviewed two-file compatibility backport; 33 focused
 provider/profile/creator regressions passed there. With the required Node runtime
 installed, the local Next.js dashboard returns HTTP 200 and its dashboard/bridge
-listeners remain loopback-only. The host's legacy lifecycle status report still
-omits the verified live listener and needs separate diagnosis; HTTP/socket
-readback, rather than that report, establishes this acceptance evidence.
+listeners remain loopback-only. The host's legacy lifecycle status report
+initially omitted the verified live listener; HTTP/socket readback established
+activation evidence. The later [POSIX inventory fix](2026-09-29-posix-listener-inventory.md)
+diagnosed partial successful tool output and verified actual host status after
+its reviewed backport, without restarting the dashboard.
 This does not establish live model execution, authenticated off-network Mentat
 access, or qualified Project-worker admission.

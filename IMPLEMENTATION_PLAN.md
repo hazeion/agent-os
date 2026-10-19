@@ -34,15 +34,17 @@ The old Beta/MDA foundation is merged through
 [PR #231](https://github.com/hazeion/agent-os/pull/231) and
 [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow is a stack of **full, open PRs** starting at
-[PR #243](https://github.com/hazeion/agent-os/pull/243) and currently ending
-at [PR #294](https://github.com/hazeion/agent-os/pull/294). The PRs being open
+[PR #243](https://github.com/hazeion/agent-os/pull/243), including official
+Hermes compatibility in [PR #296](https://github.com/hazeion/agent-os/pull/296).
+The PRs being open
 is not merged-product or issue-close evidence. Hosted CI and ordinary review
 remain gates. The reviewed Windows CI-shard correction in
 [PR #276](https://github.com/hazeion/agent-os/pull/276) is integrated into
 the later product branches; hosted reruns remain the timeout acceptance gate.
-[PR #293](https://github.com/hazeion/agent-os/pull/293) independently adds
-bounded overlap of audited Windows tests on the CI base, with 19.6–25.1%
-local subset wall-time savings and a passing 193-test group.
+[PR #293](https://github.com/hazeion/agent-os/pull/293) merged bounded overlap
+of audited Windows tests into the #276 CI branch, with 19.6–25.1% local subset
+wall-time savings and a passing 193-test group. #276 also contains the reviewed
+Undici 8.10.2 security correction; its new exact-head hosted checks are pending.
 [PR #294](https://github.com/hazeion/agent-os/pull/294) removes 30 accidental
 duplicate executions while retaining all 2,359 unique current tests. Both
 have clear independent reviews; hosted timing gains remain unverified.
@@ -148,8 +150,10 @@ have clear independent reviews; hosted timing gains remain unverified.
    startup/session/shutdown with no model submission. The owner requested no
    old-writer fallback. Exact quiescence, validated private backups, supported
    service replacement and live PID/socket readback verified host activation.
-   Dashboard HTTP acceptance passed; the older host lifecycle status omission
-   still needs diagnosis. Live model execution and Project qualification remain
+   Dashboard HTTP acceptance passed. A reviewed POSIX inventory fix combines
+   partial tool observations while preserving exact recorded-generation Stop;
+   all 50 Linux lifecycle tests and actual host status readback pass. Live
+   model execution and Project qualification remain
    separate acceptance work.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and

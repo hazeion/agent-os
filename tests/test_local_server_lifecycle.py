@@ -54,6 +54,26 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertFalse(private_state._pid_is_running(child.pid))
             self.assertFalse(mentat_server_active(root))
 
+    @unittest.skipUnless(
+        lifecycle.IS_LINUX and callable(getattr(lifecycle.os, "pidfd_open", None))
+        and callable(getattr(lifecycle.signal, "pidfd_send_signal", None)),
+        "Owned-process pidfd acceptance requires supported Linux",
+    )
+    def test_real_pidfd_stop_refuses_wrong_generation_then_stops_owned_child(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            ticks = lifecycle.linux_process_start_ticks(child.pid)
+            self.assertIsNotNone(ticks)
+            self.assertFalse(lifecycle.kill_linux_pid_with_start_ticks(child.pid, ticks + 1)[0])
+            self.assertIsNone(child.poll())
+            self.assertTrue(lifecycle.kill_linux_pid_with_start_ticks(child.pid, ticks)[0])
+            child.wait(timeout=5)
+            self.assertEqual(child.returncode, -lifecycle.signal.SIGTERM)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
     def test_parse_netstat_listeners_extracts_listening_rows(self):
         output = """
   TCP    127.0.0.1:8888         0.0.0.0:0              LISTENING       8808
@@ -62,6 +82,107 @@ class LocalServerLifecycleTests(unittest.TestCase):
 """
         listeners = lifecycle.parse_netstat_listeners(output)
         self.assertEqual([(item.port, item.pid) for item in listeners], [(8888, 8808), (8890, 28176)])
+
+    def test_posix_inventory_includes_next_server_omitted_by_successful_lsof(self):
+        lsof = "python 123 owner 4u IPv4 1 0t0 TCP 127.0.0.1:36385 (LISTEN)\n"
+        ss = ('LISTEN 0 511 127.0.0.1:8889 0.0.0.0:* '
+              'users:(("next-server (v1",pid=456,fd=21))\n')
+        with patch.object(lifecycle.subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 0, lsof, ""),
+            subprocess.CompletedProcess([], 0, ss, ""),
+        ]) as run:
+            listeners = lifecycle.posix_listeners()
+        self.assertEqual([(item.pid, item.port) for item in listeners], [(123, 36385), (456, 8889)])
+        self.assertEqual([args.args[0][0] for args in run.call_args_list], ["lsof", "ss"])
+
+    def test_posix_inventory_deduplicates_normalized_ipv6_observations(self):
+        lsof = "node 456 owner 4u IPv6 1 0t0 TCP [0:0:0:0:0:0:0:1]:8889 (LISTEN)\n"
+        ss = 'LISTEN 0 511 [::1]:8889 [::]:* users:(("node",pid=456,fd=21))\n'
+        with patch.object(lifecycle.subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 0, lsof, ""),
+            subprocess.CompletedProcess([], 0, ss, ""),
+        ]):
+            listeners = lifecycle.posix_listeners()
+        self.assertEqual(len(listeners), 1)
+        self.assertEqual((listeners[0].pid, listeners[0].port), (456, 8889))
+
+    def test_posix_inventory_preserves_distinct_owners_and_addresses(self):
+        lsof = "node 456 owner 4u IPv4 1 0t0 TCP 127.0.0.1:8889 (LISTEN)\n"
+        ss = ('LISTEN 0 511 127.0.0.1:8889 0.0.0.0:* users:(("node",pid=789,fd=21))\n'
+              'LISTEN 0 511 [::1]:8889 [::]:* users:(("node",pid=456,fd=22))\n')
+        with patch.object(lifecycle.subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 0, lsof, ""),
+            subprocess.CompletedProcess([], 0, ss, ""),
+        ]):
+            listeners = lifecycle.posix_listeners()
+        self.assertEqual([(item.pid, item.port) for item in listeners], [(456, 8889), (789, 8889), (456, 8889)])
+
+    def test_posix_inventory_keeps_available_evidence_when_other_tool_fails(self):
+        ss = 'LISTEN 0 511 127.0.0.1:8889 0.0.0.0:* users:(("node",pid=456,fd=21))\n'
+        failures = [FileNotFoundError(), subprocess.TimeoutExpired("lsof", 10),
+                    OSError("denied"), subprocess.CompletedProcess([], 1, "", "denied")]
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), patch.object(
+                lifecycle.subprocess, "run", side_effect=[failure, subprocess.CompletedProcess([], 0, ss, "")]
+            ):
+                self.assertEqual([(item.pid, item.port) for item in lifecycle.posix_listeners()], [(456, 8889)])
+
+    def test_posix_inventory_accepts_partial_output_but_no_pidless_socket(self):
+        lsof = "node 456 owner 4u IPv4 1 0t0 TCP 127.0.0.1:8889 (LISTEN)\n"
+        ss = 'LISTEN 0 511 127.0.0.1:9999 0.0.0.0:*\nmalformed\n'
+        with patch.object(lifecycle.subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 1, lsof, "permission denied for other processes"),
+            subprocess.CompletedProcess([], 0, ss, ""),
+        ]):
+            self.assertEqual([(item.pid, item.port) for item in lifecycle.posix_listeners()], [(456, 8889)])
+
+    def test_posix_inventory_keeps_lsof_evidence_if_ss_unavailable(self):
+        lsof = "node 456 owner 4u IPv4 1 0t0 TCP 127.0.0.1:8889 (LISTEN)\n"
+        with patch.object(lifecycle.subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 0, lsof, ""), FileNotFoundError(),
+        ]):
+            self.assertEqual([(item.pid, item.port) for item in lifecycle.posix_listeners()], [(456, 8889)])
+
+    def test_discovered_recorded_node_keeps_exact_identity_and_pidfd_stop(self):
+        cases = [(555, 555, True), (555, 777, True), (True, 555, True), (None, 555, True),
+                 (555, 555, False)]
+        for recorded_ticks, live_ticks, stop_succeeds in cases:
+            with self.subTest(recorded=recorded_ticks, live=live_ticks, stop=stop_succeeds), TemporaryDirectory() as tmpdir:
+                data_dir = Path(tmpdir)
+                config = self.make_config(data_dir, port=8889)
+                standalone = data_dir / "installed-web"
+                standalone.mkdir()
+                gateway = standalone / "server.js"
+                gateway.write_text("", encoding="utf-8")
+                state_path = lifecycle.lifecycle_state_path(config)
+                state_path.parent.mkdir(parents=True)
+                state = {
+                    "pid": 456, "runtime": "node-gateway", "command_path": str(gateway),
+                }
+                if recorded_ticks is not None:
+                    state["process_start_ticks"] = recorded_ticks
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                lsof = "python 123 owner 4u IPv4 1 0t0 TCP 127.0.0.1:36385 (LISTEN)\n"
+                ss = 'LISTEN 0 511 127.0.0.1:8889 0.0.0.0:* users:(("next-server (v1",pid=456,fd=21))\n'
+                with patch.object(lifecycle, "IS_LINUX", True), patch.object(lifecycle, "netstat_listeners", side_effect=lifecycle.posix_listeners), patch.object(
+                    lifecycle.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, lsof, ""),
+                                                              subprocess.CompletedProcess([], 0, ss, "")]
+                ), patch.object(lifecycle, "process_commandline", return_value="next-server (v16.0.10)"), patch.object(
+                    lifecycle, "process_working_directory", return_value=str(standalone)
+                ), patch.object(lifecycle, "linux_process_start_ticks", return_value=live_ticks), patch.object(
+                    lifecycle, "probe_recorded_node_gateway", return_value=True
+                ), patch.object(lifecycle, "kill_linux_pid_with_start_ticks", return_value=(stop_succeeds, "checked")) as stop, patch.object(
+                    lifecycle, "kill_pid"
+                ) as raw_stop:
+                    report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+                expected_success = type(recorded_ticks) is int and recorded_ticks == live_ticks and stop_succeeds
+                self.assertEqual(report["ok"], expected_success)
+                self.assertEqual(state_path.exists(), not expected_success)
+                raw_stop.assert_not_called()
+                if type(recorded_ticks) is int and recorded_ticks == live_ticks:
+                    stop.assert_called_once_with(456, 555)
+                else:
+                    stop.assert_not_called()
 
     def test_looks_like_mentat_overview_requires_expected_shape(self):
         self.assertTrue(
@@ -287,12 +408,17 @@ class LocalServerLifecycleTests(unittest.TestCase):
             with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
                 lifecycle, "process_commandline", return_value=f"node {gateway}"
             ), patch.object(lifecycle, "probe_mentat", return_value=False), patch.object(
+                lifecycle, "probe_recorded_node_gateway", return_value=True
+            ), patch.object(
                 lifecycle, "kill_pid", return_value=(True, "terminated")
             ) as kill_pid:
                 report = lifecycle.cleanup_mentat_listeners(config)
 
         self.assertTrue(report["ok"])
-        self.assertEqual(report["actions"][0]["reasons"], ["matches_runtime_state", "recorded_node_gateway"])
+        expected_reasons = ["matches_runtime_state", "recorded_node_gateway"]
+        if lifecycle.IS_LINUX:
+            expected_reasons.append("gateway_probe")
+        self.assertEqual(report["actions"][0]["reasons"], expected_reasons)
         kill_pid.assert_called_once_with(4321)
 
     def test_cleanup_kills_healthy_recorded_node_gateway_when_listener_inventory_is_empty(self):
