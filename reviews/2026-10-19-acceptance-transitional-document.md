@@ -39,6 +39,39 @@ fails with exit 1, while the new expression returns typed false markers.
 Source-only counterexample:
 /private/tmp/mentat-transient-dom-old56b-counterexample.log.
 
-No app, Chrome or static server launched from this branch. No prior outcome is
-changed and no actual acceptance success is claimed. Independent root and peer
-review plus unchanged gates are required before a separately authorized run.
+Before execution, root and an independent peer cleared exact source
+`204275ebfee1f4428118e05416d3927ea2f6b09f`; the unchanged tracked-secret gate
+passed. Earlier failed pins, reports and their original outcomes remain preserved.
+
+## Actual disposable local result
+
+One separately authorized actual journey passed on 19 October 2026 in 34.710 s
+(exit 0), using exact source `204275ebfee1f4428118e05416d3927ea2f6b09f`.
+All 1,114 source blobs were checked against Git. The unchanged Next standalone
+runtime contained 2,451 files / 24,817,140 bytes, with normalized manifest SHA256
+`ffefc85397738902015943646ec78e3daea943b4983e33ab3593de7654412bbe`.
+No rebuild or frozen-checkout write was needed.
+
+All four scenarios passed: fresh CLI setup/start and synthetic Project/Task
+creation; immediate same-port restart with exact durability readback; isolated
+browser rendering; and stopped-server current format-5 backup validated by
+read-only restore preview. All eleven browser checks and eight diagnostic
+booleans were true. The helper reported `ready` at stage `ready`, with a complete
+Tasks document after 22 snapshots (4,892 observer-relative ms). All nine owned
+process/group/listener cleanup proofs passed. Inner disposable state was removed
+under the existing cleanup rule; outer evidence and every earlier report remain
+preserved unchanged. There was no retry or diagnostic port wait.
+
+The bounded report was 1,573 bytes, stderr was empty, and the supervisor verified
+all prior report hashes unchanged. Retained local evidence:
+`/private/tmp/mentat-actual-direct-204275e-report.json` (SHA256
+`747fd1bfc9def1919c99944ebdb79c7dcab1e72377a813afaa645b89d12944ce`) and
+`/private/tmp/mentat-actual-direct-204275e-owned.json`. These machine-local files
+are not committed.
+
+This qualifies only these four local component scenarios on that exact source
+and runtime. It does not qualify a later aggregate head, Linux pidfd behavior,
+native artifacts, real Project execution, provider/account authentication,
+Google login, remote HTTPS, physical devices or the garage journey. No Run was
+dispatched, provider activated or restore confirmed. The passing run does not
+establish the cause of the failed 56b run or alter any earlier failure.
