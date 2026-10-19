@@ -176,13 +176,13 @@ test('existing navigation call timer is distinct from protocol rejection at the 
     assert.equal(methods.filter(method => method === 'Page.navigate').length, 1);
     assert.equal(methods.includes('Runtime.evaluate'), false);
     assert.equal(progress.at(-1).stage, 'navigation');
-    assert.deepEqual(progress.map(value => value.stage), ['discovery','connect','runtime','page','focus','viewport','navigation']);
+    assert.deepEqual(progress.map(value => value.stage).filter((value, index, values) => index === 0 || value !== values[index - 1]), ['discovery','connect','runtime','page','focus','viewport','navigation']);
     assert.equal(JSON.stringify(result).includes('private'), false);
   }
 });
 
 test('navigation acknowledgement after 500ms reaches full readiness only within the remaining budget', async () => {
-  for (const remaining of [1500, 550]) {
+  for (const remaining of [1500, 30]) {
     const methods = []; let acknowledgement;
     class Socket {
       constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
@@ -194,7 +194,7 @@ test('navigation acknowledgement after 500ms reaches full readiness only within 
       }
       close() { this.readyState = 3; clearTimeout(acknowledgement); }
     }
-    const result = await observe({ ...config, remaining_ms: remaining }, { WebSocket: Socket,
+    const result = await observe({ ...config, remaining_ms: remaining }, { now: remaining === 1500 ? undefined : () => 0, WebSocket: Socket,
       fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
     assert.equal(methods.filter(method => method === 'Page.navigate').length, 1);
     if (remaining === 1500) {
@@ -247,7 +247,7 @@ test('initial setup exhausting remaining budget cannot send navigation or evalua
 });
 
 test('Runtime setup acknowledgement beyond 500ms shares the existing remaining budget', async () => {
-  for (const remaining of [1500, 550]) {
+  for (const remaining of [1500, 30]) {
   const methods = []; let acknowledgement;
   class Socket {
     constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
@@ -259,7 +259,7 @@ test('Runtime setup acknowledgement beyond 500ms shares the existing remaining b
     }
     close() { this.readyState = 3; clearTimeout(acknowledgement); }
   }
-  const result = await observe({ ...config, remaining_ms: remaining }, { WebSocket: Socket,
+  const result = await observe({ ...config, remaining_ms: remaining }, { now: remaining === 1500 ? undefined : () => 0, WebSocket: Socket,
     fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
   if (remaining === 1500) {
     assert.equal(result.ready, true); assert.equal(result.stage, 'ready');
@@ -342,4 +342,34 @@ test('a slow fixed connection shares the same original remaining budget without 
   const result = await observe({ ...config, remaining_ms: 1500 }, { WebSocket: Socket,
     fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
   assert.equal(result.ready, true); assert.equal(opens, 1);
+});
+
+test('first invalid or unmatched text presence is retained while Runtime remains pending', async () => {
+  for (const invalid of [false, true]) {
+    const progress = [], methods = [];
+    class Socket {
+      constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+      send(raw) {
+        const message = JSON.parse(raw); methods.push(message.method);
+        queueMicrotask(() => {
+          for (let index = 0; index < 3; index++) this.onmessage({ data: invalid ? new Uint8Array([1,2,3]) : JSON.stringify({ method: 'Unmatched.event', params: { raw: 'private payload URL and ID' } }) });
+        });
+      }
+      close() { this.readyState = 3; }
+    }
+    const result = await observe(config, { now: () => 0, WebSocket: Socket, onProgress: value => progress.push(value),
+      fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+    const key = invalid ? 'invalid_frames' : 'text_frames';
+    const retained = progress.filter(value => value.stage === 'runtime' && value.transport[key] > 0);
+    assert.equal(retained.length, 1); // Count increments do not create a heartbeat.
+    assert.equal(retained[0].transport[key], 1);
+    assert.equal(retained[0].transport.sent_requests, 1);
+    assert.equal(retained[0].transport.pending_calls, 1);
+    assert.equal(retained[0].transport.matched_responses, 0);
+    assert.equal(result.transport[key], 3);
+    assert.equal(result.ready, false); assert.equal(result.code, 'browser_protocol_timeout');
+    assert.equal(result.stage, 'runtime'); assert.deepEqual(methods, ['Runtime.enable']);
+    assert.equal(JSON.stringify(progress).includes('private'), false);
+    assert.ok(Buffer.byteLength(progress.map(value => JSON.stringify(value) + '\n').join('')) <= 12288);
+  }
 });

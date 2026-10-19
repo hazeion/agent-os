@@ -51,3 +51,26 @@ eleven checks within1500ms. Counterexample:
 No Chrome/app/static server launch or new acceptance success is claimed.
 Independent root/peer review and unchanged secret gate are required before any
 separately authorized next static control.
+
+Root's follow-up review identified a timeout evidence gap: a pending call could
+receive an invalid/unmatched text frame without emitting progress before the
+parent deadline. The progress fingerprint now includes only monotone presence
+transitions for text, invalid and matched frames and counter saturation.
+Frame classifications and matches publish those transitions, including early
+returns and unmatched frames. Changing numeric counts do not create records or
+a heartbeat; unchanged fingerprints skip record serialization. Caps, wait
+budgets, predicates and cleanup are unchanged.52fc2ea remains preserved.
+
+A new pending Runtime fixture sends three private unmatched text or invalid
+frames without a response: exactly one presence record retains the first frame,
+sent1/pending1/matched0, while final counters reach3 and readiness still times
+out without navigation/evaluation or payload disclosure. Stage-order assertions
+now account for legitimate presence records at the same fixed stage.
+
+The Node-only timing audit passed all19 cases in5.328s under the existing15s
+wrapper. Timeout-only synthetic negative budgets were then shortened from550ms
+to30ms with a fixed injected clock; the real650ms positive acknowledgements and
+old-source counterexamples remain unchanged. No production/test deadline was
+increased. Final verification:33 Python methods PASS in7.833s, no local POSIX
+skips, ResourceWarnings as errors, including19 Node cases. Compilation, Node
+syntax and diff checks passed. No Chrome or server launch occurred.

@@ -90,8 +90,9 @@ export async function observe(input, dependencies = {}) {
   const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', stage: 'discovery', checks, diagnostics, observation, transport };
   let progressCount = 0, progressBytes = 0, lastProgress;
   const publish = () => {
+    const fingerprint = JSON.stringify({ stage: result.stage, text_seen: transport.text_frames > 0, invalid_seen: transport.invalid_frames > 0, response_seen: transport.matched_responses > 0, counters_saturated: transport.counters_saturated, socket_closed: transport.socket_closed, socket_error: transport.socket_error, close_code: transport.close_code, checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
+    if (fingerprint === lastProgress || progressCount >= 16) return;
     const progress = { schema_version: 1, event: 'progress', stage: result.stage, checks: { ...checks }, diagnostics: { ...diagnostics }, observation: { ...observation }, transport: { ...transport } };
-    const fingerprint = JSON.stringify({ stage: result.stage, socket_closed: transport.socket_closed, socket_error: transport.socket_error, close_code: transport.close_code, checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
     const encoded = JSON.stringify(progress);
     const bytes = Buffer.byteLength(encoded) + 1;
     // Reserve 4KiB for the fixed final record within the parent's 16KiB cap.
@@ -169,11 +170,11 @@ export async function observe(input, dependencies = {}) {
     socket.onmessage = event => {
       if (closing) return;
       const data = event?.data;
-      if (typeof data !== 'string' || Buffer.byteLength(data) > 65536) { count('invalid_frames'); exceptions++; return; }
+      if (typeof data !== 'string' || Buffer.byteLength(data) > 65536) { count('invalid_frames'); exceptions++; publish(); return; }
       count('text_frames');
       let message;
-      try { message = JSON.parse(data); } catch { count('invalid_frames'); exceptions++; return; }
-      if (!message || typeof message !== 'object' || Array.isArray(message)) { count('invalid_frames'); exceptions++; return; }
+      try { message = JSON.parse(data); } catch { count('invalid_frames'); exceptions++; publish(); return; }
+      if (!message || typeof message !== 'object' || Array.isArray(message)) { count('invalid_frames'); exceptions++; publish(); return; }
       if (pending.has(message.id)) {
         const item = pending.get(message.id); pending.delete(message.id); transport.pending_calls = pending.size;
         clearTimeout(item.timer); count('matched_responses');
@@ -181,6 +182,7 @@ export async function observe(input, dependencies = {}) {
         else if (message.error) item.reject(new Error('browser_protocol_failed'));
         else item.resolve(message.result || {});
       } else if (message.method === 'Runtime.exceptionThrown') exceptions++;
+      publish();
     };
     await new Promise((resolve, reject) => {
       connectionTimer = setTimeout(() => { rejectConnection = undefined; reject(new ProtocolTimeout()); }, Math.max(1, remaining()));
