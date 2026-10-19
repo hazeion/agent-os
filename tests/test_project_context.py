@@ -16,7 +16,6 @@ from private_state import private_state_lock
 import project_context as context
 from project_repository import ensure_project_sqlite_authority, mutate_authoritative_projects, ProjectRepositoryConflict
 from task_repository import ensure_task_sqlite_authority
-from task_repository import _schema5_private_unit
 from tests.test_project_repository import project
 
 
@@ -269,7 +268,7 @@ class ProjectContextTests(unittest.TestCase):
         self.assertNotIn('Private garage requirements', json.dumps(payload))
         self.assertNotIn('attachment_', json.dumps(payload))
 
-    def test_private_restore_preserves_context_and_compatible_export_omits_it(self):
+    def test_current_private_restore_preserves_context_and_source(self):
         original = self.publish(self.upload())
         with private_state_lock(self.root):
             unit = backups.capture_private_console_unit(self.root)
@@ -279,12 +278,6 @@ class ProjectContextTests(unittest.TestCase):
         backups.materialize_private_console_unit(target, sanitized, target / 'private' / 'console')
         self.assertEqual(context.read_project_context(target, 'project_mentat'), original)
         self.assertEqual(files.read_attachment_bytes(target, original['attachment_ids'][0])[1], b'Floorplan with supplied dimensions')
-        compatible = _schema5_private_unit(unit)
-        self.assertEqual(compatible.blobs, ())
-        with closing(sqlite3.connect(':memory:')) as connection:
-            connection.deserialize(compatible.database_raw)
-            self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 5)
-            self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE name='mentat_project_context_versions'").fetchone())
         self.assertEqual(context.read_project_context(self.root, 'project_mentat'), original)
 
     def test_durable_backup_archive_restore_retains_project_files(self):
@@ -327,81 +320,6 @@ class ProjectContextTests(unittest.TestCase):
             connection.execute('INSERT INTO mentat_project_context_scopes(id,project_id,revision,created_at) VALUES(?,?,1,1)', ('bad', 'project_mentat'))
             with self.assertRaises(context.ProjectContextError):
                 context.validate_project_context_connection(connection)
-
-
-class ProjectContextMigrationTests(unittest.TestCase):
-    def schema26(self):
-        connection = sqlite3.connect(':memory:')
-        self.addCleanup(connection.close)
-        for version, script in mentat_db.MIGRATIONS:
-            if version > 26:
-                break
-            connection.executescript(script)
-            connection.execute('INSERT INTO schema_migrations VALUES(?,0)', (version,))
-            connection.commit()
-        connection.execute('PRAGMA foreign_keys=ON')
-        return connection
-
-    def test_exact_schema26_upgrades_without_changing_existing_authority(self):
-        connection = self.schema26()
-        before = tuple(connection.execute('SELECT * FROM mentat_owner_auth_state').fetchone())
-        mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
-        self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_owner_auth_state').fetchone()), before)
-        self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_project_context_scopes').fetchone()[0], 0)
-        self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
-
-    def test_schema26_drift_and_partial_migration_fail_atomically(self):
-        connection = self.schema26()
-        connection.execute('CREATE TABLE unexpected(value TEXT)')
-        connection.commit()
-        with self.assertRaises(mentat_db.MentatDatabaseError):
-            mentat_db.migrate(connection)
-        self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 26)
-        connection.execute('DROP TABLE unexpected')
-        broken = tuple((version, script + '\nINVALID SQL;' if version == 27 else script) for version, script in mentat_db.MIGRATIONS)
-        with patch.object(mentat_db, 'MIGRATIONS', broken):
-            with self.assertRaises(sqlite3.OperationalError):
-                mentat_db.migrate(connection)
-        self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 26)
-        self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE name='mentat_project_context_scopes'").fetchone())
-
-    def test_schema26_backup_remains_supported(self):
-        connection = self.schema26()
-        connection.execute(
-            "INSERT INTO mentat_agent_registry_state(singleton,authority,migration_contract,source_kind,source_sha256,source_agent_count,cutover_at) "
-            "VALUES(1,'sqlite',?,'fresh',?,0,1)",
-            (mentat_db.AGENT_REGISTRY_AUTHORITY_CONTRACT, mentat_db.EMPTY_AGENT_REGISTRY_SOURCE_SHA256),
-        )
-        connection.commit()
-        unit = backups.PrivateConsoleUnit(json.dumps({'schema_version': 3, 'runs': []}).encode(), connection.serialize(), None, ())
-        backups.validate_private_console_unit(unit)
-        backups.validate_private_console_unit(backups.sanitize_owner_auth_restore_unit(unit))
-
-    def test_populated_schema26_run_authority_backup_restores_and_upgrades(self):
-        from agent_run_history import save_run_summaries
-        from private_state import history_path
-        from tests.sqlite_authority_support import ensure_run_sqlite_authority
-        from tests.test_run_repository import run_fixture
-        from run_repository import RunRepository
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            old_migrations = tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 26)
-            with patch.object(mentat_db, 'MIGRATIONS', old_migrations), patch.object(mentat_db, 'SCHEMA_VERSION', 26):
-                save_run_summaries(history_path(root), [run_fixture('run_historical', bound=False)], data_root=root)
-                ensure_run_sqlite_authority(root, history_path(root))
-                with private_state_lock(root):
-                    unit = backups.capture_private_console_unit(root)
-            backups.validate_private_console_unit(unit)
-            sanitized = backups.sanitize_owner_auth_restore_unit(unit)
-            target = root / 'restored'
-            (target / 'private').mkdir(parents=True, mode=0o700)
-            backups.materialize_private_console_unit(target, sanitized, target / 'private' / 'console')
-            with closing(mentat_db.connect(target)) as connection:
-                repository = RunRepository(connection)
-                self.assertIsNotNone(repository.authority_receipt(required=True))
-                self.assertEqual(connection.execute('SELECT id FROM mentat_runs').fetchone()[0], 'run_historical')
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
 
 
 if __name__ == '__main__':

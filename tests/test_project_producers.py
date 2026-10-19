@@ -175,16 +175,13 @@ class ProducerIntegrationTests(unittest.TestCase):
             self.assertEqual(connection.execute('SELECT status FROM mentat_runs').fetchone()[0],'unknown')
             self.assertEqual(holds.pending_capacity(connection),(1,32768))
 
-    def test_completed_source_survives_private_backup_and_schema5_omission(self):
+    def test_completed_source_survives_current_private_backup(self):
         self.execute(json.dumps(PROPOSAL,separators=(',',':')))
         import private_console_unit as backups
-        from task_repository import _schema5_private_unit
         unit=backups.capture_private_console_unit(self.root)
         backups.validate_private_console_unit(unit)
         self.assertEqual(json.loads(unit.history_raw)['runs'],[])
         self.assertEqual(len(unit.blobs),2)
-        compatible=_schema5_private_unit(unit)
-        self.assertEqual(compatible.blobs,())
         readback=producers.read_registered_output(self.root,run_id=self.run,generation=GENERATION)
         self.assertEqual(readback['snapshot'],PROPOSAL)
         self.assertEqual(producers.read_registered_output(self.root,run_id=self.run,generation=GENERATION,

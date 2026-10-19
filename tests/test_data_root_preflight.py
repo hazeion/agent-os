@@ -179,8 +179,8 @@ class DataRootPreflightTests(unittest.TestCase):
 
             plan = preflight_data_root(seeds, target, legacy_root=legacy, home=root / "home")
 
-            self.assertEqual(plan.status, "migration_required")
-            self.assertEqual({item.status for item in plan.items}, {"migrate", "reserved"})
+            self.assertEqual(plan.status, "unsupported_legacy_storage")
+            self.assertEqual({item.status for item in plan.items}, {"blocked", "reserved"})
             self.assertFalse(target.exists())
 
     def test_legacy_plus_any_destination_is_a_global_conflict(self):

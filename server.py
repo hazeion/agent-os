@@ -307,10 +307,6 @@ from runtime_config import (
     parse_cli_args,
     prepare_data_root_for_startup,
     run_backup_restore_cli,
-    run_legacy_migration_cli,
-    run_private_console_migration_cli,
-    run_schema_migration_cli,
-    run_task_sqlite_migration_cli,
 )
 from data_layout import (
     MAX_PREFLIGHT_JSON_BYTES,
@@ -17346,22 +17342,6 @@ if __name__ == "__main__":
     if cli_args.print_config:
         print(json.dumps(runtime_config_summary(), indent=2))
         raise SystemExit(0)
-    if cli_args.preview_legacy_migration or cli_args.confirm_legacy_migration:
-        migration_summary, migration_exit = run_legacy_migration_cli(cli_args, APP_CONFIG)
-        print(json.dumps(migration_summary, indent=2))
-        raise SystemExit(migration_exit)
-    if cli_args.preview_schema_migration or cli_args.confirm_schema_migration:
-        schema_summary, schema_exit = run_schema_migration_cli(cli_args, APP_CONFIG)
-        print(json.dumps(schema_summary, indent=2))
-        raise SystemExit(schema_exit)
-    if cli_args.preview_private_migration or cli_args.confirm_private_migration:
-        private_summary, private_exit = run_private_console_migration_cli(cli_args, APP_CONFIG)
-        print(json.dumps(private_summary, indent=2))
-        raise SystemExit(private_exit)
-    if cli_args.preview_task_sqlite_migration:
-        task_summary, task_exit = run_task_sqlite_migration_cli(cli_args, APP_CONFIG)
-        print(json.dumps(task_summary, indent=2))
-        raise SystemExit(task_exit)
     if cli_args.create_backup or cli_args.preview_restore or cli_args.confirm_restore:
         backup_summary, backup_exit = run_backup_restore_cli(cli_args, APP_CONFIG)
         print(json.dumps(backup_summary, indent=2))

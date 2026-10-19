@@ -1,6 +1,9 @@
 # Conversation-owned Agent Console execution
 
-Status: accepted
+Status: accepted for Conversation ownership. Storage upgrade, older archive
+compatibility and schema5 export provisions are historical and superseded by
+[ADR0002](0002-current-only-storage.md), accepted October 19, 2026. The original
+decision below is retained as history; it does not authorize those retired paths.
 
 Mentat will add a durable Conversation authority to its owner-private SQLite
 database. A Conversation owns its ordered Messages and user-authored Turns; a

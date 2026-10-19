@@ -19,6 +19,7 @@ TESTS = ROOT / "tests"
 SHARD_COUNT = 12
 SHARD_GROUP_COUNT = 12
 MAX_CONCURRENT_SHARDS = 4
+MAX_CONCURRENT_SPLIT_UNITS = 2
 PROCESS_STOP_TIMEOUT_SECONDS = 5
 GROUP_UNIT_TIMEOUT_SECONDS = 40 * 60
 IS_WINDOWS = sys.platform == "win32"
@@ -258,14 +259,70 @@ def run_shard(units: tuple[str, ...]) -> int:
     return 0 if unittest.TextTestRunner(verbosity=0, buffer=True).run(suite).wasSuccessful() else 1
 
 
+def _run_split_batch(units: tuple[str, ...], deadline: float) -> int:
+    """Overlap only audited independent tests, each in its own process."""
+
+    if not units or any(not unit.startswith(TEST_UNIT_PREFIX) for unit in units):
+        raise ValueError("invalid independent unittest batch")
+    for unit in units:
+        _split_module_for_id(unit.removeprefix(TEST_UNIT_PREFIX))
+    active: list[tuple[str, subprocess.Popen[bytes]]] = []
+    cursor = 0
+    failed = False
+    try:
+        while cursor < len(units) or active:
+            if time.monotonic() >= deadline:
+                print(
+                    f"Timed out unittest group after {GROUP_UNIT_TIMEOUT_SECONDS} seconds",
+                    flush=True,
+                )
+                return 1
+            while cursor < len(units) and len(active) < MAX_CONCURRENT_SPLIT_UNITS:
+                if time.monotonic() >= deadline:
+                    print(
+                        f"Timed out unittest group after {GROUP_UNIT_TIMEOUT_SECONDS} seconds",
+                        flush=True,
+                    )
+                    return 1
+                unit = units[cursor]
+                print(f"Running unittest unit: {unit}", flush=True)
+                active.append((unit, _spawn_shard((unit,))))
+                cursor += 1
+            finished = False
+            for unit, process in tuple(active):
+                result = process.poll()
+                if result is None:
+                    continue
+                # Reap completed children before releasing a scheduling slot.
+                process.wait(timeout=PROCESS_STOP_TIMEOUT_SECONDS)
+                active.remove((unit, process))
+                print(f"Finished unittest unit: {unit} (exit {result})", flush=True)
+                failed = failed or result != 0
+                finished = True
+            if active and not finished:
+                time.sleep(0.05)
+        return 1 if failed else 0
+    finally:
+        # Watchdog expiry, cancellation, failed spawn/poll, and unexpected
+        # runner errors must stop every child already owned by this batch.
+        for _unit, process in active:
+            try:
+                _stop_process_tree(process)
+            except BaseException:
+                pass
+
+
 def run_group(group: tuple[tuple[str, ...], ...]) -> int:
-    """Run each unit in a fresh, sequential process within one bounded CI job."""
+    """Run isolated units with serial module barriers and bounded split overlap."""
 
     if not group or any(not shard for shard in group):
         raise ValueError("invalid unittest shard group")
     deadline = time.monotonic() + GROUP_UNIT_TIMEOUT_SECONDS
     failed = False
-    for unit in (unit for shard in group for unit in shard):
+    units = tuple(unit for shard in group for unit in shard)
+    cursor = 0
+    while cursor < len(units):
+        unit = units[cursor]
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             print(
@@ -273,6 +330,14 @@ def run_group(group: tuple[tuple[str, ...], ...]) -> int:
                 flush=True,
             )
             return 1
+        if unit.startswith(TEST_UNIT_PREFIX):
+            end = cursor + 1
+            while end < len(units) and units[end].startswith(TEST_UNIT_PREFIX):
+                end += 1
+            result = _run_split_batch(units[cursor:end], deadline)
+            failed = failed or result != 0
+            cursor = end
+            continue
         print(f"Running unittest unit: {unit}", flush=True)
         process = _spawn_shard((unit,))
         try:
@@ -292,6 +357,7 @@ def run_group(group: tuple[tuple[str, ...], ...]) -> int:
             raise
         print(f"Finished unittest unit: {unit} (exit {result})", flush=True)
         failed = failed or result != 0
+        cursor += 1
     return 1 if failed else 0
 
 

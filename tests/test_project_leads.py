@@ -212,25 +212,6 @@ class ProjectLeadTests(unittest.TestCase):
                                 selection_token=at_limit["clear_token"])
 
 
-class ProjectLeadMigrationTests(unittest.TestCase):
-    def test_exact_schema37_upgrade_and_drift_gate(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "prior.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=37)
-            with closing(sqlite3.connect(path)) as connection:
-                mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drift.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=37)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP TRIGGER mentat_plan_version_immutable")
-                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 37"):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute(
-                    "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0], 37)
 
 
 if __name__ == "__main__":

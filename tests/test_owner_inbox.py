@@ -112,26 +112,7 @@ class OwnerInboxTests(unittest.TestCase):
                                    None, "failed", 0, 1, "console", alternate[2], None, "車" * 80))
         self.assertLessEqual(len(public["title"].encode("utf-8")), 500)
 
-    def test_schema_33_upgrade_adds_empty_bounded_inbox_without_rewriting_sources(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "old.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=33)
-            with closing(sqlite3.connect(path)) as connection:
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
-                mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], mentat_db.SCHEMA_VERSION)
-                self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_inbox_items").fetchone()[0], 0)
-                validate_inbox_connection(connection)
 
-    def test_schema_34_upgrade_rejects_a_drifted_schema_33_source(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drifted.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=33)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("ALTER TABLE mentat_projects ADD COLUMN unsafe_extension TEXT")
-                with self.assertRaises(mentat_db.MentatDatabaseError):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 33)
 
     def test_exact_pending_generation_read_and_ack_are_durable_and_idempotent(self):
         self.assertEqual(read_inbox(self.root), [])
