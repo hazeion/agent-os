@@ -191,3 +191,9 @@ then opens the real FIFO and verifies immediate refusal with no database
 creation. All ten focused current/refusal methods pass in5.787s. Existing
 regular-file and current-present-database behavior is unchanged. This narrow
 followup is subject to independent review before publication.
+
+The shared parser explicitly decodes UTF-8 before JSON parsing, matching actual
+current Run bootstrap. JSON's bytes auto-detection previously admitted UTF-16,
+UTF-32 and UTF-8 BOM documents that bootstrap refuses. All three are now part
+of unchanged-history/no-database refusal coverage. The same current shape,
+duplicate-key and Unicode-error policy remains; no new encoding is supported.
