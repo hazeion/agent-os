@@ -14,6 +14,14 @@ MAX_HEADERS = 1024
 MAX_DYNAMIC = 4096
 MAX_DEPENDENCIES = 256
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,255}\Z")
+# Fixed glibc/ELF64 declarations understood by the host-only policy. Unknown
+# vendor tags cannot silently introduce another dependency/search mechanism.
+_HOST_DYNAMIC_TAGS = frozenset({
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    20, 21, 23, 24, 25, 26, 27, 28, 30, 32, 33, 34, 35, 36, 37,
+    0x6ffffef5, 0x6ffffef6, 0x6ffffef7, 0x6ffffff0, 0x6ffffff9,
+    0x6ffffffa, 0x6ffffffb, 0x6ffffffc, 0x6ffffffd, 0x6ffffffe, 0x6fffffff,
+})
 
 
 class RuntimeElfError(ValueError):
@@ -34,7 +42,9 @@ class ElfDependencies:
     runpath: tuple[str, ...]
 
 
-def inspect_elf(data: bytes) -> ElfDependencies | None:
+def inspect_elf(data: bytes, *, host_only: bool = False) -> ElfDependencies | None:
+    if type(host_only) is not bool:
+        _fail()
     if type(data) is not bytes or len(data) > MAX_ELF_BYTES:
         _fail()
     if not data.startswith(b"\x7fELF"):
@@ -79,8 +89,13 @@ def inspect_elf(data: bytes) -> ElfDependencies | None:
     tags = {}
     needed_offsets = []
     ended = False
+    host_tags = set()
     for index in range(dynamic[1] // 16):
         tag, value = struct.unpack_from("<qQ", data, dynamic[0] + index * 16)
+        if host_only:
+            if tag not in _HOST_DYNAMIC_TAGS or tag != 1 and tag in host_tags:
+                _fail()
+            host_tags.add(tag)
         if tag == 0:
             ended = True
             break
@@ -94,6 +109,14 @@ def inspect_elf(data: bytes) -> ElfDependencies | None:
             tags[tag] = value
         elif tag in {0x6ffffefb, 0x6ffffefc}:  # DT_DEPAUDIT / DT_AUDIT
             _fail()
+        elif host_only:
+            # These declarations alter lookup or introduce objects outside the
+            # represented DT_NEEDED graph. Do not mistake a partial graph for
+            # a fixed host helper's complete declared loading requirements.
+            if tag == 30 and value & ~(8 | 16):  # NOW / STATIC_TLS only
+                _fail()
+            if tag == 0x6ffffffb and value & ~(1 | 8 | 0x08000000):  # NOW / NODELETE / PIE
+                _fail()
     if not ended:
         _fail()
     if not needed_offsets and not any(tag in tags for tag in (14, 15, 29)) and 5 not in tags and 10 not in tags:
@@ -168,4 +191,20 @@ def inspect_elf(data: bytes) -> ElfDependencies | None:
                 _fail()
         return tuple(value)
 
-    return ElfDependencies(machine, interpreter, needed, soname, paths(15), paths(29))
+    result = ElfDependencies(machine, interpreter, needed, soname, paths(15), paths(29))
+    if host_only and (result.rpath or result.runpath):
+        _fail()
+    return result
+
+
+def inspect_host_elf(data: bytes) -> ElfDependencies:
+    """Inspect the deliberately narrower fixed Ubuntu amd64 helper subset.
+
+    This is static declaration evidence, never proof of ld.so cache/preload,
+    hwcaps, dlopen, package provenance, immutable execution or privileges.
+    """
+    result = inspect_elf(data, host_only=True)
+    if (result is None or result.machine != 62 or result.interpreter not in
+            {None, "/lib64/ld-linux-x86-64.so.2"}):
+        _fail()
+    return result
