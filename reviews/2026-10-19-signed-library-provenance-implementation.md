@@ -144,3 +144,16 @@ Logs: /private/tmp/mentat-library-origin-grammar-focused.log and
 /private/tmp/mentat-library-origin-actual-index-grammar.log. The unchanged scanner
 findings and final exact artifact gate are still pending; baseline217 remains
 untouched for explicit public-hash review.
+
+## Reviewed public-hash baseline ownership
+
+Root and independent source review cleared exact bf25185 after the grammar
+correction. Both also independently cleared the unchanged scanner's28 actual
+new public SHA256 occurrences:15 in the fixed origin module,2 in the exact-member
+PLT module and11 in the contract's JSON package tuples. Every detector fingerprint
+matches its exact public literal already recorded in the reviewed contract.
+Only those28 is_secret:false records were added. The complete original217 entries
+and every non-results baseline field remain exact, for245 total entries. No
+credential, detector/filter/threshold change or broad exclusion was introduced.
+The unchanged tracked-secret gate and exact-branch artifact checks follow on
+this baseline-owner commit; their success is not assumed by this record.
