@@ -37,7 +37,14 @@ REPLACEMENT_VERSIONS = {
     "mcp": "2.2.0", "multidict": "6.9.1", "oauthlib": "4.0.0", "pip": "26.2",
     "pyjwt": "2.15.0", "urllib3": "2.8.0", "yarl": "1.25.1", "mcp-types": "2.2.0",
 }
-UNRESOLVED_ADVISORIES = frozenset({"PYSEC-2026-4146"})
+UNRESOLVED_ADVISORIES = frozenset()
+PYJWT_OPTIONS_REVIEW = {
+    "advisory": "PYSEC-2026-4146", "package": "pyjwt", "version": "2.15.0",
+    "wheel_sha256": "7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8",
+    "fixed_commit": "0c87c8c8b1a74cac99ad8115f3050efcb7fbed35",
+    "release_commit": "1d41a6478e1562e68ff667fcd703356acf085f68",
+    "member": "jwt/api_jwt.py", "member_git_blob_sha1": "a63191df0683f86cd946399a4461884b248a5b1c",
+}
 MAX_REPORT_BYTES = 4 * 1024 * 1024
 MAX_REQUIREMENTS = 512
 AUDIT_SECONDS = 300
@@ -124,6 +131,16 @@ def load_candidate(path=None):
     return candidate, baseline, digest
 
 
+def _advisory_reviews(candidate):
+    items = [item for item in candidate["wheels"] if item["name"] == "pyjwt"]
+    if not items:
+        return []
+    if (len(items) != 1 or items[0]["version"] != PYJWT_OPTIONS_REVIEW["version"]
+            or items[0]["sha256"] != PYJWT_OPTIONS_REVIEW["wheel_sha256"]):
+        _fail("advisory_review")
+    return [dict(PYJWT_OPTIONS_REVIEW)]
+
+
 def _metadata(data, item):
     # Force all existing ZIP path, type, metadata and expansion guards before
     # treating metadata as dependency evidence. Never run package entry points.
@@ -131,6 +148,17 @@ def _metadata(data, item):
         pass
     with zipfile.ZipFile(io.BytesIO(data)) as wheel:
         names = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        if item["name"] == "pyjwt":
+            review = _advisory_reviews({"wheels": [item]})[0]
+            if hashlib.sha256(data).hexdigest() != review["wheel_sha256"]:
+                _fail("advisory_review")
+            member = wheel.getinfo(review["member"])
+            if member.file_size > 512 * 1024:
+                _fail("advisory_review")
+            content = wheel.read(member)
+            blob = b"blob " + str(len(content)).encode("ascii") + b"\x00" + content
+            if hashlib.sha1(blob).hexdigest() != review["member_git_blob_sha1"]:
+                _fail("advisory_review")
         return BytesParser().parsebytes(wheel.read(names[0]))
 
 
@@ -200,7 +228,7 @@ def inspect_dependencies(artifacts: Path):
     except (ValueError, KeyError, TypeError, origin.OriginError):
         _fail("requirements")
     return {"format": 1, "purpose": "dependency-qualification-comparison", "candidate_sha256": digest,
-            "unresolved_advisories": sorted(UNRESOLVED_ADVISORIES),
+            "unresolved_advisories": sorted(UNRESOLVED_ADVISORIES), "reviewed_advisories": _advisory_reviews(candidate),
             "packages": versions, "dependency_conflicts": [list(value) for value in sorted(conflicts)],
             "source_pyproject_sha256": hashlib.sha256(documents["source/pyproject.toml"]).hexdigest(),
             "source_uv_lock_sha256": hashlib.sha256(documents["source/uv.lock"]).hexdigest(),
@@ -238,7 +266,7 @@ def validate_audit_report(raw: bytes):
         _fail("audit_inventory")
     return {"candidate_sha256": digest, "audit_report_sha256": hashlib.sha256(raw).hexdigest(),
             "reported_packages": len(seen), "reported_vulnerabilities": 0,
-            "unresolved_advisories": sorted(UNRESOLVED_ADVISORIES),
+            "unresolved_advisories": sorted(UNRESOLVED_ADVISORIES), "reviewed_advisories": _advisory_reviews(candidate),
             "scanner_execution_verified": False, "production_qualified": False}
 
 

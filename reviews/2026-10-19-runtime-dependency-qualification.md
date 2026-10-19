@@ -41,7 +41,7 @@ imported or executed.
 | multidict | 6.7.1 | 6.9.1 | Current advisory fix floor |
 | oauthlib | 3.3.1 | 4.0.0 | Only listed fixed release family; major-change runtime qualification pending |
 | pip | 26.1.2 | 26.2 | Published METADATA version of the listed 26.2/26.2.0 fix |
-| pyjwt | 2.13.0 | 2.15.0 | Covers listed fix floors; one advisory remains unresolved |
+| pyjwt | 2.13.0 | 2.15.0 | Listed fix floors plus exact primary-source resolution of stale advisory metadata |
 | urllib3 | 2.7.0 | 2.8.0 | Current advisory fix floor |
 | yarl | 1.22.0 | 1.25.1 | Minimum required by aiohttp 3.14.4; not an affected baseline package |
 | mcp-types | 2.0.0 | 2.2.0 | Exact peer required by mcp 2.2.0; not an affected baseline package |
@@ -49,9 +49,22 @@ imported or executed.
 The unchanged source requires `PyJWT[crypto]==2.13.0`. The final twelve-change
 graph has exactly that one declared requirement conflict. It is reported and
 refused before stage materialization. No constraint, source file or lock entry
-was edited or waived. `PYSEC-2026-4146` is also explicitly retained as unresolved:
-the primary PyPI record for 2.13.0 has no fixed release and an unreleased-fix
-triage note. A zero-finding scan of 2.15.0 is not substituted for that review.
+was edited or waived.
+
+The initial review retained `PYSEC-2026-4146` as unresolved because its formal
+record lists no fixed release and still has an unreleased-fix triage note.
+Independent primary-source research subsequently established the exact candidate
+fix rather than waiving that advisory. The
+[upstream fix](https://github.com/jpadilla/pyjwt/commit/0c87c8c8b1a74cac99ad8115f3050efcb7fbed35)
+copies caller options before defaults and includes reuse regressions. It is an
+[ancestor of release 2.15.0](https://github.com/jpadilla/pyjwt/compare/0c87c8c8b1a74cac99ad8115f3050efcb7fbed35...2.15.0).
+The exact pinned wheel's `jwt/api_jwt.py` equals the immutable
+[release source](https://github.com/jpadilla/pyjwt/blob/1d41a6478e1562e68ff667fcd703356acf085f68/jwt/api_jwt.py#L69)
+Git blob `a63191df0683f86cd946399a4461884b248a5b1c`. The inspector requires the
+exact version, wheel SHA256 and member Git identity before reporting that
+candidate-specific review. Changed wheels, versions or source members fail.
+Formal advisory metadata is stale; a scanner's zero count alone was not accepted
+as resolution. The unchanged Hermes 2.13.0 source requirement remains blocked.
 
 ## Implemented interface and tests
 
@@ -69,12 +82,13 @@ dependency resolution, PyPI service and a fresh owned home/cache. No proxy,
 netrc, provider credential or owner configuration is inherited. The worker has
 a 300-second absolute budget, four-MiB stdout ceiling and owned-child cleanup.
 Complete exact coordinates and zero reported findings are required. The output
-records local scanner execution, unresolved review and `production_qualified=false`.
+records local scanner execution, specific advisory reviews, any unresolved
+advisories and `production_qualified=false`.
 `--audit-report` can check supplied JSON but explicitly cannot verify execution.
 Neither interface issues a trusted readiness receipt or production capability.
 
-Final local Python 3.13 validation on macOS: 34 combined dependency/origin methods,
-30 pass and four existing Linux-only origin methods skip. New tests exercise
+Final local Python 3.13 validation on macOS: 35 combined dependency/origin methods,
+31 pass and four existing Linux-only origin methods skip. New tests exercise
 positive synthetic seven-replacement POSIX staging, exact unchanged upstream
 bytes, fixed twelve-change manifest, existing destination refusal, metadata and
 source conflicts, extras, unresolved advisory refusal, strict audit inventory,
@@ -99,7 +113,7 @@ for control. Earlier intermediate cleanup tests failed on terminal-Darwin
 leader queries; those failures are not passing evidence.
 
 The ordinary fixed-comparison `--audit` command completes against all 111
-packages with zero reported findings and the unresolved advisory still shown.
+packages with zero reported findings and the exact reviewed advisory evidence.
 The original 111-package baseline scan refuses vulnerabilities. A separate
 single-package baseline probe verified the real worker's positive path before
 the comparison was available. Source parsing and whitespace checks pass.
@@ -118,7 +132,7 @@ The October 19 observed result binds candidate SHA256
 audit-report SHA256
 `b0b18d8e091340e132caaa4310125b4cdf2b5ab2154d6c12771470f164966b4d`.
 It reports 111 packages, zero findings, verified local scanner execution and
-unresolved `PYSEC-2026-4146`, with production qualification false. These are
+candidate-specific reviewed `PYSEC-2026-4146`, with production qualification false. These are
 observed report identities, not permanent safety or readiness receipts.
 For metadata inspection, supply `--artifacts /absolute/disposable/public-artifacts`
 containing the baseline source archive, 99 unchanged baseline wheels and twelve
@@ -140,8 +154,8 @@ or substituted for the baseline. No verified official-release path removes the
 hard pin; upstream fix/release and a newly reviewed source qualification remain
 options, rather than an automatic fallback or a maintained fork.
 
-The actual twelve-change scope, source constraint conflict and advisory review
-must be resolved before real staging. Then actual isolated Linux unchanged-stock
+The actual twelve-change scope and source constraint conflict must be resolved
+before real staging. Then actual isolated Linux unchanged-stock
 Hermes/PIL/image/broker and loader/helper qualification remain required. Candidate
 JSON packaging inventory also needs a coordinated change outside this lane:
 current package-data rules include only the baseline origin lock. Request-policy

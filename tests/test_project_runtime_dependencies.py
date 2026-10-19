@@ -79,7 +79,28 @@ class DependencyQualificationTests(unittest.TestCase):
         self.assertEqual(candidate["source"], baseline["source"])
         self.assertEqual(candidate["python"], baseline["python"])
         self.assertEqual(candidate["uv_lock_sha256"], baseline["uv_lock_sha256"])
-        self.assertEqual(dependencies.UNRESOLVED_ADVISORIES, frozenset({"PYSEC-2026-4146"}))
+        self.assertEqual(dependencies.UNRESOLVED_ADVISORIES, frozenset())
+        self.assertEqual(dependencies._advisory_reviews(candidate), [dependencies.PYJWT_OPTIONS_REVIEW])
+
+    def test_specific_pyjwt_review_binds_wheel_coordinate_and_exact_release_member(self):
+        content = b"# synthetic public review fixture\noptions = dict(options)\n"
+        raw = fixtures.wheel([("pyjwt-2.15.0.dist-info/METADATA", b"Name: PyJWT\nVersion: 2.15.0\n\n"),
+                              ("jwt/api_jwt.py", content)])
+        entry = {"name": "pyjwt", "version": "2.15.0", "sha256": hashlib.sha256(raw).hexdigest()}
+        blob = b"blob " + str(len(content)).encode() + b"\x00" + content
+        review = dict(dependencies.PYJWT_OPTIONS_REVIEW, wheel_sha256=entry["sha256"],
+                      member_git_blob_sha1=hashlib.sha1(blob).hexdigest())
+        with patch.object(dependencies, "PYJWT_OPTIONS_REVIEW", review):
+            self.assertEqual(dependencies._metadata(raw, entry)["Version"], "2.15.0")
+            with self.assertRaisesRegex(dependencies.DependencyQualificationError, "advisory_review"):
+                dependencies._advisory_reviews({"wheels": [dict(entry, version="2.14.0")]})
+            with patch.object(dependencies, "PYJWT_OPTIONS_REVIEW", dict(review, member_git_blob_sha1="0" * 40)), \
+                    self.assertRaisesRegex(dependencies.DependencyQualificationError, "advisory_review"):
+                dependencies._metadata(raw, entry)
+            changed = fixtures.wheel([("pyjwt-2.15.0.dist-info/METADATA", b"Name: PyJWT\nVersion: 2.15.0\n\n"),
+                                     ("jwt/api_jwt.py", content + b"# changed\n")])
+            with self.assertRaisesRegex(dependencies.DependencyQualificationError, "advisory_review"):
+                dependencies._metadata(changed, entry)
 
     def test_missing_candidate_identity_refuses_before_reading_any_candidate(self):
         with patch.object(dependencies, "CANDIDATE_SHA256", None), patch.object(Path, "open") as opened:
