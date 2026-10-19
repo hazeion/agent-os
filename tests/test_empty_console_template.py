@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import FrozenInstanceError
 from functools import lru_cache
 import hashlib
@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sqlite3
 from tempfile import TemporaryDirectory
 from threading import Barrier, Event, Lock, Thread, get_ident
 import unittest
@@ -91,6 +92,43 @@ class EmptyConsoleTemplateTests(unittest.TestCase):
                 self.assertEqual(first.blobs, ())
                 self.assertEqual(units._cached_empty_private_console_unit.cache_info().maxsize, 1)
                 self.assertEqual(units._cached_empty_private_console_unit.cache_info().currsize, 1)
+
+    def test_schema43_warm_empty_template_remains_unowned_and_restores_fresh_epochs(self):
+        with self.isolated_cache(), TemporaryDirectory() as temporary:
+            unit = units.empty_private_console_unit()
+            self.assertIs(unit, units.empty_private_console_unit())
+            path = Path(temporary) / "inspect.sqlite3"
+            def inspect(value):
+                path.write_bytes(value.database_raw)
+                with closing(sqlite3.connect(path)) as connection:
+                    self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 43)
+                    for table in ("mentat_project_worker_generations", "mentat_project_worker_calls",
+                                  "mentat_project_proposal_input_receipts", "mentat_project_proposal_input_files"):
+                        self.assertEqual(connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0], 0)
+                    self.assertEqual(connection.execute("SELECT state FROM mentat_owner_auth_state WHERE singleton=1").fetchone()[0], "unbootstrapped")
+                    for table in ("mentat_owner_auth_credentials", "mentat_owner_auth_sessions"):
+                        self.assertEqual(connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0], 0)
+                    return (connection.execute("SELECT approval_epoch FROM mentat_project_context_access_state").fetchone()[0],
+                            connection.execute("SELECT confirmation_epoch FROM mentat_deliverable_review_state").fetchone()[0])
+            self.assertEqual(inspect(unit), (bytes(32), bytes(32)))
+            restored = [units.sanitize_owner_auth_restore_unit(unit) for _ in range(2)]
+            epochs = [inspect(value) for value in restored]
+            for approval, confirmation in epochs:
+                self.assertNotEqual(approval, bytes(32))
+                self.assertNotEqual(confirmation, bytes(32))
+            self.assertNotEqual(epochs[0][0], epochs[1][0])
+            self.assertNotEqual(epochs[0][1], epochs[1][1])
+            self.assertIs(units.empty_private_console_unit(), unit)
+            self.assertEqual(inspect(unit), (bytes(32), bytes(32)))
+
+    def test_current_journal_recipe_threshold_change_rebuilds_synthetic_bytes(self):
+        with self.isolated_cache(), patch.object(units, "_initialize_database", wraps=units._initialize_database) as initialize:
+            original = units.empty_private_console_unit()
+            with patch.object(units, "PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION", 44):
+                changed = units.empty_private_console_unit()
+                self.assertIsNot(changed, original)
+                self.assertEqual(changed, original)
+            self.assertEqual(initialize.call_count, 2)
 
     def test_migration_history_schema_and_normalization_recipe_changes_miss_cache(self):
         with self.isolated_cache(), patch.object(units, "_initialize_database", wraps=units._initialize_database) as initialize:
