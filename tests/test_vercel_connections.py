@@ -30,6 +30,24 @@ from vercel_connections import (
 
 
 class VercelConnectionTests(unittest.TestCase):
+    def test_retained_schema_33_validation_does_not_upgrade_or_rewrite_database(self):
+        from private_console_unit import _initialize_database
+
+        with TemporaryDirectory() as temporary:
+            database = Path(temporary) / "mentat.sqlite3"
+            _initialize_database(database, schema_version=33)
+            before = database.read_bytes()
+            connection = sqlite3.connect(database)
+            try:
+                self.assertEqual(validate_provider_connections(connection), ())
+                self.assertEqual(
+                    connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+                    33,
+                )
+            finally:
+                connection.close()
+            self.assertEqual(database.read_bytes(), before)
+
     def cli(self, arguments: list[str]) -> tuple[int, dict[str, object]]:
         output = io.StringIO()
         with redirect_stdout(output), patch("mentat.cli.sys.stdin", io.StringIO()):
