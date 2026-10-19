@@ -1,10 +1,8 @@
 """Validated snapshots of Mentat's durable private Agent Console unit.
 
-Schema 10 preserves private provider connections and Conversation foundation
-alongside embedded Agents,
-canonical SQLite Runs, events, Tasks, attachments, and ready blobs even when
-the bounded legacy-history projection omits older detail. Schema 4-8 recovery
-units remain supported. Runtime scratch and credential values are outside this
+Only the current schema46 unit is supported, with embedded Agents, provider
+connections, Conversations, canonical Runs/events/Tasks and retained blobs.
+Historical databases and out-of-line registries are refused without migration. Runtime scratch and credential values are outside this
 boundary.
 """
 
@@ -29,9 +27,7 @@ from typing import Iterable
 
 from agent_registry import (
     AgentRegistryError,
-    REGISTRY_DATABASE_NAME,
     authority_receipt,
-    initialize_registry_file,
     validate_registry_connection,
 )
 from codex_runtime import codex_binding_is_valid
@@ -40,10 +36,7 @@ from conversation_repository import (
     validate_repository_connection as validate_conversation_repository_connection,
 )
 from agent_run_history import (
-    DEFAULT_RETENTION,
-    LEGACY_SCHEMA_VERSIONS,
     SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
-    _hydrate,
     summarize_run,
 )
 from agent_console_attachments import MAX_RETAINED_BLOB_BYTES, MAX_RETAINED_BLOBS
@@ -52,14 +45,9 @@ from mentat_db import (
     EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
     MIGRATIONS,
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
-    expected_schema_signature as _expected_schema_signature,
-    legacy_agent_registry_artifacts_present_at,
-    schema_signature as _schema_signature,
     schema_signature_state as _schema_signature_state,
 )
 from private_state import (
-    blobs_root,
-    console_root,
     database_path,
     ensure_console_root,
     history_path,
@@ -77,95 +65,11 @@ from vercel_connections import (
 
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
 MAX_DATABASE_BYTES = 64 * 1024 * 1024
-MAX_REGISTRY_DATABASE_BYTES = 4 * 1024 * 1024
 MAX_BLOB_BYTES = 10 * 1024 * 1024
 MAX_BLOBS = MAX_RETAINED_BLOBS
 MAX_PRIVATE_UNIT_BYTES = 96 * 1024 * 1024
-LEGACY_DATABASE_SCHEMA_VERSION = 4
-PREVIOUS_DATABASE_SCHEMA_VERSION = 5
-TASK_DATABASE_SCHEMA_VERSION = 6
-RUN_DATABASE_SCHEMA_VERSION = 7
-AGENT_DATABASE_SCHEMA_VERSION = 8
-PROVIDER_DATABASE_SCHEMA_VERSION = 9
-CONVERSATION_DATABASE_SCHEMA_VERSION = 10
-SUBMISSION_DATABASE_SCHEMA_VERSION = 11
-CONVERSATION_REPAIR_DATABASE_SCHEMA_VERSION = 12
-TERMINAL_FINALIZATION_DATABASE_SCHEMA_VERSION = 13
-ATTEMPT_DATABASE_SCHEMA_VERSION = 14
-ATTACHMENT_DATABASE_SCHEMA_VERSION = 15
-PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION = 17
-PROJECT_DATABASE_SCHEMA_VERSION = 18
-TASK_EXECUTION_DATABASE_SCHEMA_VERSION = 19
-TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION = 21
-CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION = 22
-PLANNING_DELETION_DATABASE_SCHEMA_VERSION = 23
-OWNER_AUTH_DATABASE_SCHEMA_VERSION = 24
-OWNER_METHOD_DATABASE_SCHEMA_VERSION = 25
-GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION = 26
-PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION = 27
-PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION = 28
-TASK_INPUT_DATABASE_SCHEMA_VERSION = 29
-RUN_INPUT_DATABASE_SCHEMA_VERSION = 30
-DELIVERABLE_DATABASE_SCHEMA_VERSION = 31
-DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION = 32
-PLAN_DATABASE_SCHEMA_VERSION = 33
-INBOX_DATABASE_SCHEMA_VERSION = 34
-RUN_IDENTITY_DATABASE_SCHEMA_VERSION = 35
-RUN_ATTENTION_DATABASE_SCHEMA_VERSION = 36
-PLAN_POLICY_DATABASE_SCHEMA_VERSION = 37
-PROJECT_LEAD_DATABASE_SCHEMA_VERSION = 38
-PROJECT_INPUT_DATABASE_SCHEMA_VERSION = 39
-PROJECT_INPUT_ACTION_DATABASE_SCHEMA_VERSION = 40
-PROJECT_PROPOSAL_SOURCE_DATABASE_SCHEMA_VERSION = 41
-PROJECT_PROPOSAL_INPUT_DATABASE_SCHEMA_VERSION = 42
-PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION = 43
-PROJECT_SCOPE_JOURNAL_DATABASE_SCHEMA_VERSION = 44
-PROJECT_OUTPUT_RESERVATION_DATABASE_SCHEMA_VERSION = 45
-PROJECT_PRODUCER_DATABASE_SCHEMA_VERSION = 46
-SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
-    LEGACY_DATABASE_SCHEMA_VERSION,
-    PREVIOUS_DATABASE_SCHEMA_VERSION,
-    TASK_DATABASE_SCHEMA_VERSION,
-    RUN_DATABASE_SCHEMA_VERSION,
-    AGENT_DATABASE_SCHEMA_VERSION,
-    PROVIDER_DATABASE_SCHEMA_VERSION,
-    CONVERSATION_DATABASE_SCHEMA_VERSION,
-    SUBMISSION_DATABASE_SCHEMA_VERSION,
-    CONVERSATION_REPAIR_DATABASE_SCHEMA_VERSION,
-    TERMINAL_FINALIZATION_DATABASE_SCHEMA_VERSION,
-    ATTEMPT_DATABASE_SCHEMA_VERSION,
-    ATTACHMENT_DATABASE_SCHEMA_VERSION,
-    16,
-    PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION,
-    PROJECT_DATABASE_SCHEMA_VERSION,
-    TASK_EXECUTION_DATABASE_SCHEMA_VERSION,
-    TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION,
-    CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION,
-    PLANNING_DELETION_DATABASE_SCHEMA_VERSION,
-    OWNER_AUTH_DATABASE_SCHEMA_VERSION,
-    OWNER_METHOD_DATABASE_SCHEMA_VERSION,
-    GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION,
-    PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION,
-    PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION,
-    TASK_INPUT_DATABASE_SCHEMA_VERSION,
-    RUN_INPUT_DATABASE_SCHEMA_VERSION,
-    DELIVERABLE_DATABASE_SCHEMA_VERSION,
-    DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION,
-    PLAN_DATABASE_SCHEMA_VERSION,
-    INBOX_DATABASE_SCHEMA_VERSION,
-    RUN_IDENTITY_DATABASE_SCHEMA_VERSION,
-    RUN_ATTENTION_DATABASE_SCHEMA_VERSION,
-    PLAN_POLICY_DATABASE_SCHEMA_VERSION,
-    PROJECT_LEAD_DATABASE_SCHEMA_VERSION,
-    PROJECT_INPUT_DATABASE_SCHEMA_VERSION,
-    PROJECT_INPUT_ACTION_DATABASE_SCHEMA_VERSION,
-    PROJECT_PROPOSAL_SOURCE_DATABASE_SCHEMA_VERSION,
-    PROJECT_PROPOSAL_INPUT_DATABASE_SCHEMA_VERSION,
-    PROJECT_WORKER_JOURNAL_DATABASE_SCHEMA_VERSION,
-    PROJECT_SCOPE_JOURNAL_DATABASE_SCHEMA_VERSION,
-    PROJECT_OUTPUT_RESERVATION_DATABASE_SCHEMA_VERSION,
-    PROJECT_PRODUCER_DATABASE_SCHEMA_VERSION,
-}
+SUPPORTED_DATABASE_SCHEMA_VERSIONS = {DATABASE_SCHEMA_VERSION}
+
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
 TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
@@ -204,7 +108,6 @@ class PrivateBlob:
 class PrivateConsoleUnit:
     history_raw: bytes
     database_raw: bytes
-    registry_database_raw: bytes | None
     blobs: tuple[PrivateBlob, ...]
 
     @property
@@ -214,14 +117,8 @@ class PrivateConsoleUnit:
 
     @property
     def agent_count(self) -> int:
-        embedded = _database_agent_count(self.database_raw)
-        if embedded is not None:
-            if self.registry_database_raw is not None:
-                raise PrivateConsoleUnitError("private_agent_registry_duplicate")
-            return embedded
-        if self.registry_database_raw is None:
-            raise PrivateConsoleUnitError("private_agent_registry_missing")
-        return _registry_agent_count(self.registry_database_raw)
+        count = _database_agent_count(self.database_raw)
+        return 0 if count is None else count
 
     @property
     def task_count(self) -> int:
@@ -313,34 +210,6 @@ def _history_reference_pairs(raw: bytes) -> set[tuple[str, str]]:
     return references
 
 
-def _normalized_history(path: Path) -> bytes:
-    raw = _safe_regular(path, maximum=MAX_HISTORY_BYTES)
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise PrivateConsoleUnitError("private_history_invalid") from exc
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema_version") not in (LEGACY_SCHEMA_VERSIONS | {HISTORY_SCHEMA_VERSION})
-        or not isinstance(payload.get("runs"), list)
-    ):
-        raise PrivateConsoleUnitError("private_history_unsupported")
-    runs = [
-        run
-        for item in payload["runs"]
-        if isinstance(item, dict)
-        if (run := _hydrate(item)) is not None
-    ]
-    runs.sort(
-        key=lambda run: (str(run.get("created_at") or ""), str(run.get("id") or "")),
-        reverse=True,
-    )
-    runs = runs[:DEFAULT_RETENTION]
-    if payload["runs"] and not runs:
-        raise PrivateConsoleUnitError("private_history_invalid")
-    summaries = [summarize_run(run) for run in runs]
-    summaries.sort(key=lambda run: (str(run.get("created_at") or ""), str(run.get("id") or "")), reverse=True)
-    return _canonical_json({"schema_version": HISTORY_SCHEMA_VERSION, "runs": summaries})
 
 
 def _empty_history() -> bytes:
@@ -358,9 +227,8 @@ def _empty_private_console_recipe() -> tuple:
         if name.endswith("_DATABASE_SCHEMA_VERSION") or name.startswith("MAX_")
     ))
     transaction_normalizer = None
-    if DATABASE_SCHEMA_VERSION >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION:
-        from owner_auth_google_transactions import discard_transactions
-        transaction_normalizer = discard_transactions
+    from owner_auth_google_transactions import discard_transactions
+    transaction_normalizer = discard_transactions
     return (
         DATABASE_SCHEMA_VERSION, tuple(MIGRATIONS), _empty_history(), normalization,
         frozenset(SUPPORTED_DATABASE_SCHEMA_VERSIONS), HISTORY_SCHEMA_VERSION,
@@ -385,7 +253,6 @@ def _cached_empty_private_console_unit(recipe: tuple) -> PrivateConsoleUnit:
         unit = PrivateConsoleUnit(
             history_raw=recipe[2],
             database_raw=database.read_bytes(),
-            registry_database_raw=None,
             blobs=(),
         )
         validated = validate_private_console_unit(unit)
@@ -410,33 +277,6 @@ def empty_private_console_unit() -> PrivateConsoleUnit:
     return validated
 
 
-def empty_preconvergence_private_console_unit() -> PrivateConsoleUnit:
-    """Return the canonical empty schema-7 unit used by old backup formats."""
-
-    with TemporaryDirectory(prefix="mentat-private-empty-v3-") as temporary:
-        database = Path(temporary) / "mentat.sqlite3"
-        _initialize_database(database, schema_version=RUN_DATABASE_SCHEMA_VERSION)
-        rows = _validate_and_filter_database(database, ())
-        if rows:
-            raise PrivateConsoleUnitError("private_database_invalid")
-        unit = PrivateConsoleUnit(
-            history_raw=_empty_history(),
-            database_raw=database.read_bytes(),
-            registry_database_raw=empty_legacy_registry_raw(),
-            blobs=(),
-        )
-    return validate_private_console_unit(unit)
-
-
-def empty_legacy_registry_raw() -> bytes:
-    """Return the canonical empty standalone registry used by old backups."""
-
-    with TemporaryDirectory(prefix="mentat-empty-legacy-registry-") as temporary:
-        path = Path(temporary) / REGISTRY_DATABASE_NAME
-        initialize_registry_file(path)
-        return path.read_bytes()
-
-
 def _initialize_database(
     path: Path,
     *,
@@ -457,27 +297,24 @@ def _initialize_database(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, 0)",
                 (version,),
             )
-        if schema_version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
-            # Virtual empty snapshots must have a stable identity. They carry no
-            # context authority; the first real context publication activates it.
-            connection.execute('UPDATE mentat_project_context_access_state SET approval_epoch=zeroblob(32) WHERE singleton=1')
-        if schema_version >= DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION:
-            # Virtual empty units are captured twice during restore preview.
-            # Their identity must be stable; a real review preview activates it.
-            connection.execute(
-                'UPDATE mentat_deliverable_review_state SET confirmation_epoch=zeroblob(32) WHERE singleton=1'
-            )
-        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
-            connection.execute(
-                "INSERT OR IGNORE INTO mentat_agent_registry_state ("
-                "singleton, authority, migration_contract, source_kind, "
-                "source_sha256, source_agent_count, cutover_at"
-                ") VALUES (1, 'sqlite', ?, 'fresh', ?, 0, 1)",
-                (
-                    AGENT_REGISTRY_AUTHORITY_CONTRACT,
-                    EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
-                ),
-            )
+        # Virtual empty snapshots must have a stable identity. They carry no
+        # context authority; the first real context publication activates it.
+        connection.execute('UPDATE mentat_project_context_access_state SET approval_epoch=zeroblob(32) WHERE singleton=1')
+        # Virtual empty units are captured twice during restore preview.
+        # Their identity must be stable; a real review preview activates it.
+        connection.execute(
+            'UPDATE mentat_deliverable_review_state SET confirmation_epoch=zeroblob(32) WHERE singleton=1'
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO mentat_agent_registry_state ("
+            "singleton, authority, migration_contract, source_kind, "
+            "source_sha256, source_agent_count, cutover_at"
+            ") VALUES (1, 'sqlite', ?, 'fresh', ?, 0, 1)",
+            (
+                AGENT_REGISTRY_AUTHORITY_CONTRACT,
+                EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+            ),
+        )
         connection.commit()
     finally:
         connection.close()
@@ -492,26 +329,6 @@ def _sqlite_readonly_uri(path: Path) -> str:
     return f"{absolute.as_uri()}?mode=ro"
 
 
-def _validate_registry_snapshot(path: Path) -> int:
-    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
-    connection.row_factory = sqlite3.Row
-    try:
-        agents = validate_registry_connection(
-            connection,
-            supported_runtime_types=("codex", "hermes"),
-            runtime_binding_validator=lambda agent, runtime_agent_ref: (
-                codex_binding_is_valid(runtime_agent_ref, agent.capabilities)
-                if agent.runtime_type == "codex"
-                else True
-            ),
-        )
-        return len(agents)
-    except AgentRegistryError as exc:
-        raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
-    finally:
-        connection.close()
-
-
 def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
     connection.row_factory = sqlite3.Row
     try:
@@ -523,10 +340,9 @@ def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
         ]
         schema_version = max(versions, default=0)
         provider_ids: frozenset[str] = frozenset()
-        if schema_version >= PROVIDER_DATABASE_SCHEMA_VERSION:
-            provider_ids = frozenset(
-                record.id for record in validate_provider_connections(connection)
-            )
+        provider_ids = frozenset(
+            record.id for record in validate_provider_connections(connection)
+        )
         receipt = authority_receipt(connection)
         if receipt is None:
             total = sum(
@@ -541,8 +357,6 @@ def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
                 connection,
                 supported_runtime_types=(
                     ("codex", "hermes", "vercel")
-                    if schema_version >= PROVIDER_DATABASE_SCHEMA_VERSION
-                    else ("codex", "hermes")
                 ),
                 runtime_binding_validator=lambda agent, runtime_agent_ref: (
                     codex_binding_is_valid(runtime_agent_ref, agent.capabilities)
@@ -561,17 +375,6 @@ def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
         raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
 
 
-def _registry_agent_count(raw: bytes) -> int:
-    if len(raw) > MAX_REGISTRY_DATABASE_BYTES:
-        raise PrivateConsoleUnitError("private_agent_registry_invalid")
-    with TemporaryDirectory(prefix="mentat-agent-count-") as temporary:
-        path = Path(temporary) / REGISTRY_DATABASE_NAME
-        path.write_bytes(raw)
-        if os.name != "nt":
-            path.chmod(0o600)
-        return _validate_registry_snapshot(path)
-
-
 def _database_agent_count(raw: bytes) -> int | None:
     if len(raw) > MAX_DATABASE_BYTES:
         raise PrivateConsoleUnitError("private_database_invalid")
@@ -587,8 +390,8 @@ def _database_agent_count(raw: bytes) -> int | None:
                     "SELECT version FROM schema_migrations ORDER BY version"
                 )
             ]
-            if max(versions, default=0) < AGENT_DATABASE_SCHEMA_VERSION:
-                return None
+            if max(versions, default=0) != DATABASE_SCHEMA_VERSION:
+                raise PrivateConsoleUnitError("private_database_unsupported")
             if authority_receipt(connection) is None:
                 return None
             count = _validate_embedded_registry(connection)
@@ -622,20 +425,14 @@ def _database_task_count(raw: bytes) -> int:
             signature_state = _schema_signature_state(connection, version)
             if signature_state == "invalid":
                 raise PrivateConsoleUnitError("private_database_schema_invalid")
-            if version == LEGACY_DATABASE_SCHEMA_VERSION:
-                return 0
             task_count = validate_repository_connection(
                 connection,
-                require_authority_consistency=version >= TASK_DATABASE_SCHEMA_VERSION,
+                require_authority_consistency=True,
             )
-            if version >= PROJECT_DATABASE_SCHEMA_VERSION:
-                validate_project_repository_connection(connection)
+            validate_project_repository_connection(connection)
             _validate_conversation_repository(
                 connection,
                 version,
-                allow_known_legacy_drift=(
-                    signature_state == "known_legacy_conversation_drift"
-                ),
             )
             return task_count
         except TaskRepositoryError as exc:
@@ -651,16 +448,11 @@ def _database_task_count(raw: bytes) -> int:
 def _validate_conversation_repository(
     connection: sqlite3.Connection,
     schema_version: int,
-    *,
-    allow_known_legacy_drift: bool = False,
 ) -> None:
-    if schema_version < CONVERSATION_DATABASE_SCHEMA_VERSION:
-        return
     try:
         validate_conversation_repository_connection(
             connection,
             schema_version=schema_version,
-            allow_known_legacy_drift=allow_known_legacy_drift,
         )
     except ConversationRepositoryError as exc:
         raise PrivateConsoleUnitError("private_conversation_repository_invalid") from exc
@@ -675,7 +467,9 @@ def _database_schema_version(path: Path) -> int:
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
         ]
-        return max(versions, default=0)
+        if versions != list(range(1, DATABASE_SCHEMA_VERSION + 1)):
+            raise PrivateConsoleUnitError("private_database_unsupported")
+        return DATABASE_SCHEMA_VERSION
     except sqlite3.Error as exc:
         raise PrivateConsoleUnitError("private_database_invalid") from exc
     finally:
@@ -683,7 +477,7 @@ def _database_schema_version(path: Path) -> int:
 
 
 def _sqlite_run_history(path: Path) -> tuple[bytes, tuple[str, ...]]:
-    """Derive a bounded compatibility projection from authoritative Runs."""
+    """Derive the bounded archive projection from authoritative Runs."""
 
     connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
     connection.row_factory = sqlite3.Row
@@ -715,8 +509,8 @@ def _sqlite_run_history(path: Path) -> tuple[bytes, tuple[str, ...]]:
             {"schema_version": HISTORY_SCHEMA_VERSION, "runs": projected}
         )
         if len(history) > MAX_HISTORY_BYTES:
-            # SQLite is canonical. The JSON member exists only for older-build
-            # compatibility, so first remove replay-heavy event arrays while
+            # SQLite is canonical. Keep the archive summary bounded by
+            # first removing replay-heavy event arrays while
             # preserving every Run and attachment reference that still fits.
             eventless = []
             for item in projected:
@@ -761,23 +555,6 @@ def _sqlite_run_authority_claimed(path: Path) -> bool:
         connection.close()
 
 
-def _sqlite_agent_authority_claimed(path: Path) -> bool:
-    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
-    connection.row_factory = sqlite3.Row
-    try:
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        if "mentat_agent_registry_state" not in tables:
-            return False
-        return authority_receipt(connection) is not None
-    except (sqlite3.Error, AgentRegistryError) as exc:
-        raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
-    finally:
-        connection.close()
 
 
 def _require_empty_unclaimed_run_store(path: Path) -> None:
@@ -791,8 +568,8 @@ def _require_empty_unclaimed_run_store(path: Path) -> None:
             "mentat_agent_events",
             "mentat_dispatch_reservations",
             "mentat_task_dispatch_heads",
-        ) + (("mentat_run_identities",) if version >= RUN_IDENTITY_DATABASE_SCHEMA_VERSION else ()) + (
-            ("mentat_run_attention",) if version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION else ()
+        ) + (("mentat_run_identities",)) + (
+            ("mentat_run_attention",)
         )
         total = sum(
             int(connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
@@ -813,10 +590,8 @@ def _database_run_count(raw: bytes) -> int | None:
         path = Path(temporary) / "mentat.sqlite3"
         path.write_bytes(raw)
         version = _database_schema_version(path)
-        if version >= RUN_DATABASE_SCHEMA_VERSION and _sqlite_run_authority_claimed(path):
-            _history, run_ids = _sqlite_run_history(path)
-            return len(run_ids)
-        return None
+        _history, run_ids = _sqlite_run_history(path)
+        return len(run_ids)
 
 
 def _reject_unrecognized_sqlite_artifacts(source: Path) -> None:
@@ -1069,105 +844,88 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
         schema_version = max(versions, default=0)
-        retained_table = "mentat_retained_attachments" if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION else "run_attachments"
+        retained_table = "mentat_retained_attachments"
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
         signature_state = _schema_signature_state(connection, schema_version)
         if signature_state == "invalid":
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
-            _validate_task_delegation_action_receipts(connection)
-        if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
-            _validate_codex_task_creation_records(connection)
-        if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
-            _validate_planning_deletion_receipts(connection)
-        if schema_version >= OWNER_AUTH_DATABASE_SCHEMA_VERSION:
-            from owner_auth import OwnerAuthError, validate_owner_auth_connection
+        _validate_task_delegation_action_receipts(connection)
+        _validate_codex_task_creation_records(connection)
+        _validate_planning_deletion_receipts(connection)
+        from owner_auth import OwnerAuthError, validate_owner_auth_connection
+        try:
+            validate_owner_auth_connection(connection)
+        except OwnerAuthError as exc:
+            raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
+        from project_context import ProjectContextError, validate_project_context_connection
+        try:
+            validate_project_context_connection(connection)
+        except ProjectContextError as exc:
+            raise PrivateConsoleUnitError("private_project_context_invalid") from exc
+        from owner_inbox import OwnerInboxError, validate_inbox_connection
+        try:
+            validate_inbox_connection(connection)
+        except OwnerInboxError as exc:
+            raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
+        from run_attention import RunAttentionError, validate_run_attention_connection
+        from project_context import ProjectContextError
+        from project_worker_journal import WorkerJournalError, archival_proposal_ids
+        try:
+            # sqlite.Row is needed only while validating the exact dormant
+            # Run shape; retain the surrounding validator's factory.
+            original_factory = connection.row_factory
+            connection.row_factory = sqlite3.Row
             try:
-                validate_owner_auth_connection(connection)
-            except OwnerAuthError as exc:
-                raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
-        if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION:
-            from project_context import ProjectContextError, validate_project_context_connection
-            try:
-                validate_project_context_connection(connection)
-            except ProjectContextError as exc:
-                raise PrivateConsoleUnitError("private_project_context_invalid") from exc
-        if schema_version >= INBOX_DATABASE_SCHEMA_VERSION:
-            from owner_inbox import OwnerInboxError, validate_inbox_connection
-            try:
-                validate_inbox_connection(connection)
-            except OwnerInboxError as exc:
-                raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
-        if schema_version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION:
-            from run_attention import RunAttentionError, validate_run_attention_connection
-            from project_context import ProjectContextError
-            from project_worker_journal import WorkerJournalError, archival_proposal_ids
-            try:
-                # sqlite.Row is needed only while validating the exact dormant
-                # Run shape; retain the surrounding validator's factory.
-                original_factory = connection.row_factory
-                connection.row_factory = sqlite3.Row
-                try:
-                    archived = archival_proposal_ids(connection)
-                finally:
-                    connection.row_factory = original_factory
-                validate_run_attention_connection(connection, archival_proposals=archived)
-            except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
-                raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
-        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
-            _validate_embedded_registry(connection)
-        if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
-            try:
-                validate_repository_connection(
-                    connection,
-                    require_authority_consistency=(
-                        schema_version >= TASK_DATABASE_SCHEMA_VERSION
-                    ),
-                )
-                if schema_version >= PROJECT_DATABASE_SCHEMA_VERSION:
-                    validate_project_repository_connection(connection)
-            except TaskRepositoryError as exc:
-                raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-            except ProjectRepositoryError as exc:
-                raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
-            _validate_conversation_repository(
+                archived = archival_proposal_ids(connection)
+            finally:
+                connection.row_factory = original_factory
+            validate_run_attention_connection(connection, archival_proposals=archived)
+        except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
+            raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
+        _validate_embedded_registry(connection)
+        try:
+            validate_repository_connection(
                 connection,
-                schema_version,
-                allow_known_legacy_drift=(
-                    signature_state == "known_legacy_conversation_drift"
+                require_authority_consistency=(
+                    True
                 ),
             )
-        if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
-            if _sqlite_run_authority_claimed(path):
-                _derived_history, derived_ids = _sqlite_run_history(path)
-                if set(retained) != set(derived_ids):
-                    raise PrivateConsoleUnitError("private_run_repository_invalid")
-            else:
-                _require_empty_unclaimed_run_store(path)
+            validate_project_repository_connection(connection)
+        except TaskRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        except ProjectRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
+        _validate_conversation_repository(
+            connection,
+            schema_version,
+        )
+        if _sqlite_run_authority_claimed(path):
+            _derived_history, derived_ids = _sqlite_run_history(path)
+            if set(retained) != set(derived_ids):
+                raise PrivateConsoleUnitError("private_run_repository_invalid")
+        else:
+            _require_empty_unclaimed_run_store(path)
         placeholders = ",".join("?" for _ in retained)
-        if schema_version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
-            connection.execute('DELETE FROM mentat_project_context_staged')
-        if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION:
-            from owner_auth_google_transactions import discard_transactions
-            discard_transactions(connection)
-        if schema_version >= 15:
+        connection.execute('DELETE FROM mentat_project_context_staged')
+        from owner_auth_google_transactions import discard_transactions
+        discard_transactions(connection)
+        connection.execute(
+            "DELETE FROM mentat_conversation_staged_attachments"
+        )
+        connection.execute(
+            "DELETE FROM mentat_conversation_staged_contexts"
+        )
+        if retained:
             connection.execute(
-                "DELETE FROM mentat_conversation_staged_attachments"
+                f"DELETE FROM mentat_conversation_run_contexts "
+                f"WHERE run_id NOT IN ({placeholders})",
+                retained,
             )
+        else:
             connection.execute(
-                "DELETE FROM mentat_conversation_staged_contexts"
+                "DELETE FROM mentat_conversation_run_contexts"
             )
-            if retained:
-                connection.execute(
-                    f"DELETE FROM mentat_conversation_run_contexts "
-                    f"WHERE run_id NOT IN ({placeholders})",
-                    retained,
-                )
-            else:
-                connection.execute(
-                    "DELETE FROM mentat_conversation_run_contexts"
-                )
         if retained:
             connection.execute(
                 f"DELETE FROM run_attachments WHERE run_id NOT IN ({placeholders})",
@@ -1203,46 +961,35 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         connection.execute("VACUUM")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
-        if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
-            try:
-                validate_repository_connection(
-                    connection,
-                    require_authority_consistency=(
-                        schema_version >= TASK_DATABASE_SCHEMA_VERSION
-                    ),
-                )
-                if schema_version >= PROJECT_DATABASE_SCHEMA_VERSION:
-                    validate_project_repository_connection(connection)
-            except TaskRepositoryError as exc:
-                raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-            except ProjectRepositoryError as exc:
-                raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
-            _validate_conversation_repository(
+        try:
+            validate_repository_connection(
                 connection,
-                schema_version,
-                allow_known_legacy_drift=(
-                    signature_state == "known_legacy_conversation_drift"
+                require_authority_consistency=(
+                    True
                 ),
             )
-        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
-            _validate_embedded_registry(connection)
-        if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
-            _validate_task_delegation_action_receipts(connection)
-        if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
-            _validate_codex_task_creation_records(connection)
-        if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
-            _validate_planning_deletion_receipts(connection)
-        if schema_version >= OWNER_AUTH_DATABASE_SCHEMA_VERSION:
-            from owner_auth import OwnerAuthError, validate_owner_auth_connection
-            try:
-                validate_owner_auth_connection(connection)
-            except OwnerAuthError as exc:
-                raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
-        if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
-            if _sqlite_run_authority_claimed(path):
-                _sqlite_run_history(path)
-            else:
-                _require_empty_unclaimed_run_store(path)
+            validate_project_repository_connection(connection)
+        except TaskRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        except ProjectRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
+        _validate_conversation_repository(
+            connection,
+            schema_version,
+        )
+        _validate_embedded_registry(connection)
+        _validate_task_delegation_action_receipts(connection)
+        _validate_codex_task_creation_records(connection)
+        _validate_planning_deletion_receipts(connection)
+        from owner_auth import OwnerAuthError, validate_owner_auth_connection
+        try:
+            validate_owner_auth_connection(connection)
+        except OwnerAuthError as exc:
+            raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
+        if _sqlite_run_authority_claimed(path):
+            _sqlite_run_history(path)
+        else:
+            _require_empty_unclaimed_run_store(path)
     except sqlite3.Error as exc:
         raise PrivateConsoleUnitError("private_database_invalid") from exc
     finally:
@@ -1258,127 +1005,112 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
         schema_version = max(versions, default=0)
-        retained_table = "mentat_retained_attachments" if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION else "run_attachments"
-        if schema_version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0]:
+        retained_table = "mentat_retained_attachments"
+        if connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0]:
             raise PrivateConsoleUnitError("private_database_not_filtered")
-        if schema_version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION and connection.execute('SELECT COUNT(*) FROM mentat_project_context_staged').fetchone()[0]:
+        if connection.execute('SELECT COUNT(*) FROM mentat_project_context_staged').fetchone()[0]:
             raise PrivateConsoleUnitError('private_database_not_filtered')
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
         signature_state = _schema_signature_state(connection, schema_version)
         if signature_state == "invalid":
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
-            _validate_task_delegation_action_receipts(connection)
-        if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
-            _validate_codex_task_creation_records(connection)
-        if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
-            _validate_planning_deletion_receipts(connection)
-        if schema_version >= OWNER_AUTH_DATABASE_SCHEMA_VERSION:
-            from owner_auth import OwnerAuthError, validate_owner_auth_connection
+        _validate_task_delegation_action_receipts(connection)
+        _validate_codex_task_creation_records(connection)
+        _validate_planning_deletion_receipts(connection)
+        from owner_auth import OwnerAuthError, validate_owner_auth_connection
+        try:
+            validate_owner_auth_connection(connection)
+        except OwnerAuthError as exc:
+            raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
+        from project_context import ProjectContextError, validate_project_context_connection
+        try:
+            validate_project_context_connection(connection)
+        except ProjectContextError as exc:
+            raise PrivateConsoleUnitError("private_project_context_invalid") from exc
+        from owner_inbox import OwnerInboxError, validate_inbox_connection
+        try:
+            validate_inbox_connection(connection)
+        except OwnerInboxError as exc:
+            raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
+        from run_attention import RunAttentionError, validate_run_attention_connection
+        from project_context import ProjectContextError
+        from project_worker_journal import WorkerJournalError, archival_proposal_ids
+        try:
+            original_factory = connection.row_factory
+            connection.row_factory = sqlite3.Row
             try:
-                validate_owner_auth_connection(connection)
-            except OwnerAuthError as exc:
-                raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
-        if schema_version >= PROJECT_CONTEXT_DATABASE_SCHEMA_VERSION:
-            from project_context import ProjectContextError, validate_project_context_connection
-            try:
-                validate_project_context_connection(connection)
-            except ProjectContextError as exc:
-                raise PrivateConsoleUnitError("private_project_context_invalid") from exc
-        if schema_version >= INBOX_DATABASE_SCHEMA_VERSION:
-            from owner_inbox import OwnerInboxError, validate_inbox_connection
-            try:
-                validate_inbox_connection(connection)
-            except OwnerInboxError as exc:
-                raise PrivateConsoleUnitError("private_owner_inbox_invalid") from exc
-        if schema_version >= RUN_ATTENTION_DATABASE_SCHEMA_VERSION:
-            from run_attention import RunAttentionError, validate_run_attention_connection
-            from project_context import ProjectContextError
-            from project_worker_journal import WorkerJournalError, archival_proposal_ids
-            try:
-                original_factory = connection.row_factory
-                connection.row_factory = sqlite3.Row
-                try:
-                    archived = archival_proposal_ids(connection)
-                finally:
-                    connection.row_factory = original_factory
-                validate_run_attention_connection(connection, archival_proposals=archived)
-            except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
-                raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
-        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
-            _validate_embedded_registry(connection)
-        if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
-            try:
-                validate_repository_connection(
-                    connection,
-                    require_authority_consistency=(
-                        schema_version >= TASK_DATABASE_SCHEMA_VERSION
-                    ),
-                )
-                if schema_version >= PROJECT_DATABASE_SCHEMA_VERSION:
-                    validate_project_repository_connection(connection)
-            except TaskRepositoryError as exc:
-                raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-            except ProjectRepositoryError as exc:
-                raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
-            _validate_conversation_repository(
+                archived = archival_proposal_ids(connection)
+            finally:
+                connection.row_factory = original_factory
+            validate_run_attention_connection(connection, archival_proposals=archived)
+        except (RunAttentionError, ProjectContextError, WorkerJournalError) as exc:
+            raise PrivateConsoleUnitError("private_run_attention_invalid") from exc
+        _validate_embedded_registry(connection)
+        try:
+            validate_repository_connection(
                 connection,
-                schema_version,
-                allow_known_legacy_drift=(
-                    signature_state == "known_legacy_conversation_drift"
+                require_authority_consistency=(
+                    True
                 ),
             )
-        if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
-            if _sqlite_run_authority_claimed(path):
-                _derived_history, derived_ids = _sqlite_run_history(path)
-                if retained != set(derived_ids):
-                    raise PrivateConsoleUnitError("private_run_repository_invalid")
-            else:
-                _require_empty_unclaimed_run_store(path)
+            validate_project_repository_connection(connection)
+        except TaskRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        except ProjectRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
+        _validate_conversation_repository(
+            connection,
+            schema_version,
+        )
+        if _sqlite_run_authority_claimed(path):
+            _derived_history, derived_ids = _sqlite_run_history(path)
+            if retained != set(derived_ids):
+                raise PrivateConsoleUnitError("private_run_repository_invalid")
+        else:
+            _require_empty_unclaimed_run_store(path)
         database_runs = {str(row[0]) for row in connection.execute("SELECT DISTINCT run_id FROM run_attachments")}
         if not database_runs.issubset(retained):
             raise PrivateConsoleUnitError("private_database_not_filtered")
-        if schema_version >= 15:
-            staged_count = int(connection.execute(
-                "SELECT (SELECT COUNT(*) FROM mentat_conversation_staged_attachments) "
-                "+ (SELECT COUNT(*) FROM mentat_conversation_staged_contexts)"
-            ).fetchone()[0])
-            context_runs = {
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT run_id FROM mentat_conversation_run_contexts"
-                )
-            }
-            context_digests_valid = True
+        staged_count = int(connection.execute(
+            "SELECT (SELECT COUNT(*) FROM mentat_conversation_staged_attachments) "
+            "+ (SELECT COUNT(*) FROM mentat_conversation_staged_contexts)"
+        ).fetchone()[0])
+        context_runs = {
+            str(row[0])
             for row in connection.execute(
-                "SELECT context_pack_id, context_pack_source_digests_json "
-                "FROM mentat_conversation_run_contexts"
-            ):
-                encoded = row[1]
-                if row[0] is None:
-                    context_digests_valid = encoded is None
+                "SELECT run_id FROM mentat_conversation_run_contexts"
+            )
+        }
+        context_digests_valid = True
+        for row in connection.execute(
+            "SELECT context_pack_id, context_pack_source_digests_json "
+            "FROM mentat_conversation_run_contexts"
+        ):
+            encoded = row[1]
+            if row[0] is None:
+                context_digests_valid = encoded is None
+            else:
+                try:
+                    values = json.loads(encoded)
+                except (TypeError, json.JSONDecodeError):
+                    context_digests_valid = False
                 else:
-                    try:
-                        values = json.loads(encoded)
-                    except (TypeError, json.JSONDecodeError):
-                        context_digests_valid = False
-                    else:
-                        context_digests_valid = (
-                            isinstance(values, list)
-                            and len(values) <= 8
-                            and all(
-                                isinstance(value, str)
-                                and re.fullmatch(r"[0-9a-f]{64}", value)
-                                for value in values
-                            )
-                            and encoded
-                            == json.dumps(values, ensure_ascii=True, separators=(",", ":"))
+                    context_digests_valid = (
+                        isinstance(values, list)
+                        and len(values) <= 8
+                        and all(
+                            isinstance(value, str)
+                            and re.fullmatch(r"[0-9a-f]{64}", value)
+                            for value in values
                         )
-                if not context_digests_valid:
-                    break
-            if staged_count or not context_runs.issubset(retained) or not context_digests_valid:
-                raise PrivateConsoleUnitError("private_database_not_filtered")
+                        and encoded
+                        == json.dumps(values, ensure_ascii=True, separators=(",", ":"))
+                    )
+            if not context_digests_valid:
+                break
+        if staged_count or not context_runs.issubset(retained) or not context_digests_valid:
+            raise PrivateConsoleUnitError("private_database_not_filtered")
         extra_attachments = connection.execute(
             f"SELECT COUNT(*) FROM attachments WHERE id NOT IN (SELECT attachment_id FROM {retained_table})"
         ).fetchone()[0]
@@ -1420,160 +1152,79 @@ def _blob_path(root: Path, storage_key: str) -> Path:
     return path
 
 
-def capture_private_console_unit(
-    data_root: Path,
-    *,
-    source_console: Path | None = None,
-    copy_sqlite_source: bool = True,
-    harden_source: bool = True,
-) -> PrivateConsoleUnit:
-    """Capture one validated, filtered private unit while the caller holds its lock."""
+def _require_current_source_database(path: Path) -> None:
+    # Capture the pinned main/WAL set into owned scratch. SQLite may recover
+    # only that copy; even an old root is never opened for writes or hardening.
+    with TemporaryDirectory(prefix="mentat-current-source-check-") as temporary:
+        snapshot = Path(temporary) / "mentat.sqlite3"
+        _sqlite_backup(path, snapshot, copy_source=True)
+        connection = sqlite3.connect(_sqlite_readonly_uri(snapshot), uri=True)
+        try:
+            versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")]
+            if versions != list(range(1, DATABASE_SCHEMA_VERSION + 1)):
+                raise PrivateConsoleUnitError("private_database_unsupported")
+            if _schema_signature_state(connection, DATABASE_SCHEMA_VERSION) != "expected":
+                raise PrivateConsoleUnitError("private_database_schema_invalid")
+        except sqlite3.Error as exc:
+            raise PrivateConsoleUnitError("private_database_invalid") from exc
+        finally:
+            connection.close()
 
-    requested = console_root(data_root)
-    readonly_identity: tuple[tuple[int, int], ...] | None = None
-    if source_console is None and harden_source:
-        if not os.path.lexists(os.fspath(requested)):
-            return empty_private_console_unit()
-        canonical = ensure_console_root(data_root)
-    elif source_console is None:
-        inspected = inspect_console_root(data_root, allow_missing=True)
-        if inspected is None:
-            return empty_private_console_unit()
-        canonical, readonly_identity = inspected
-    else:
-        canonical = requested
-    source = Path(source_console) if source_console is not None else canonical
-    if source.is_symlink() or (source.exists() and not source.is_dir()):
+
+def capture_private_console_unit(
+    data_root: Path, *, source_console: Path | None = None,
+    copy_sqlite_source: bool = True, harden_source: bool = True,
+) -> PrivateConsoleUnit:
+    """Capture only current private authority; inspect before source hardening."""
+    inspected = inspect_console_root(data_root, allow_missing=True) if source_console is None else None
+    if source_console is None and inspected is None:
+        runtime = Path(data_root) / "runtime"
+        if any(os.path.lexists(runtime / name) for name in ("mentat.sqlite3", "agent-console-runs.json", "blobs")):
+            raise PrivateConsoleUnitError("private_database_unsupported")
+        return empty_private_console_unit()
+    source = Path(source_console) if source_console is not None else inspected[0]
+    if source.is_symlink() or not source.is_dir():
         raise PrivateConsoleUnitError("private_console_unsafe")
     database = source / database_path(data_root).name
-    database_source = (
-        database if os.path.lexists(os.fspath(database)) else None
-    )
+    if not os.path.lexists(database):
+        if any(source.iterdir()):
+            raise PrivateConsoleUnitError("private_database_missing")
+        return empty_private_console_unit()
+    _require_current_source_database(database)
+    readonly_identity = inspected[1] if inspected is not None else None
+    if source_console is None and harden_source:
+        source = ensure_console_root(data_root)
+        if inspect_console_root(data_root)[1] != readonly_identity:
+            raise PrivateConsoleUnitError("private_console_changed")
     with TemporaryDirectory(prefix="mentat-console-capture-") as temporary:
         snapshot_path = Path(temporary) / "mentat.sqlite3"
-        registry_database = source / REGISTRY_DATABASE_NAME
-        legacy_registry_exists = False
-        if database_source is None:
-            legacy_registry_exists = os.path.lexists(
-                os.fspath(registry_database)
-            )
-            if (
-                not legacy_registry_exists
-                and legacy_agent_registry_artifacts_present_at(source)
-            ):
-                raise PrivateConsoleUnitError("private_agent_registry_unsafe")
-            if legacy_registry_exists:
-                _initialize_database(
-                    snapshot_path,
-                    schema_version=RUN_DATABASE_SCHEMA_VERSION,
-                )
-            else:
-                _sqlite_backup(
-                    None,
-                    snapshot_path,
-                    copy_source=copy_sqlite_source,
-                )
-        else:
-            _sqlite_backup(
-                database_source,
-                snapshot_path,
-                copy_source=copy_sqlite_source,
-            )
-        schema_version = _database_schema_version(snapshot_path)
-        run_authority = (
-            schema_version >= RUN_DATABASE_SCHEMA_VERSION
-            and _sqlite_run_authority_claimed(snapshot_path)
-        )
-        embedded_agent_authority = (
-            schema_version >= AGENT_DATABASE_SCHEMA_VERSION
-            and _sqlite_agent_authority_claimed(snapshot_path)
-        )
-        if run_authority:
-            history_raw, run_ids = _sqlite_run_history(snapshot_path)
-        else:
-            history = source / history_path(data_root).name
-            history_raw = (
-                _normalized_history(history) if history.exists() else _empty_history()
-            )
-            run_ids = _history_run_ids(history_raw)
-            history_payload = json.loads(history_raw.decode("utf-8"))
-            history_raw = _canonical_json(history_payload)
+        _sqlite_backup(database, snapshot_path, copy_source=copy_sqlite_source)
+        if _database_schema_version(snapshot_path) != DATABASE_SCHEMA_VERSION:
+            raise PrivateConsoleUnitError("private_database_unsupported")
+        history_raw, run_ids = _sqlite_run_history(snapshot_path)
         blob_rows = _validate_and_filter_database(snapshot_path, run_ids)
         connection = sqlite3.connect(_sqlite_readonly_uri(snapshot_path), uri=True)
         try:
-            has_producers = schema_version>=46 and connection.execute('SELECT 1 FROM mentat_project_producer_bindings LIMIT 1').fetchone() is not None
-            database_references = {
-                (str(row[0]), str(row[1]))
-                for row in connection.execute("SELECT run_id, attachment_id FROM run_attachments")
-            }
+            has_producers = connection.execute('SELECT 1 FROM mentat_project_producer_bindings LIMIT 1').fetchone() is not None
+            database_references = {(str(row[0]), str(row[1])) for row in connection.execute("SELECT run_id, attachment_id FROM run_attachments")}
         finally:
             connection.close()
-        history_references = _history_reference_pairs(history_raw)
-        if (
-            run_authority
-        ):
-            if not history_references.issubset(database_references):
-                raise PrivateConsoleUnitError("private_history_database_mismatch")
-        elif database_references != history_references:
+        if not _history_reference_pairs(history_raw).issubset(database_references):
             raise PrivateConsoleUnitError("private_history_database_mismatch")
         database_raw = _safe_regular(snapshot_path, maximum=MAX_DATABASE_BYTES)
-        registry_database_raw = None
-        if not embedded_agent_authority:
-            if database_source is not None:
-                legacy_registry_exists = os.path.lexists(
-                    os.fspath(registry_database)
-                )
-                if (
-                    not legacy_registry_exists
-                    and legacy_agent_registry_artifacts_present_at(source)
-                ):
-                    raise PrivateConsoleUnitError(
-                        "private_agent_registry_unsafe"
-                    )
-            registry_source = (
-                registry_database if legacy_registry_exists else None
-            )
-            registry_snapshot = Path(temporary) / REGISTRY_DATABASE_NAME
-            if registry_source is None:
-                initialize_registry_file(registry_snapshot)
-            else:
-                _sqlite_backup(
-                    registry_source,
-                    registry_snapshot,
-                    copy_source=copy_sqlite_source,
-                )
-            _validate_registry_snapshot(registry_snapshot)
-            registry_database_raw = _safe_regular(
-                registry_snapshot,
-                maximum=MAX_REGISTRY_DATABASE_BYTES,
-            )
-    source_blobs = source / "blobs" / "sha256"
-    blobs: list[PrivateBlob] = []
-    for storage_key, expected_digest, expected_size in blob_rows:
-        raw = _safe_regular(_blob_path(source_blobs, storage_key), maximum=MAX_BLOB_BYTES)
-        if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_digest:
+    blobs = []
+    for key, digest, size in blob_rows:
+        raw = _safe_regular(_blob_path(source / "blobs" / "sha256", key), maximum=MAX_BLOB_BYTES)
+        if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
             raise PrivateConsoleUnitError("private_blob_content_invalid")
-        blobs.append(PrivateBlob(storage_key=storage_key, raw=raw))
-    if (
-        len(history_raw)
-        + len(database_raw)
-        + len(registry_database_raw or b"")
-        + sum(len(blob.raw) for blob in blobs)
-        > MAX_PRIVATE_UNIT_BYTES
-    ):
+        blobs.append(PrivateBlob(key, raw))
+    unit = PrivateConsoleUnit(history_raw, database_raw, tuple(blobs))
+    if len(history_raw) + len(database_raw) + sum(len(blob.raw) for blob in blobs) > MAX_PRIVATE_UNIT_BYTES:
         raise PrivateConsoleUnitError("private_unit_too_large")
-    unit = PrivateConsoleUnit(
-        history_raw=history_raw,
-        database_raw=database_raw,
-        registry_database_raw=registry_database_raw,
-        blobs=tuple(blobs),
-    )
     if has_producers:
         _validate_producer_unit_inputs(unit)
-    if readonly_identity is not None:
-        inspected = inspect_console_root(data_root)
-        if inspected is None or inspected[1] != readonly_identity:
-            raise PrivateConsoleUnitError("private_console_changed")
+    if readonly_identity is not None and inspect_console_root(data_root)[1] != readonly_identity:
+        raise PrivateConsoleUnitError("private_console_changed")
     return unit
 
 
@@ -1606,8 +1257,6 @@ def validate_private_console_stage_inventory(
         history_path(data_root).name,
         database_path(data_root).name,
     }
-    if unit.registry_database_raw is not None:
-        expected_files.add(REGISTRY_DATABASE_NAME)
     expected_directories = {"blobs", "blobs/sha256"}
     for blob in unit.blobs:
         match = STORAGE_KEY_RE.fullmatch(blob.storage_key)
@@ -1671,7 +1320,6 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
     if (
         len(unit.history_raw)
         + len(unit.database_raw)
-        + len(unit.registry_database_raw or b"")
         + sum(len(blob.raw) for blob in unit.blobs)
         > MAX_PRIVATE_UNIT_BYTES
     ):
@@ -1683,18 +1331,14 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         if os.name != "nt":
             database.chmod(0o600)
         schema_version = _database_schema_version(database)
-        if (
-            schema_version >= RUN_DATABASE_SCHEMA_VERSION
-            and _sqlite_run_authority_claimed(database)
-        ):
-            derived_history, derived_ids = _sqlite_run_history(database)
-            if unit.history_raw != derived_history:
-                raise PrivateConsoleUnitError("private_history_database_mismatch")
-            run_ids = derived_ids
+        derived_history, derived_ids = _sqlite_run_history(database)
+        if unit.history_raw != derived_history:
+            raise PrivateConsoleUnitError("private_history_database_mismatch")
+        run_ids = derived_ids
         rows = _inspect_filtered_database(database, run_ids)
         connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
         try:
-            has_producers = schema_version>=46 and connection.execute('SELECT 1 FROM mentat_project_producer_bindings LIMIT 1').fetchone() is not None
+            has_producers = connection.execute('SELECT 1 FROM mentat_project_producer_bindings LIMIT 1').fetchone() is not None
             database_references = {
                 (str(row[0]), str(row[1]))
                 for row in connection.execute("SELECT run_id, attachment_id FROM run_attachments")
@@ -1702,29 +1346,8 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         finally:
             connection.close()
         history_references = _history_reference_pairs(unit.history_raw)
-        if (
-            schema_version >= RUN_DATABASE_SCHEMA_VERSION
-            and _sqlite_run_authority_claimed(database)
-        ):
-            if not history_references.issubset(database_references):
-                raise PrivateConsoleUnitError("private_history_database_mismatch")
-        elif database_references != history_references:
+        if not history_references.issubset(database_references):
             raise PrivateConsoleUnitError("private_history_database_mismatch")
-        embedded_agents = (
-            schema_version >= AGENT_DATABASE_SCHEMA_VERSION
-            and _sqlite_agent_authority_claimed(database)
-        )
-        if embedded_agents:
-            if unit.registry_database_raw is not None:
-                raise PrivateConsoleUnitError("private_agent_registry_duplicate")
-        else:
-            if unit.registry_database_raw is None:
-                raise PrivateConsoleUnitError("private_agent_registry_missing")
-            registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
-            registry_database.write_bytes(unit.registry_database_raw)
-            if os.name != "nt":
-                registry_database.chmod(0o600)
-            _validate_registry_snapshot(registry_database)
     expected = {key: (digest, size) for key, digest, size in rows}
     supplied = {blob.storage_key: blob for blob in unit.blobs}
     if len(supplied) != len(unit.blobs) or set(supplied) != set(expected):
@@ -1740,13 +1363,12 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
 
 def sanitize_owner_auth_restore_unit(
     unit: PrivateConsoleUnit, *, now: float | None = None,
-    epoch_seed: bytes | None = None, legacy: bool = False,
+    epoch_seed: bytes | None = None,
 ) -> PrivateConsoleUnit:
     """Return a restored private unit with live owner-auth grants invalidated.
 
-    A pristine migrated authority is byte-for-byte unchanged, preserving the
-    exact legacy backup/restore receipts.  A configured authority receives the
-    required session/bootstrap/ceremony sanitization before publication.
+    Current owner grants are invalidated before publication. Approval and
+    review epochs rotate deterministically for exact interrupted-state resume.
     """
 
     with TemporaryDirectory(prefix="mentat-owner-auth-restore-") as temporary:
@@ -1755,47 +1377,43 @@ def sanitize_owner_auth_restore_unit(
         connection = sqlite3.connect(database)
         try:
             version = int(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0)
-            if legacy and version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
-                raise PrivateConsoleUnitError('private_restore_protocol_unsupported')
-            if version < OWNER_AUTH_DATABASE_SCHEMA_VERSION:
-                return unit
+            if version != DATABASE_SCHEMA_VERSION:
+                raise PrivateConsoleUnitError("private_database_unsupported")
             state = connection.execute("SELECT state FROM mentat_owner_auth_state WHERE singleton = 1").fetchone()
             owner_live = (
                 state is not None and state[0] != "unbootstrapped"
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state = 'active'").fetchone()[0])
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_ceremonies WHERE state = 'pending'").fetchone()[0])
                 or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_recovery_codes WHERE state = 'reserved'").fetchone()[0])
-                or version >= OWNER_METHOD_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_configuration").fetchone()[0])
-                or version >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION and int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0])
+                or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_configuration").fetchone()[0])
+                or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_transactions").fetchone()[0])
             )
             # Even an unsubmitted preview must not survive a restore. Rotate the
             # private approval epoch whenever this authority exists.
-            context_live = version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION
+            context_live = True
             if not owner_live and not context_live:
                 return unit
             from owner_auth import sanitize_after_restore
             connection.execute("BEGIN IMMEDIATE")
             if owner_live:
                 sanitize_after_restore(connection, now=now)
-            if version >= PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
-                from project_context_access import revoke_after_restore
-                revoke_after_restore(connection, now=now, epoch_seed=epoch_seed)
-            if version >= DELIVERABLE_REVIEW_DATABASE_SCHEMA_VERSION:
-                # Decisions remain part of the restored Project history, but
-                # a preview from the old authority must never confirm here.
-                if epoch_seed is None:
-                    connection.execute(
-                        "UPDATE mentat_deliverable_review_state SET confirmation_epoch=randomblob(32) WHERE singleton=1"
-                    )
-                else:
-                    original = connection.execute(
-                        "SELECT confirmation_epoch FROM mentat_deliverable_review_state WHERE singleton=1"
-                    ).fetchone()[0]
-                    rotated = hmac.new(original, b"mentat-deliverable-review-restore-v1\0" + epoch_seed, hashlib.sha256).digest()
-                    connection.execute(
-                        "UPDATE mentat_deliverable_review_state SET confirmation_epoch=? WHERE singleton=1",
-                        (rotated,),
-                    )
+            from project_context_access import revoke_after_restore
+            revoke_after_restore(connection, now=now, epoch_seed=epoch_seed)
+            # Decisions remain part of the restored Project history, but
+            # a preview from the old authority must never confirm here.
+            if epoch_seed is None:
+                connection.execute(
+                    "UPDATE mentat_deliverable_review_state SET confirmation_epoch=randomblob(32) WHERE singleton=1"
+                )
+            else:
+                original = connection.execute(
+                    "SELECT confirmation_epoch FROM mentat_deliverable_review_state WHERE singleton=1"
+                ).fetchone()[0]
+                rotated = hmac.new(original, b"mentat-deliverable-review-restore-v1\0" + epoch_seed, hashlib.sha256).digest()
+                connection.execute(
+                    "UPDATE mentat_deliverable_review_state SET confirmation_epoch=? WHERE singleton=1",
+                    (rotated,),
+                )
             connection.commit()
         except (sqlite3.Error, RuntimeError) as exc:
             connection.rollback()
@@ -1806,82 +1424,9 @@ def sanitize_owner_auth_restore_unit(
             PrivateConsoleUnit(
                 history_raw=unit.history_raw,
                 database_raw=database.read_bytes(),
-                registry_database_raw=unit.registry_database_raw,
                 blobs=unit.blobs,
             )
         )
-
-
-def matching_legacy_owner_restore_unit(
-    source: PrivateConsoleUnit, live: PrivateConsoleUnit,
-) -> PrivateConsoleUnit | None:
-    """Recognize an exact legacy publication, never merely revoked-looking rows.
-
-    The old receipt omitted its clock. Only fields that the fixed sanitizer
-    changes can supply a candidate; regenerating the entire unit must then
-    match the live digest. The complete published tree is the durable witness.
-    """
-    expected = private_console_unit_digest(live)
-    try:
-        zero = sanitize_owner_auth_restore_unit(source, now=0.0, legacy=True)
-    except PrivateConsoleUnitError as exc:
-        if str(exc) == 'private_restore_protocol_unsupported':
-            raise
-    else:
-        if private_console_unit_digest(zero) == expected:
-            return zero
-    with TemporaryDirectory(prefix='mentat-legacy-restore-witness-') as temporary:
-        source_path, live_path = Path(temporary) / 'source.sqlite3', Path(temporary) / 'live.sqlite3'
-        source_path.write_bytes(source.database_raw)
-        live_path.write_bytes(live.database_raw)
-        before = after = None
-        timestamps: set[float] = set()
-        try:
-            before = sqlite3.connect(_sqlite_readonly_uri(source_path), uri=True)
-            after = sqlite3.connect(_sqlite_readonly_uri(live_path), uri=True)
-            version = before.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-            if not OWNER_AUTH_DATABASE_SCHEMA_VERSION <= version < PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION:
-                return None
-            for table, key, old_state, new_state, timestamp, maximum in (
-                ('mentat_owner_auth_sessions','session_digest','active','revoked','revoked_at',32),
-                ('mentat_owner_auth_ceremonies','ceremony_id','pending','cancelled','consumed_at',32),
-                ('mentat_owner_auth_recovery_codes','recovery_id','reserved','active','updated_at',10),
-            ):
-                identifiers = before.execute(f'SELECT {key} FROM {table} WHERE state=?', (old_state,)).fetchmany(maximum + 1)
-                if len(identifiers) > maximum:
-                    return None
-                for identifier, in identifiers:
-                    row = after.execute(f'SELECT {timestamp} FROM {table} WHERE {key}=? AND state=?', (identifier,new_state)).fetchone()
-                    if row is not None:
-                        timestamps.add(row[0])
-            state = before.execute('SELECT state FROM mentat_owner_auth_state WHERE singleton=1').fetchone()
-            if state and state[0] == 'bootstrap_open':
-                row = after.execute("SELECT updated_at FROM mentat_owner_auth_state WHERE singleton=1 AND state='unbootstrapped'").fetchone()
-                if row is not None:
-                    timestamps.add(row[0])
-            for notice in ('restore_invalidated_sessions','restore_snapshot_credentials_restored'):
-                if before.execute('SELECT 1 FROM mentat_owner_auth_notices WHERE notice=?', (notice,)).fetchone() is None:
-                    row = after.execute('SELECT created_at FROM mentat_owner_auth_notices WHERE notice=?', (notice,)).fetchone()
-                    if row is not None:
-                        timestamps.add(row[0])
-            if before.execute("SELECT 1 FROM mentat_owner_auth_audit WHERE event='restore_sanitized'").fetchone() is None:
-                row = after.execute("SELECT occurred_at FROM mentat_owner_auth_audit WHERE event='restore_sanitized'").fetchone()
-                if row is not None:
-                    timestamps.add(row[0])
-        except sqlite3.Error as exc:
-            raise PrivateConsoleUnitError('private_legacy_restore_invalid') from exc
-        finally:
-            if before is not None:
-                before.close()
-            if after is not None:
-                after.close()
-    if len(timestamps) != 1:
-        return None
-    timestamp = next(iter(timestamps))
-    if type(timestamp) not in {int,float} or not 0 < timestamp <= 253402300799.0:
-        return None
-    candidate = sanitize_owner_auth_restore_unit(source, now=timestamp, legacy=True)
-    return candidate if private_console_unit_digest(candidate) == expected else None
 
 
 def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
@@ -1894,25 +1439,7 @@ def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
             logical_database = "\n".join(connection.iterdump()).encode("utf-8")
         finally:
             connection.close()
-    if unit.registry_database_raw is None:
-        registry_identity = agent_registry_digest(unit)
-    else:
-        with TemporaryDirectory(
-            prefix="mentat-private-registry-identity-"
-        ) as temporary:
-            registry = Path(temporary) / REGISTRY_DATABASE_NAME
-            registry.write_bytes(unit.registry_database_raw)
-            connection = sqlite3.connect(
-                _sqlite_readonly_uri(registry),
-                uri=True,
-            )
-            try:
-                logical_registry = "\n".join(connection.iterdump()).encode(
-                    "utf-8"
-                )
-            finally:
-                connection.close()
-        registry_identity = hashlib.sha256(logical_registry).hexdigest()
+    registry_identity = agent_registry_digest(unit)
     identity = {
         "history": hashlib.sha256(unit.history_raw).hexdigest(),
         "database": hashlib.sha256(logical_database).hexdigest(),
@@ -1922,57 +1449,18 @@ def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
     return hashlib.sha256(_canonical_json(identity)).hexdigest()
 
 
-def legacy_private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
-    """Reproduce the format-2 private-unit receipt used before Agent registry data."""
-
-    validate_private_console_unit(unit)
-    with TemporaryDirectory(prefix="mentat-private-legacy-identity-") as temporary:
-        database = Path(temporary) / "mentat.sqlite3"
-        database.write_bytes(unit.database_raw)
-        connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
-        try:
-            logical_database = "\n".join(connection.iterdump()).encode("utf-8")
-        finally:
-            connection.close()
-    identity = {
-        "history": hashlib.sha256(unit.history_raw).hexdigest(),
-        "database": hashlib.sha256(logical_database).hexdigest(),
-        "blobs": [(blob.storage_key, blob.sha256, len(blob.raw)) for blob in unit.blobs],
-    }
-    return hashlib.sha256(_canonical_json(identity)).hexdigest()
-
-
 def agent_registry_digest(unit: PrivateConsoleUnit) -> str:
     """Return a storage-neutral digest of validated canonical Agent rows."""
 
     with TemporaryDirectory(prefix="mentat-agent-registry-identity-") as temporary:
-        embedded = unit.registry_database_raw is None
-        database = Path(temporary) / (
-            "mentat.sqlite3" if embedded else REGISTRY_DATABASE_NAME
-        )
-        database.write_bytes(
-            unit.database_raw if embedded else unit.registry_database_raw or b""
-        )
+        database = Path(temporary) / "mentat.sqlite3"
+        database.write_bytes(unit.database_raw)
         if os.name != "nt":
             database.chmod(0o600)
         connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
         connection.row_factory = sqlite3.Row
         try:
-            if embedded:
-                _validate_embedded_registry(connection)
-            else:
-                validate_registry_connection(
-                    connection,
-                    supported_runtime_types=("codex", "hermes"),
-                    runtime_binding_validator=lambda agent, runtime_agent_ref: (
-                        codex_binding_is_valid(
-                            runtime_agent_ref,
-                            agent.capabilities,
-                        )
-                        if agent.runtime_type == "codex"
-                        else True
-                    ),
-                )
+            _validate_embedded_registry(connection)
             rows = [
                 {
                     "agent_id": str(row[0]),
@@ -1998,98 +1486,6 @@ def agent_registry_digest(unit: PrivateConsoleUnit) -> str:
         finally:
             connection.close()
     return hashlib.sha256(_canonical_json(rows)).hexdigest()
-
-
-def standalone_agent_registry_raw(unit: PrivateConsoleUnit) -> bytes:
-    """Materialize Agents as an explicit pre-convergence recovery artifact."""
-
-    if unit.registry_database_raw is not None:
-        _registry_agent_count(unit.registry_database_raw)
-        return unit.registry_database_raw
-    with TemporaryDirectory(prefix="mentat-agent-registry-export-") as temporary:
-        source_path = Path(temporary) / "mentat.sqlite3"
-        source_path.write_bytes(unit.database_raw)
-        destination_path = Path(temporary) / REGISTRY_DATABASE_NAME
-        initialize_registry_file(destination_path)
-        source = sqlite3.connect(_sqlite_readonly_uri(source_path), uri=True)
-        source.row_factory = sqlite3.Row
-        destination = sqlite3.connect(destination_path)
-        try:
-            if _validate_embedded_registry(source) is None:
-                raise PrivateConsoleUnitError("private_agent_registry_missing")
-            rows = source.execute(
-                "SELECT a.id AS agent_id, a.name, a.runtime_config_id, "
-                "a.capabilities_json, a.created_at AS agent_created_at, "
-                "a.updated_at AS agent_updated_at, c.runtime_type, "
-                "c.runtime_agent_ref, c.created_at AS config_created_at, "
-                "c.updated_at AS config_updated_at FROM mentat_agents AS a "
-                "JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id "
-                "WHERE c.runtime_type IN ('codex', 'hermes') "
-                "ORDER BY a.name COLLATE NOCASE, a.id"
-            ).fetchall()
-            destination.execute("BEGIN IMMEDIATE")
-            for row in rows:
-                destination.execute(
-                    "INSERT INTO agent_runtime_configs (id, runtime_type, "
-                    "runtime_agent_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    (
-                        row["runtime_config_id"],
-                        row["runtime_type"],
-                        row["runtime_agent_ref"],
-                        row["config_created_at"],
-                        row["config_updated_at"],
-                    ),
-                )
-                destination.execute(
-                    "INSERT INTO mentat_agents (id, name, runtime_config_id, "
-                    "capabilities_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        row["agent_id"],
-                        row["name"],
-                        row["runtime_config_id"],
-                        row["capabilities_json"],
-                        row["agent_created_at"],
-                        row["agent_updated_at"],
-                    ),
-                )
-            destination.commit()
-            destination.row_factory = sqlite3.Row
-            _validate_registry_snapshot(destination_path)
-        except Exception:
-            destination.rollback()
-            raise
-        finally:
-            destination.close()
-            source.close()
-        if os.name != "nt":
-            destination_path.chmod(0o600)
-        return destination_path.read_bytes()
-
-
-def schema5_excluded_agent_ids(unit: PrivateConsoleUnit) -> frozenset[str]:
-    """Return Agent IDs that the schema-5 compatibility registry cannot carry."""
-
-    if unit.registry_database_raw is not None:
-        _registry_agent_count(unit.registry_database_raw)
-        return frozenset()
-    with TemporaryDirectory(prefix="mentat-schema5-agent-check-") as temporary:
-        source_path = Path(temporary) / "mentat.sqlite3"
-        source_path.write_bytes(unit.database_raw)
-        source = sqlite3.connect(_sqlite_readonly_uri(source_path), uri=True)
-        source.row_factory = sqlite3.Row
-        try:
-            if _validate_embedded_registry(source) is None:
-                return frozenset()
-            return frozenset(
-                str(row[0])
-                for row in source.execute(
-                    "SELECT a.id FROM mentat_agents AS a JOIN "
-                    "agent_runtime_configs AS c ON c.id = a.runtime_config_id "
-                    "WHERE c.runtime_type = 'vercel' ORDER BY a.id"
-                )
-            )
-        finally:
-            source.close()
 
 
 def _write_private_file(path: Path, raw: bytes) -> None:
@@ -2144,11 +1540,6 @@ def materialize_private_console_unit(
     try:
         _write_private_file(destination / history_path(data_root).name, unit.history_raw)
         _write_private_file(destination / database_path(data_root).name, unit.database_raw)
-        if unit.registry_database_raw is not None:
-            _write_private_file(
-                destination / REGISTRY_DATABASE_NAME,
-                unit.registry_database_raw,
-            )
         blob_root = destination / "blobs" / "sha256"
         blob_root.mkdir(parents=True, mode=0o700)
         if os.name != "nt":
@@ -2163,14 +1554,6 @@ def materialize_private_console_unit(
         staged_unit = PrivateConsoleUnit(
             history_raw=_safe_regular(destination / history_path(data_root).name, maximum=MAX_HISTORY_BYTES),
             database_raw=_safe_regular(destination / database_path(data_root).name, maximum=MAX_DATABASE_BYTES),
-            registry_database_raw=(
-                _safe_regular(
-                    destination / REGISTRY_DATABASE_NAME,
-                    maximum=MAX_REGISTRY_DATABASE_BYTES,
-                )
-                if unit.registry_database_raw is not None
-                else None
-            ),
             blobs=tuple(
                 PrivateBlob(
                     storage_key=blob.storage_key,
