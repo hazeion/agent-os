@@ -1147,6 +1147,15 @@ generated-output authority. A future reservation must revalidate live Project,
 lead, Agent, grant, selected bytes and qualification before atomically binding
 the Run and receipt; historical receipt validation alone cannot do so.
 
+The version-1 Project proposal artifact parser accepts at most 32 KiB of UTF-8
+JSON and returns a separately bounded canonical snapshot: up to 16 new Task
+suggestions and eight blocking measurement/clarification questions. It rejects
+duplicate keys/titles/questions, unknown fields, malformed calendar dates,
+unsafe controls and non-earlier dependency indexes. Agent IDs remain
+syntax-only suggestions until exact intake and owner Apply revalidate them.
+The pure parser establishes no producing Run, artifact provenance, Task write,
+owner approval or execution authority; registered-output intake remains gated.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

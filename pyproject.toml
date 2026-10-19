@@ -113,6 +113,7 @@ py-modules = [
   "remote_hermes",
   "run_input_receipts",
   "project_proposal_input_receipts",
+  "project_proposal_artifact",
   "run_attention",
   "run_repository",
   "runtime_config",

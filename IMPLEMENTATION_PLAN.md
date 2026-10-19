@@ -94,12 +94,15 @@ PRs #285–#290; hosted reruns remain the timeout acceptance gate.
   [PR #289](https://github.com/hazeion/agent-os/pull/289) adds exact owner
   publication and lost-response receipts; neither grants a proposal Run or
   Apply. [PR #290](https://github.com/hazeion/agent-os/pull/290) reserves a
-  distinct proposal Run source behind a no-dispatch database guard. A separate
+  distinct proposal Run source behind a no-dispatch database guard.
   [PR #291](https://github.com/hazeion/agent-os/pull/291) adds the guarded
   schema-42 Project proposal Run-input receipt and file-evidence graph.
   Generated-output provenance, atomic admission and a qualified Linux adapter
   still gate actual lead proposal execution. The schema-41 no-dispatch guard
   remains.
+  [PR #292](https://github.com/hazeion/agent-os/pull/292) adds the pure bounded
+  proposal artifact parser. It validates new-Task suggestions and blocking
+  questions but grants no producing-Run provenance or owner Apply authority.
 - [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):
   PRs [#275](https://github.com/hazeion/agent-os/pull/275) and
   [#277](https://github.com/hazeion/agent-os/pull/277)–[#281](https://github.com/hazeion/agent-os/pull/281)
