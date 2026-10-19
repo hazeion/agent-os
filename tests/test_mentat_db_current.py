@@ -183,14 +183,98 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
                     mentat_db.expected_schema_signature(version)
         self.assertEqual(mentat_db.expected_schema_signature.cache_info().maxsize, 1)
 
-    def test_fresh_authority_can_be_withheld_and_raced_gate_rolls_back(self):
+    def test_virtual_recipe_has_no_authority_and_raced_live_gates_roll_back(self):
         with closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
-            mentat_db.migrate(connection, claim_fresh_agent_authority=False)
+            connection.executescript(mentat_db.CURRENT_BOOTSTRAP_SQL)
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_agent_registry_state').fetchone()[0], 0)
-        with closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
-            with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'changed during authority claim'):
-                mentat_db.migrate(connection, fresh_agent_authority_allowed=iter((True, False)).__next__)
-            self.assertEqual(connection.execute('SELECT name FROM sqlite_master').fetchall(), [])
+        for gates in ((False,), (True, False), (True, True, False)):
+            with self.subTest(gates=gates), closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
+                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'changed during authority claim'):
+                    mentat_db.migrate(connection, fresh_agent_authority_allowed=iter(gates).__next__)
+                self.assertEqual(connection.execute('SELECT name FROM sqlite_master').fetchall(), [])
+
+    def test_missing_database_rejects_retired_registry_without_root_changes(self):
+        mentat_db.ensure_private_console_dir(self.root)
+        private = mentat_db.private_console_dir(self.root)
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            with self.subTest(suffix=suffix):
+                artifact = private / (mentat_db.LEGACY_AGENT_REGISTRY_DATABASE_NAME + suffix)
+                artifact.write_bytes(b'synthetic retired storage, never parsed')
+                artifact.chmod(0o644)
+                if os.name == 'posix':
+                    private.chmod(0o755)
+                before = self.snapshot()
+                with patch.object(mentat_db, 'ensure_private_console_dir', side_effect=AssertionError('mutable setup reached')):
+                    with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'Retired Agent registry'):
+                        mentat_db.connect(self.root)
+                self.assertEqual(self.snapshot(), before)
+                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'Retired Agent registry'):
+                    mentat_db.validate_current_database_root(self.root)
+                self.assertEqual(self.snapshot(), before)
+                artifact.unlink()
+
+    def test_postclaim_cleanup_removes_only_the_exact_empty_fresh_receipt(self):
+        with closing(mentat_db.connect(self.root)) as connection:
+            cutover = connection.execute('SELECT cutover_at FROM mentat_agent_registry_state').fetchone()[0]
+            artifact = mentat_db.private_console_dir(self.root) / (mentat_db.LEGACY_AGENT_REGISTRY_DATABASE_NAME + '-wal')
+            artifact.write_bytes(b'owned postclaim race')
+            artifact.chmod(0o600)
+            self.assertTrue(mentat_db._remove_exact_fresh_authority_if_unchanged(connection, self.root, cutover))
+            for table in ('mentat_agent_registry_state', 'mentat_agents', 'agent_runtime_configs'):
+                self.assertEqual(connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0], 0)
+            self.assertEqual(artifact.read_bytes(), b'owned postclaim race')
+
+    def test_postclaim_cleanup_preserves_supported_agent_state(self):
+        with closing(mentat_db.connect(self.root)) as connection:
+            cutover = connection.execute('SELECT cutover_at FROM mentat_agent_registry_state').fetchone()[0]
+            connection.execute("INSERT INTO agent_runtime_configs(id,runtime_type,runtime_agent_ref,created_at,updated_at) VALUES('config_concurrent','hermes','synthetic-test',1,1)")
+            connection.execute("INSERT INTO mentat_agents(id,name,runtime_config_id,capabilities_json,created_at,updated_at) VALUES('agent_concurrent','Concurrent','config_concurrent','[]',1,1)")
+            artifact = mentat_db.private_console_dir(self.root) / (mentat_db.LEGACY_AGENT_REGISTRY_DATABASE_NAME + '-wal')
+            artifact.write_bytes(b'owned postclaim race')
+            artifact.chmod(0o600)
+            before = list(connection.iterdump())
+            with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'Agent authority changed'):
+                mentat_db._remove_exact_fresh_authority_if_unchanged(connection, self.root, cutover)
+            self.assertEqual(list(connection.iterdump()), before)
+            self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
+
+    def test_database_appearing_after_missing_admission_never_opens_sqlite(self):
+        for version in (45, 46):
+            with TemporaryDirectory() as source_root:
+                source = Path(source_root)
+                with closing(mentat_db.connect(source)) as connection:
+                    if version == 45:
+                        connection.execute('DELETE FROM schema_migrations WHERE version=46')
+                raw = mentat_db.database_path(source).read_bytes()
+            for phase in ('ensure', 'exclusive_create'):
+                with self.subTest(version=version, phase=phase), TemporaryDirectory() as target_root:
+                    target = Path(target_root)
+                    path = mentat_db.database_path(target)
+                    ensure = mentat_db.ensure_private_console_dir
+                    original_open = os.open
+                    def appearing_ensure(root):
+                        private = ensure(root)
+                        if phase == 'ensure':
+                            path.write_bytes(raw)
+                            path.chmod(0o600)
+                        return private
+                    def appearing_open(candidate, flags, *args, **kwargs):
+                        if phase == 'exclusive_create' and Path(candidate) == path.resolve() and flags & os.O_EXCL:
+                            descriptor = original_open(candidate, flags, *args, **kwargs)
+                            try:
+                                os.write(descriptor, raw)
+                            finally:
+                                os.close(descriptor)
+                            raise FileExistsError('owned appearing fixture')
+                        return original_open(candidate, flags, *args, **kwargs)
+                    with patch.object(mentat_db, 'ensure_private_console_dir', side_effect=appearing_ensure), \
+                         patch.object(mentat_db.os, 'open', side_effect=appearing_open), \
+                         patch.object(mentat_db.sqlite3, 'connect', side_effect=AssertionError('unadmitted SQLite opened')):
+                        with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'identity changed'):
+                            mentat_db.connect(target)
+                    self.assertEqual(path.read_bytes(), raw)
+                    self.assertFalse(Path(str(path) + '-wal').exists())
+                    self.assertFalse(Path(str(path) + '-shm').exists())
 
     def test_current_initialization_api_does_not_commit_a_callers_transaction(self):
         with closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
@@ -294,6 +378,25 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
             with mentat_db.connect_current_readonly(self.root):
                 self.fail('missing root yielded a connection')
         self.assertEqual(self.snapshot(), {})
+
+    def test_current_readonly_survives_source_sidecar_turnover_after_capture(self):
+        connection = mentat_db.connect(self.root)
+        try:
+            connection.execute('UPDATE mentat_deliverable_review_state SET revision=9')
+            with mentat_db.connect_current_readonly(self.root) as snapshot:
+                self.assertEqual(snapshot.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 9)
+                connection.close()
+                connection = None
+                self.assertFalse(Path(str(mentat_db.database_path(self.root)) + '-wal').exists())
+                self.assertEqual(snapshot.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 9)
+            with mentat_db.connect_current_readonly(self.root) as snapshot:
+                connection = sqlite3.connect(mentat_db.database_path(self.root), isolation_level=None)
+                connection.execute('UPDATE mentat_deliverable_review_state SET revision=10')
+                self.assertTrue(Path(str(mentat_db.database_path(self.root)) + '-wal').exists())
+                self.assertEqual(snapshot.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 9)
+        finally:
+            if connection is not None:
+                connection.close()
 
     def test_owned_snapshot_storage_is_removed_on_refusal(self):
         self.current()
