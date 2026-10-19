@@ -15,6 +15,7 @@ import sqlite3
 import stat
 import time
 from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Callable, Iterable, Mapping
 
 from agent_runtime import MentatAgent, RuntimeContext
@@ -670,27 +671,58 @@ def _embedded_schema_signature(
     )
 
 
-@lru_cache(maxsize=1)
+_EXPECTED_EMBEDDED_SCHEMA_LOCK = Lock()
+
+
+def _embedded_schema_recipe(schema_version: int) -> tuple:
+    # Cache only a code-generated expected SQL signature. Actual databases,
+    # rows, authority receipts and relationship evidence never enter this key.
+    return (
+        schema_version, tuple(MIGRATIONS), _embedded_schema_signature,
+        sqlite3.connect, sqlite3.sqlite_version_info, DATABASE_SCHEMA_VERSION,
+    )
+
+
+@lru_cache(maxsize=8)
+def _cached_expected_embedded_schema_signature(
+    recipe: tuple,
+) -> tuple[tuple[str, str, str, str], ...]:
+    schema_version, migrations, normalizer = recipe[:3]
+    # This database exists only to derive code-owned SQL definitions. No
+    # operator bytes, rows or paths are loaded, and no database bytes escape.
+    # Memory avoids filesystem/fsync latency even on the first cache miss.
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+        )
+        for version, script in migrations:
+            if version > schema_version:
+                break
+            connection.executescript(script)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                (version,),
+            )
+        signature = normalizer(connection)
+        if recipe != _embedded_schema_recipe(schema_version):
+            raise AgentRegistryError("agent_registry.schema_invalid")
+        return signature
+    finally:
+        connection.close()
+
+
 def _expected_embedded_schema_signature(
     schema_version: int = DATABASE_SCHEMA_VERSION,
 ) -> tuple[tuple[str, str, str, str], ...]:
-    with TemporaryDirectory(prefix="mentat-embedded-agent-schema-") as temporary:
-        connection = sqlite3.connect(Path(temporary) / "mentat.sqlite3")
-        try:
-            connection.execute(
-                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
-            )
-            for version, script in MIGRATIONS:
-                if version > schema_version:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
-                    (version,),
-                )
-            return _embedded_schema_signature(connection)
-        finally:
-            connection.close()
+    recipe = _embedded_schema_recipe(schema_version)
+    # Avoid duplicate expensive synthetic builds on simultaneous misses. This
+    # lock neither acquires a live data-root lock nor encloses actual validation.
+    with _EXPECTED_EMBEDDED_SCHEMA_LOCK:
+        signature = _cached_expected_embedded_schema_signature(recipe)
+    if recipe != _embedded_schema_recipe(schema_version):
+        raise AgentRegistryError("agent_registry.schema_invalid")
+    return signature
 
 
 def authority_receipt(
