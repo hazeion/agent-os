@@ -197,3 +197,27 @@ current Run bootstrap. JSON's bytes auto-detection previously admitted UTF-16,
 UTF-32 and UTF-8 BOM documents that bootstrap refuses. All three are now part
 of unchanged-history/no-database refusal coverage. The same current shape,
 duplicate-key and Unicode-error policy remains; no new encoding is supported.
+
+## Final component evidence
+
+The initial broad diagnostic run is terminal:129 methods in864.428s,
+126 passed and3 failed, with no errors or skips. It began before the later
+source composition, so it is not exact-final-head qualification. The startup
+error projection and stale-JSON tamper assumptions were corrected as described
+above. The third failure was a test-porting mistake: the unchanged per-scope
+32-plan-version count assertion had been replaced with database schema46.
+The original32 assertion is restored; no production limit changes. All15 plan
+methods plus the exact startup and canonical tamper regressions pass together:
+17 methods in57.774s with ResourceWarnings as errors.
+
+Two private-state fixtures still passed the removed pre-authority constructor
+argument into A's TaskRepository API. Both now use the actual current-only
+constructor, retaining their exact claim and capacity/retention assertions.
+Malformed stale history and maximum terminal dispatch retention both pass on
+the real composed interfaces:2 methods in27.960s with ResourceWarnings as errors.
+Final shared freshness checks, including UTF-16/32/BOM refusal, all pass:
+10 methods in8.800s. Production source changes have two independent reviews;
+this final fixture/evidence followup still requires independent delta review.
+The worktree is ready for root's exact composed full-suite qualification. No
+hosted CI, Windows/Linux execution, remote operator or provider acceptance is
+claimed, and nothing has been pushed or published from this branch.

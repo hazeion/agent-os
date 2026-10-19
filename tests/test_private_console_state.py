@@ -559,9 +559,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             try:
                 raw = b"[]\n"
                 connection.execute("BEGIN IMMEDIATE")
-                TaskRepository(
-                    connection, allow_pre_authority_schema=True
-                ).claim_authority(
+                TaskRepository(connection).claim_authority(
                     TaskSourceSnapshot(
                         raw=raw,
                         tasks=(),
@@ -621,9 +619,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.execute("DELETE FROM mentat_task_tags")
                 connection.execute("DELETE FROM mentat_tasks")
                 connection.commit()
-                task_repository = TaskRepository(
-                    connection, allow_pre_authority_schema=True
-                )
+                task_repository = TaskRepository(connection)
                 task_repository.insert_collection(tasks)
                 normalized_tasks = tuple(task_repository.list_tasks())
                 stored_tasks = {task["id"]: task for task in normalized_tasks}
