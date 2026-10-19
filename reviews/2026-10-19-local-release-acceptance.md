@@ -94,4 +94,12 @@ PID or group is terminated. A surviving group preserves state and fails the
 report even when the launcher is terminal and the public listener closed.
 Three new regressions prove early group capture, refusal with a live orphan
 group, and preservation of owned files on incomplete cleanup. All 12 focused
-harness tests pass. Final corrected-code actual acceptance remains pending.
+harness tests pass. Corrected code `65ed0456d65e425ebb1a0f38a9f41f090735b43e` then passed the
+actual default immediate same-port CLI/Next/Chrome journey. All four scenarios
+passed with `immediate_restart_acceptance:true`, `owned_state_removed:true`,
+`runs_dispatched:false`, `restore_confirmed:false` and
+`live_remote_acceptance:false`. There was no diagnostic wait. Its bounded
+report is `/private/tmp/mentat-local-release-immediate-corrected-report.json`.
+Root and ci_review_two independently cleared the full corrected harness;
+ci_review_two also independently ran all 12 harness tests with ResourceWarnings
+as errors. This documentation checkpoint changes no tested code.
