@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -549,24 +549,21 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=dispatch)
             worker.start()
-            self.assertTrue(runtime.capacity_entered.wait(timeout=2))
+            probe = None
             acquired = threading.Event()
 
             def probe_lock():
                 with private_state_lock(root):
                     acquired.set()
 
-            probe = threading.Thread(target=probe_lock)
-            probe.start()
             try:
+                self.assertTrue(runtime.capacity_entered.wait(timeout=2))
+                probe = threading.Thread(target=probe_lock)
+                probe.start()
                 self.assertTrue(acquired.wait(timeout=1))
             finally:
-                runtime.capacity_release.set()
-            worker.join(timeout=5)
-            probe.join(timeout=5)
+                self.finish_discovery_workers(runtime.capacity_release, worker, probe)
 
-        self.assertFalse(worker.is_alive())
-        self.assertFalse(probe.is_alive())
         self.assertEqual(failures, [])
 
     def test_task_capability_discovery_never_holds_the_private_state_lock(self):
@@ -590,25 +587,105 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=dispatch)
             worker.start()
-            self.assertTrue(runtime.capabilities_entered.wait(timeout=2))
+            probe = None
             acquired = threading.Event()
 
             def probe_lock():
                 with private_state_lock(root):
                     acquired.set()
 
-            probe = threading.Thread(target=probe_lock)
-            probe.start()
             try:
+                self.assertTrue(runtime.capabilities_entered.wait(timeout=2))
+                probe = threading.Thread(target=probe_lock)
+                probe.start()
                 self.assertTrue(acquired.wait(timeout=1))
             finally:
-                runtime.capabilities_release.set()
-            worker.join(timeout=5)
-            probe.join(timeout=5)
+                self.finish_discovery_workers(runtime.capabilities_release, worker, probe)
 
-        self.assertFalse(worker.is_alive())
-        self.assertFalse(probe.is_alive())
         self.assertEqual(failures, [])
+
+    def finish_discovery_workers(self, release, *workers):
+        # Always release and drain before TemporaryDirectory removes SQLite,
+        # including failures at either ordering assertion. Keep those assertion
+        # deadlines unchanged; finishing a worker is not a throughput test.
+        release.set()
+        started = [worker for worker in workers if worker is not None and worker.ident is not None]
+        for worker in started:
+            worker.join(timeout=5)
+            if worker.is_alive():
+                frame = sys._current_frames().get(worker.ident)
+                stalled = "".join(traceback.format_stack(frame, limit=12))[:4096] if frame else "worker exited during capture"
+                print("Slow discovery worker:\n" + stalled, file=sys.stderr)
+                worker.join(timeout=25)
+        for worker in started:
+            self.assertFalse(worker.is_alive(), "Discovery worker did not release its temporary SQLite root")
+
+    def test_discovery_assertion_failures_drain_workers_before_sqlite_cleanup(self):
+        methods = (
+            "test_task_capacity_discovery_never_holds_the_private_state_lock",
+            "test_task_capability_discovery_never_holds_the_private_state_lock",
+        )
+        for method in methods:
+            for assertion in (1, 2):
+                with self.subTest(method=method, assertion=assertion):
+                    owned_threads = []
+                    runtimes = []
+                    cleanup_observations = []
+                    original_thread = threading.Thread
+                    original_runtime = FakeRuntime
+                    original_temporary = TemporaryDirectory
+
+                    def track_thread(*args, **kwargs):
+                        worker = original_thread(*args, **kwargs)
+                        owned_threads.append(worker)
+                        return worker
+
+                    def track_runtime(*args, **kwargs):
+                        runtime = original_runtime(*args, **kwargs)
+                        runtimes.append(runtime)
+                        return runtime
+
+                    class ObservedTemporaryDirectory(original_temporary):
+                        def __exit__(temporary, *args):
+                            cleanup_observations.append([worker.is_alive() for worker in owned_threads])
+                            # Keep this regression safe if the tested fixture
+                            # ever loses its finally again. Observe first, then
+                            # release/drain only its captured workers to avoid
+                            # leaking a thread or deleting an in-use database.
+                            for runtime in runtimes:
+                                for gate in (runtime.capacity_release, runtime.capabilities_release):
+                                    if gate is not None:
+                                        gate.set()
+                            for worker in owned_threads:
+                                if worker.ident is not None:
+                                    worker.join(timeout=30)
+                            return super().__exit__(*args)
+
+                    inner = OrchestrationServiceTests(method)
+                    original_assert = inner.assertTrue
+                    assertion_count = 0
+
+                    def fail_ordering_assertion(*args, **kwargs):
+                        nonlocal assertion_count
+                        assertion_count += 1
+                        if assertion_count == assertion:
+                            raise AssertionError("injected discovery assertion")
+                        return original_assert(*args, **kwargs)
+
+                    result = unittest.TestResult()
+                    with (
+                        patch.object(threading, "Thread", side_effect=track_thread),
+                        patch.object(sys.modules[__name__], "FakeRuntime", side_effect=track_runtime),
+                        patch.object(sys.modules[__name__], "TemporaryDirectory", ObservedTemporaryDirectory),
+                        patch.object(inner, "assertTrue", side_effect=fail_ordering_assertion),
+                    ):
+                        inner.run(result)
+                    self.assertEqual(len(result.failures), 1)
+                    self.assertEqual(result.errors, [])
+                    self.assertIn("injected discovery assertion", result.failures[0][1])
+                    self.assertEqual(len(cleanup_observations), 1)
+                    self.assertEqual(cleanup_observations[0], [False] * assertion)
+                    self.assertTrue(all(not worker.is_alive() for worker in owned_threads))
 
     def test_first_turn_never_replaces_a_manual_conversation_title(self):
         with TemporaryDirectory() as tmpdir:
@@ -1318,7 +1395,23 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(len(runtime.calls), 2)
 
     def test_immediate_completion_commits_when_conversation_is_archived_in_flight(self):
-        with TemporaryDirectory() as tmpdir:
+        worker = None
+
+        @contextmanager
+        def owned_root():
+            temporary = TemporaryDirectory()
+            try:
+                yield temporary.name
+            finally:
+                if worker is not None and worker.is_alive():
+                    # Do not delete SQLite beneath an undrained worker. Its
+                    # active Thread keeps this owner alive until thread exit;
+                    # the normal TemporaryDirectory finalizer then reclaims it.
+                    worker._mentat_retained_test_root = temporary
+                else:
+                    temporary.cleanup()
+
+        with owned_root() as tmpdir:
             root = Path(tmpdir)
             runtime = FakeRuntime(root)
             runtime.return_completed = True
@@ -1340,20 +1433,34 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=submit_first)
             worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            repository = ConversationRepository(
-                root,
-                supported_runtime_types=(runtime.runtime_type,),
-            )
-            current = repository.read(conversation_id).conversation
-            repository.set_archived(
-                conversation_id,
-                expected_revision=current.revision,
-                archived=True,
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
-            self.assertFalse(worker.is_alive())
+            try:
+                self.assertTrue(runtime.submit_entered.wait(timeout=5))
+                repository = ConversationRepository(
+                    root,
+                    supported_runtime_types=(runtime.runtime_type,),
+                )
+                current = repository.read(conversation_id).conversation
+                repository.set_archived(
+                    conversation_id,
+                    expected_revision=current.revision,
+                    archived=True,
+                )
+            finally:
+                # Failed ordering assertions must release/drain their exact
+                # owned worker before the private SQLite root is removed.
+                runtime.submit_release.set()
+                worker.join(timeout=5)
+                finished_within_budget = not worker.is_alive()
+                stalled = ""
+                if not finished_within_budget:
+                    frame = sys._current_frames().get(worker.ident)
+                    stalled = "".join(traceback.format_stack(frame, limit=12))[:4096] if frame else "worker exited during capture"
+                    print("Slow archived completion worker:\n" + stalled, file=sys.stderr)
+                    worker.join(timeout=25)
+                self.assertFalse(worker.is_alive(), stalled)
+            # Keep the original five-second completion assertion; the longer
+            # diagnostic drain above is cleanup only and cannot make it pass.
+            self.assertTrue(finished_within_budget, stalled)
             if failures:
                 raise failures[0]
             detail = repository.read(conversation_id)
@@ -1363,6 +1470,93 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(detail.conversation.state, "archived")
         self.assertEqual(detail.current_run["status"], "finalizing")
         self.assertEqual(len(runtime.calls), 1)
+
+    def test_archived_completion_ordering_failure_drains_before_root_cleanup(self):
+        original_temporary, original_thread = TemporaryDirectory, threading.Thread
+        actual_prepare = self.prepare_conversation
+        workers, runtimes, cleanup_liveness, failure_liveness = [], [], [], []
+
+        class ObservedThread(original_thread):
+            def start(self):
+                super().start()
+                workers.append(self)
+
+        class ObservedTemporaryDirectory(original_temporary):
+            def cleanup(self):
+                cleanup_liveness.append(any(worker.is_alive() for worker in workers))
+                super().cleanup()
+
+        def prepare(root, runtime):
+            service, conversation_id = actual_prepare(root, runtime)
+            runtimes.append(runtime)
+            # Fail only the original ordering assertion. The actual dispatch,
+            # private root and release gate remain live and must be drained.
+            def fail_ordering(timeout):
+                failure_liveness.append(any(worker.is_alive() for worker in workers))
+                return False
+            runtime.submit_entered.wait = Mock(side_effect=fail_ordering)
+            return service, conversation_id
+
+        try:
+            with patch(__name__ + ".TemporaryDirectory", ObservedTemporaryDirectory), \
+                 patch.object(threading, "Thread", ObservedThread), \
+                 patch.object(self, "prepare_conversation", side_effect=prepare):
+                with self.assertRaisesRegex(AssertionError, "False is not true"):
+                    self.test_immediate_completion_commits_when_conversation_is_archived_in_flight()
+            self.assertTrue(workers)
+            self.assertEqual(failure_liveness, [True])
+            self.assertTrue(cleanup_liveness)
+            self.assertFalse(any(cleanup_liveness))
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            runtimes[0].submit_entered.wait.assert_called_once_with(timeout=5)
+        finally:
+            # Observe liveness above before this regression's safety drain.
+            for runtime in runtimes:
+                runtime.submit_release.set()
+            for worker in workers:
+                worker.join(timeout=5)
+                if worker.is_alive():
+                    worker.join(timeout=25)
+
+    def test_archived_completion_undrained_worker_retains_its_private_root(self):
+        workers, joins = [], []
+        actual_prepare = self.prepare_conversation
+
+        class UndrainedThread:
+            ident = None
+            def __init__(self, *args, **kwargs):
+                self.alive = True
+                workers.append(self)
+            def start(self):
+                pass  # Controlled liveness only; no real child can hang.
+            def join(self, timeout=None):
+                joins.append(timeout)
+            def is_alive(self):
+                return self.alive
+
+        def prepare(root, runtime):
+            result = actual_prepare(root, runtime)
+            runtime.submit_entered.wait = Mock(return_value=False)
+            return result
+
+        try:
+            with patch.object(threading, "Thread", UndrainedThread), \
+                 patch.object(self, "prepare_conversation", side_effect=prepare), \
+                 patch("sys.stderr"):
+                with self.assertRaisesRegex(AssertionError, "True is not false"):
+                    self.test_immediate_completion_commits_when_conversation_is_archived_in_flight()
+            self.assertEqual(joins, [5, 25])
+            self.assertEqual(len(workers), 1)
+            owner = workers[0]._mentat_retained_test_root
+            self.assertTrue(Path(owner.name).is_dir())
+            self.assertTrue(workers[0].is_alive())
+        finally:
+            # Reclaim only after the controlled fixture's liveness is resolved.
+            for worker in workers:
+                worker.alive = False
+                owner = getattr(worker, "_mentat_retained_test_root", None)
+                if owner is not None:
+                    owner.cleanup()
 
     def test_restart_interrupts_an_unattempted_retry_without_resubmission(self):
         with TemporaryDirectory() as tmpdir:
