@@ -101,7 +101,9 @@ export async function observe(input, dependencies = {}) {
     if (!['Runtime.enable','Page.enable','Emulation.setFocusEmulationEnabled','Runtime.evaluate','Emulation.setDeviceMetricsOverride','Page.navigate'].includes(method)) throw new Error('browser_protocol_failed');
     const id = sequence++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new ProtocolTimeout()); }, Math.max(1, Math.min(500, remaining())));
+      const wait = method === 'Page.navigate' ? remaining() : Math.min(500, remaining());
+      if (method === 'Page.navigate' && wait <= 0) { reject(new ProtocolTimeout()); return; }
+      const timer = setTimeout(() => { pending.delete(id); reject(new ProtocolTimeout()); }, Math.max(1, wait));
       pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, method, params }));
     });
@@ -156,8 +158,10 @@ export async function observe(input, dependencies = {}) {
     stage('viewport');
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     stage('navigation');
+    if (remaining() <= 0) return result;
     const navigation = await call('Page.navigate', { url: config.origin + '/tasks' });
     if (navigation.errorText) { result.code = 'browser_navigation_failed'; return result; }
+    if (remaining() <= 0) return result;
     stage('evaluation');
     while (remaining() > 0 && socket.readyState === 1) {
       const snapshot = await call('Runtime.evaluate', { expression: expression(config), returnByValue: true, awaitPromise: false, timeout: 250 });

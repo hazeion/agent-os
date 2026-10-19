@@ -119,3 +119,9 @@ readiness timeout. Existing connect/call timer expiry is reported separately
 from protocol rejection, without exposing methods or errors. The timers remain
 unchanged. Success additionally requires the final stage to be `ready`, never
 an earlier stage or a progress record.
+
+The single initial navigation acknowledgement uses only the remaining browser
+budget. Other CDP call/connect ceilings remain 500 ms. An exhausted budget
+cannot send navigation or proceed from acknowledgement to evaluation; there is
+no second navigation or retry. All readiness checks and final receipt must
+still fit the original 40-second parent deadline.

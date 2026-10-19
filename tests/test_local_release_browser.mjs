@@ -155,11 +155,11 @@ test('ambiguous owned blank pages are refused before websocket or navigation', a
 
 test('existing navigation call timer is distinct from protocol rejection at the same fixed stage', async () => {
   for (const rejection of [false, true]) {
-    const progress = [];
+    const progress = [], methods = [];
     class Socket {
       constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
       send(raw) {
-        const message = JSON.parse(raw);
+        const message = JSON.parse(raw); methods.push(message.method);
         if (message.method === 'Page.navigate' && !rejection) return;
         queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, ...(message.method === 'Page.navigate' ? { error: { message: 'private error and URL' } } : { result: {} }) }) }));
       }
@@ -170,8 +170,75 @@ test('existing navigation call timer is distinct from protocol rejection at the 
     assert.equal(result.ready, false);
     assert.equal(result.code, rejection ? 'browser_protocol_failed' : 'browser_protocol_timeout');
     assert.equal(result.stage, 'navigation');
+    assert.equal(methods.filter(method => method === 'Page.navigate').length, 1);
+    assert.equal(methods.includes('Runtime.evaluate'), false);
     assert.equal(progress.at(-1).stage, 'navigation');
     assert.deepEqual(progress.map(value => value.stage), ['discovery','connect','runtime','page','focus','viewport','navigation']);
     assert.equal(JSON.stringify(result).includes('private'), false);
   }
+});
+
+test('navigation acknowledgement after 500ms reaches full readiness only within the remaining budget', async () => {
+  for (const remaining of [1500, 550]) {
+    const methods = []; let acknowledgement;
+    class Socket {
+      constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+      send(raw) {
+        const message = JSON.parse(raw); methods.push(message.method);
+        const answer = () => this.onmessage({ data: JSON.stringify({ id: message.id, result: message.method === 'Runtime.evaluate' ? { result: { value: snapshot() } } : {} }) });
+        if (message.method === 'Page.navigate') acknowledgement = setTimeout(answer, 650);
+        else queueMicrotask(answer);
+      }
+      close() { this.readyState = 3; clearTimeout(acknowledgement); }
+    }
+    const result = await observe({ ...config, remaining_ms: remaining }, { WebSocket: Socket,
+      fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+    assert.equal(methods.filter(method => method === 'Page.navigate').length, 1);
+    if (remaining === 1500) {
+      assert.equal(result.ready, true);
+      assert.equal(result.code, 'ready'); assert.equal(result.stage, 'ready');
+      assert.ok(CHECKS.every(key => result.checks[key]));
+      assert.equal(methods.filter(method => method === 'Runtime.evaluate').length, 1);
+    } else {
+      assert.equal(result.ready, false);
+      assert.equal(result.code, 'browser_protocol_timeout'); assert.equal(result.stage, 'navigation');
+      assert.equal(methods.includes('Runtime.evaluate'), false);
+      assert.equal(result.observation.snapshots, 0);
+    }
+  }
+});
+test('an acknowledgement observed after remaining budget expires never starts evaluation', async () => {
+  const methods = []; let clock = 0;
+  class Socket {
+    constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+    send(raw) {
+      const message = JSON.parse(raw); methods.push(message.method);
+      if (message.method === 'Page.navigate') clock = 31;
+      queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, result: {} }) }));
+    }
+    close() { this.readyState = 3; }
+  }
+  const result = await observe(config, { now: () => clock, WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+  assert.equal(result.ready, false); assert.equal(result.stage, 'navigation');
+  assert.equal(methods.filter(method => method === 'Page.navigate').length, 1);
+  assert.equal(methods.includes('Runtime.evaluate'), false);
+});
+
+test('initial setup exhausting remaining budget cannot send navigation or evaluate', async () => {
+  const methods = []; let clock = 0;
+  class Socket {
+    constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+    send(raw) {
+      const message = JSON.parse(raw); methods.push(message.method);
+      if (message.method === 'Emulation.setDeviceMetricsOverride') clock = 31;
+      queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, result: {} }) }));
+    }
+    close() { this.readyState = 3; }
+  }
+  const result = await observe(config, { now: () => clock, WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+  assert.equal(result.ready, false); assert.equal(result.stage, 'navigation');
+  assert.equal(methods.includes('Page.navigate'), false);
+  assert.equal(methods.includes('Runtime.evaluate'), false);
 });
