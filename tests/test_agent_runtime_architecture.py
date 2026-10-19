@@ -45,20 +45,14 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         self.assertIn("AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry", SERVER)
         self.assertIn("shutdown_agent_runtimes", SERVER)
 
-    def test_implementation_plan_closes_sqlite_cutover_and_tracks_frontend_slices(self):
-        self.assertIn("| 1B | Durable Mentat Agents", IMPLEMENTATION_PLAN)
-        self.assertIn("| 1C-A to 1C-D | SQLite authority", IMPLEMENTATION_PLAN)
-        self.assertIn("| 2A-A | Node gateway", IMPLEMENTATION_PLAN)
-        self.assertIn("| 2A-B | Emerald Operations", IMPLEMENTATION_PLAN)
-        self.assertIn("| 2B-A | Read-only Agents", IMPLEMENTATION_PLAN)
-        self.assertIn("| 2B-B | Read-only Tasks", IMPLEMENTATION_PLAN)
-        self.assertIn("three desktop and three mobile Lighthouse runs", IMPLEMENTATION_PLAN)
-        self.assertIn("The legacy interface may be retired only after", IMPLEMENTATION_PLAN)
-        self.assertIn(
-            "Historical implementation detail belongs in GitHub issues and pull requests",
-            IMPLEMENTATION_PLAN,
-        )
-        self.assertIn("Build on the existing `web/` app", IMPLEMENTATION_PLAN)
+    def test_implementation_plan_is_current_resume_map_with_safety_boundaries(self):
+        for heading in ("## Destination", "## Current position", "## Next frontier", "## Working rules"):
+            self.assertIn(heading, IMPLEMENTATION_PLAN)
+        self.assertIn("https://github.com/hazeion/agent-os/issues/234", IMPLEMENTATION_PLAN)
+        self.assertIn("Python owns Tasks, Runs, context, files, credentials, and adapter authority", IMPLEMENTATION_PLAN)
+        self.assertIn("No task, plan, Inbox item, or model prose silently approves execution", IMPLEMENTATION_PLAN)
+        self.assertIn("Historical detail belongs in issues, reviews, and pull requests", IMPLEMENTATION_PLAN)
+        self.assertIn("legacy UI rollback path", IMPLEMENTATION_PLAN)
         self.assertIn("IMPLEMENTATION_PLAN.md", AGENT_GUIDE)
         self.assertIn("/api/orchestration/agents", ARCHITECTURE)
 
