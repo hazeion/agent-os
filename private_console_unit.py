@@ -11,6 +11,7 @@ boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from datetime import datetime
 import hashlib
 import hmac
@@ -23,6 +24,7 @@ import sqlite3
 import stat
 import shutil
 from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Iterable
 
 from agent_registry import (
@@ -339,21 +341,67 @@ def _empty_history() -> bytes:
     return _canonical_json({"schema_version": HISTORY_SCHEMA_VERSION, "runs": []})
 
 
-def empty_private_console_unit() -> PrivateConsoleUnit:
-    """Return the canonical empty unit without touching operator storage."""
+_EMPTY_PRIVATE_TEMPLATE_LOCK = Lock()
+
+
+def _empty_private_console_recipe() -> tuple:
+    # Only code-owned construction/normalization inputs belong here. Version
+    # thresholds also govern the empty database's filtering and VACUUM result.
+    normalization = tuple(sorted(
+        (name, value) for name, value in globals().items()
+        if name.endswith("_DATABASE_SCHEMA_VERSION") or name.startswith("MAX_")
+    ))
+    transaction_normalizer = None
+    if DATABASE_SCHEMA_VERSION >= GOOGLE_TRANSACTION_DATABASE_SCHEMA_VERSION:
+        from owner_auth_google_transactions import discard_transactions
+        transaction_normalizer = discard_transactions
+    return (
+        DATABASE_SCHEMA_VERSION, tuple(MIGRATIONS), _empty_history(), normalization,
+        frozenset(SUPPORTED_DATABASE_SCHEMA_VERSIONS), HISTORY_SCHEMA_VERSION,
+        AGENT_REGISTRY_AUTHORITY_CONTRACT, EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+        os.name, sqlite3.sqlite_version, sqlite3.connect,
+        _initialize_database, _validate_and_filter_database,
+        validate_private_console_unit, _empty_history, PrivateConsoleUnit,
+        transaction_normalizer,
+    )
+
+
+@lru_cache(maxsize=1)
+def _cached_empty_private_console_unit(recipe: tuple) -> PrivateConsoleUnit:
+    """Cache one validated immutable synthetic template, never operator state."""
 
     with TemporaryDirectory(prefix="mentat-private-empty-") as temporary:
         database = Path(temporary) / "mentat.sqlite3"
-        _initialize_database(database)
+        _initialize_database(database, schema_version=recipe[0])
         rows = _validate_and_filter_database(database, ())
         if rows:
             raise PrivateConsoleUnitError("private_database_invalid")
-        return PrivateConsoleUnit(
-            history_raw=_empty_history(),
+        unit = PrivateConsoleUnit(
+            history_raw=recipe[2],
             database_raw=database.read_bytes(),
             registry_database_raw=None,
             blobs=(),
         )
+        validated = validate_private_console_unit(unit)
+        if recipe != _empty_private_console_recipe():
+            raise PrivateConsoleUnitError("private_empty_recipe_changed")
+        return validated
+
+
+def empty_private_console_unit() -> PrivateConsoleUnit:
+    """Return exact synthetic empty bytes with fresh validation on every call."""
+
+    recipe = _empty_private_console_recipe()
+    # lru_cache protects its dictionary, but permits duplicate concurrent miss
+    # construction. Serialize only this synthetic lookup/construction boundary.
+    with _EMPTY_PRIVATE_TEMPLATE_LOCK:
+        unit = _cached_empty_private_console_unit(recipe)
+    # A cached template grants no current validation evidence. This remains a
+    # normal byte/relationship validation, including current policy and faults.
+    validated = validate_private_console_unit(unit)
+    if recipe != _empty_private_console_recipe():
+        raise PrivateConsoleUnitError("private_empty_recipe_changed")
+    return validated
 
 
 def empty_preconvergence_private_console_unit() -> PrivateConsoleUnit:
