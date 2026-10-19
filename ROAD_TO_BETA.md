@@ -1,13 +1,23 @@
 # Mentat Road to Beta
 
-Status: Repository implementation complete through Milestone 8; public beta remains externally gated
-Last updated: 2026-07-31
+Status: current-only storage integration and release QA in progress; public beta remains externally gated
+Last updated: 2026-10-19
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
 This document organizes the work required to make Mentat safe, installable,
 supportable, and useful as a public beta. It is deliberately ordered: each
 milestone removes a class of risk that later milestones depend on.
+
+The original milestone completion records below are historical evidence. The
+owner’s October 19 storage decision supersedes their older upgrade, migration
+and archive-compatibility promises. Only fresh/current SQLite schema 46, backup
+format 5 and restore protocol 4 are supported; the composed implementation still
+requires current hosted CI, integrated acceptance and the external release gates.
+See [ADR0002](docs/adr/0002-current-only-storage.md),
+[DATA_LAYOUT.md](DATA_LAYOUT.md) and the current
+[implementation roadmap](IMPLEMENTATION_PLAN.md). App replacement and current
+recovery remain required; older data is refused without conversion or deletion.
 
 ## What "public beta" means
 
@@ -28,8 +38,8 @@ The beta should be:
 
 - safe to install without placing personal data inside the application or Git
   checkout;
-- safe to upgrade, back up, restore, and uninstall without losing operator
-  data;
+- safe to replace the application, back up, restore and uninstall while
+  preserving supported current operator data;
 - predictable on the supported operating systems and Python versions;
 - explicit when Hermes, Google Calendar, or Obsidian is unavailable;
 - able to preserve its mandatory workflows when Hermes is reached through the
@@ -59,7 +69,7 @@ release contract for later implementation and release decisions.
 | Install channels | Native installers are primary on tier-one platforms; `pipx` from a tagged release remains supported as an advanced/fallback channel and is the Linux preview path | Approved 2026-07-17 |
 | Native installers | Separate signed and notarized native Apple Silicon (recommended) and Intel installers for macOS, plus a signed native installer for Windows, are required public-beta artifacts; they bundle or manage the required runtime and launch loopback-only Mentat | Approved 2026-07-17; macOS architectures expanded 2026-08-02 |
 | Installer implementation | Exact installer formats and tooling are selected in Milestone 3; the current source-checkout flow remains in place until that work is complete | Approved 2026-07-17 |
-| Update model | Manual, versioned upgrades with a pre-upgrade backup | Approved 2026-07-17 |
+| Update model | Manual application replacement with a validated current backup; no older-data conversion | Storage scope superseded 2026-10-19 |
 | Telemetry | Off and absent by default | Approved 2026-07-17 |
 | First version | `0.1.0b1`, displayed to users as `v0.1.0-beta.1` | Approved 2026-07-17 |
 | License | MIT | Approved 2026-07-16 |
@@ -77,8 +87,9 @@ Mentat already has a strong product and safety foundation:
 
 Repository implementation now covers the beta product and its release path:
 
-- durable operator data, migration, schema, backup/restore, upgrade, and
-  uninstall-preservation boundaries are implemented and tested;
+- durable operator data, current schema, backup/restore and application-only
+  replacement/uninstall boundaries have component evidence; the current-only
+  composed graph still requires integrated QA;
 - the versioned package, unified `mentat` CLI, native installer definitions,
   and source compatibility wrappers are implemented;
 - CI covers the supported OS/Python matrix, package and native artifact smoke,
@@ -150,7 +161,7 @@ signed-RC evidence remain external Milestone 6 work.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
+| 1 | Durable user data | Historical 1A–1F complete; current-only scope supersedes old conversion paths | 0 | Current bootstrap/recovery and application-only preservation QA |
 | 2 | Secure remote Hermes parity | Complete for the maintained Hermes `0.19.0` contract | 1 | Mandatory contracts live-verified over authenticated, certificate-verified HTTPS |
 | 3 | Installable product, native installers, and CLI | Repository tooling complete; signed clean-machine evidence remains in 6 | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Repository and hosted PR gates complete; protected signed evidence remains in 6 | 3 | Required CI green on the supported matrix |
@@ -205,62 +216,40 @@ The approved remote capability details and upstream blockers are recorded in
 [REMOTE_HERMES.md](REMOTE_HERMES.md). Milestone 0 is complete; changes to this
 contract require another explicit project-owner decision.
 
-## Milestone 1 — Move user data out of the install
+## Milestone 1 — Preserve current operator data
 
-Goal: make operator data survive upgrades and keep a running installation from
-modifying its application files or Git checkout.
+Goal: keep current operator storage separate from application files and preserve
+it through application replacement and uninstall/reinstall.
 
-Status: Milestone 1A contract, Milestone 1B resolver/preflight/initializer,
-Milestone 1C legacy durable-JSON migration, Milestone 1D schema versioning, and
-Milestone 1E-A durable-JSON backup/restore complete. Milestone 1E-B durable
-private Console migration/backup/restore and Milestone 1F application-upgrade/
-uninstall preservation coverage are also complete. The complete current mutable-path inventory, target directory
-classes, platform defaults,
-precedence, and fail-closed initialization/migration/backup rules are approved
-in [DATA_LAYOUT.md](DATA_LAYOUT.md). A clean config-less installed launch now
-creates the owner-only layout and copies only missing immutable seeds under a
-cross-process lock. An explicit CLI preview/confirmation flow can migrate the
-nine legacy JSON documents after a validated backup; the source remains
-unchanged. The fixed JSON inventory has explicit version metadata, backed-up
-bootstrap, forward-version refusal, and validated preview-confirm
-backup/restore. Retained Console history, SQLite metadata, and referenced blobs
-now use one owner-only durable consistency unit with explicit legacy migration,
-WAL-safe version-2 backup, exact restore, and version-1 restore compatibility.
+Historical Milestones 1A through 1F delivered inventory, resolver, initialization,
+migration, schema and recovery work. Their old-root conversion and older-backup
+acceptance paths are retired by the owner’s October 19 decision. The current
+contract is [DATA_LAYOUT.md](DATA_LAYOUT.md); old completion records do not
+make old formats supported or prove the newly composed graph has passed QA.
 
-Work in order:
+Current requirements:
 
-1. Inventory every mutable path and classify it as seed data, operator data,
-   cache, runtime data, log, backup, or configuration.
-2. Add one platform-aware standard-library data-root resolver: **Milestone 1B-A
-   complete.**
-   - macOS: `~/Library/Application Support/Mentat`;
-   - Windows: `%LOCALAPPDATA%\Mentat`;
-   - Linux: `$XDG_DATA_HOME/Mentat` when valid and set, otherwise
-     `~/.local/share/Mentat`.
-3. Treat the repository's `data/` files as immutable, public-safe seed data.
-   Copy missing seeds into a new data root; never run against tracked fixtures.
-   **Milestone 1B-B complete.**
-4. Preserve explicit local overrides for development and advanced operators.
-5. Detect legacy repo-local data and offer a previewed, backed-up migration.
-   Do not silently overwrite either source or destination. **Milestone 1C
-   complete.**
-6. Add versioned data-schema migrations and forward-version refusal.
-   **Milestone 1D complete.**
-7. Implement atomic backup and restore with validation and a restore preview.
-   **Milestone 1E-A complete for the fixed durable JSON set; Milestone 1E-B
-   complete for the retained private Console consistency unit.**
-8. Add tests for first run, repeat run, migration, interrupted migration,
-   upgrade, restore, and uninstall-data preservation. **Milestone 1F complete.**
+1. Preserve platform resolution and explicit development/operator overrides.
+   The source checkout retains its explicit `data_dir = "data"` override;
+   config-less installed launch uses the platform default.
+2. Admit only fresh/current storage before directory hardening, locks, seed
+   copying, writable SQLite or lifecycle cleanup. Refuse older/future/malformed
+   roots unchanged instead of repairing, upgrading or hiding them behind seeds.
+3. Use fixed immutable public-safe seeds only for admitted fresh initialization.
+   Never overwrite existing operator documents or repopulate missing current data.
+4. Keep schema 46 row, receipt, authority, privacy, retention and unknown-outcome
+   validation. Structural journal 1..46 is current metadata, not an upgrade chain.
+5. Validate current format 5 backups and protocol 4 restore with exact preview,
+   confirmation, pre-restore recovery evidence, staged replacement and current
+   interruption recovery. Preserve exclusions for credentials/external state.
+6. Exercise fresh startup, repeat startup, old/future refusal without writes,
+   current backup/restore, application replacement and uninstall preservation
+   on the actual integrated graph and supported platforms.
 
-Exit criteria:
-
-- starting and using Mentat does not dirty a clean checkout or installation;
-- a legacy operator can migrate without losing or duplicating data;
-- backup and restore are documented, tested, and fail closed;
-- an upgrade preserves tasks, settings, Context Packs, and private Console
-  metadata according to their retention rules; and
-- removing only the application tree preserves the external data root, while a
-  reinstall reconnects without recopying packaged defaults.
+No legacy migration CLI, schema 5 sibling export or old-format restore remains.
+An operator must retain older data separately and select a fresh supported root
+instead of expecting this build to convert it. Plain `mentat task-export`
+remains offline current SQLite-to-JSON recovery, never alternate live authority.
 
 ## Milestone 2 — Secure remote Hermes parity
 
@@ -489,7 +478,8 @@ Work in order:
    and rollback instructions.
 4. Test each native installer on a clean tier-one system and test the `pipx`
    path in its supported roles.
-5. Test upgrade from a representative legacy checkout and prior package build.
+5. Test application replacement against current data and unchanged refusal of
+   an older data root; do not claim an older-root upgrade path.
 6. Restore a backup into a clean install and compare the expected data.
 7. Test uninstall/reinstall while preserving operator data.
 8. Practice revoking or replacing a bad release without hiding its history.
@@ -526,7 +516,7 @@ Work in order:
    and experienced Hermes operators.
 2. Give testers a short onboarding path and a structured first-run checklist.
 3. Track installation success, time to first useful workflow, integration
-   degradation, data migration, and recovery outcomes.
+   degradation, unsupported-data refusal and current recovery outcomes.
 4. Exercise both local and remote Hermes installations and triage reports by
    the Milestone 0 severity policy.
 5. Ship small release candidates through the same gated process.
@@ -590,14 +580,17 @@ The release cannot be called public beta until all of the following are true:
 
 - [x] The beta contract and license are approved.
 - [x] User data lives outside the application/install directory by default.
-- [x] Legacy data migration is previewed, backed up, and tested.
-- [x] Backup, restore, upgrade, rollback, and uninstall preservation work.
+- [ ] Current-only bootstrap/refusal and current backup/restore pass on the
+  integrated release graph; retired migration evidence does not satisfy this gate.
+- [ ] Current backup/restore, compatible application replacement/rollback and
+  uninstall preservation pass integrated release QA.
 - [x] A versioned package and unified CLI install cleanly through the supported
   `pipx` channel.
 - [ ] A signed and notarized native installer for macOS and a signed native
   installer for Windows pass clean-install, upgrade, rollback, and uninstall-
   preservation checks.
-- [x] Required CI is green on the supported platform/Python matrix.
+- [ ] Current required CI is green on the supported platform/Python matrix;
+  historical runs do not qualify changed current-only heads.
 - [x] One remote Hermes endpoint can provide every mandatory capability over
   verified HTTPS without exposing its API credential.
 - [x] Remote Kanban, read-only profile discovery, and fully compatible

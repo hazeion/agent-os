@@ -10,7 +10,6 @@ import unittest
 from unittest.mock import patch
 
 from agent_registry import AgentRegistry
-from agent_registry_migration import preview_agent_registry_migration
 from mentat.cli import main as mentat_cli_main
 from mentat_db import SCHEMA_VERSION, connect, database_path
 from vercel_connections import (
@@ -30,6 +29,7 @@ from vercel_connections import (
 
 
 class VercelConnectionTests(unittest.TestCase):
+
     def cli(self, arguments: list[str]) -> tuple[int, dict[str, object]]:
         output = io.StringIO()
         with redirect_stdout(output), patch("mentat.cli.sys.stdin", io.StringIO()):
@@ -184,9 +184,7 @@ class VercelConnectionTests(unittest.TestCase):
             )
             binding = registry.get_runtime_binding(agent.id)
             self.assertEqual(binding.runtime_agent_ref, VERCEL_CONNECTION_ID)
-            migration = preview_agent_registry_migration(root)
-            self.assertEqual(migration.status, "already_converged")
-            self.assertEqual(migration.destination.agent_count, 1)
+            self.assertEqual(registry.list_agents(), (agent,))
 
             disconnect = preview_disconnect_vercel(root)
             record = confirm_disconnect_vercel(

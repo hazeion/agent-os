@@ -15,7 +15,6 @@ import private_console_unit
 import project_context
 from project_deliverables import DeliverableError, content_digest, normalize_content, publish_owner_edit, read_deliverable_preview, read_deliverable_version, read_project_deliverables, read_retired_deliverable_history, read_retired_deliverable_version, render_document, render_layout_png, safe_product_url
 from project_repository import mutate_authoritative_projects
-from task_repository import _schema5_private_unit
 from task_repository import mutate_authoritative_tasks
 from tests import test_project_context as context_tests
 from tests.test_project_repository import project
@@ -36,23 +35,11 @@ def garage_layout():
 
 
 class DeliverableContentTests(unittest.TestCase):
-    def test_exact_schema_30_upgrades_without_creating_deliverables(self):
+    def test_fresh_current_root_has_no_deliverable_authority(self):
         with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "schema30.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=30)
-            with closing(sqlite3.connect(path)) as connection:
-                mentat_db.migrate(connection)
+            with closing(mentat_db.connect(Path(temporary))) as connection:
                 self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], mentat_db.SCHEMA_VERSION)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_deliverable_versions").fetchone()[0], 0)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drifted-schema30.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=30)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP VIEW mentat_retained_attachments")
-                connection.execute("CREATE VIEW mentat_retained_attachments AS SELECT attachment_id FROM run_attachments")
-                with self.assertRaises(mentat_db.MentatDatabaseError):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 30)
 
     def test_dimensioned_garage_layout_has_bounded_render_and_digest(self):
         layout = normalize_content("layout", garage_layout())
@@ -144,15 +131,6 @@ class OwnerDeliverableStorageTests(unittest.TestCase):
         private_console_unit.validate_private_console_unit(unit)
         restored = private_console_unit.sanitize_owner_auth_restore_unit(unit)
         private_console_unit.validate_private_console_unit(restored)
-        compatible = _schema5_private_unit(unit)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "compatible.sqlite3"
-            path.write_bytes(compatible.database_raw)
-            with closing(sqlite3.connect(path)) as connection:
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5)
-                self.assertIsNone(connection.execute(
-                    "SELECT name FROM sqlite_master WHERE name='mentat_deliverable_versions'",
-                ).fetchone())
 
     def test_products_and_steps_are_owner_versions_without_run_provenance(self):
         products = publish_owner_edit(self.root, "project_mentat", "products",

@@ -162,7 +162,10 @@ class ProjectContextGrantTests(unittest.TestCase):
             return raw
         with closing(mentat_db.connect(self.root)) as connection, patch.object(context, '_encoded', side_effect=observed):
             context.validate_project_context_connection(connection)
-        with patch.object(context, 'MAX_METADATA_BYTES', max(encoded_sizes)):
+        with closing(mentat_db.connect(self.root)) as connection, patch.object(context, 'OUTPUT_RESERVATION_MAX_METADATA_BYTES', max(encoded_sizes) - 1):
+            with self.assertRaisesRegex(context.ProjectContextError, 'project_context.capacity'):
+                context.validate_project_context_connection(connection)
+        with patch.object(context, 'OUTPUT_RESERVATION_MAX_METADATA_BYTES', max(encoded_sizes)):
             with private_state_lock(self.root):
                 unit = backups.capture_private_console_unit(self.root)
             restored = backups.sanitize_owner_auth_restore_unit(unit)
@@ -177,7 +180,7 @@ class ProjectContextGrantTests(unittest.TestCase):
             return result
         with closing(mentat_db.connect(self.root)) as connection, patch.object(context, '_encoded', side_effect=observed):
             context.validate_project_context_connection(connection)
-        with patch.object(context, 'MAX_METADATA_BYTES', max(sizes)):
+        with patch.object(context, 'OUTPUT_RESERVATION_MAX_METADATA_BYTES', max(sizes)):
             registry = AgentRegistry(self.root, supported_runtime_types=('hermes','codex'))
             for index in range(127):
                 identifier = f'agent_{index}_' + 'x' * (128 - len(f'agent_{index}_'))
@@ -189,43 +192,62 @@ class ProjectContextGrantTests(unittest.TestCase):
             backups.validate_private_console_unit(unit)
 
 
-class ProjectContextAccessMigrationTests(unittest.TestCase):
+class ProjectContextAccessCurrentStorageTests(unittest.TestCase):
+    def test_incomplete_old_and_future_journals_refuse_without_changes(self):
+        for version in (mentat_db.SCHEMA_VERSION - 1, mentat_db.SCHEMA_VERSION + 1, None):
+            with self.subTest(version=version), closing(sqlite3.connect(':memory:', isolation_level=None)) as connection:
+                mentat_db.migrate(connection)
+                context.validate_project_context_connection(connection)
+                if version is None:
+                    connection.execute('DELETE FROM schema_migrations WHERE version=1')
+                elif version < mentat_db.SCHEMA_VERSION:
+                    connection.execute('DELETE FROM schema_migrations WHERE version>?', (version,))
+                else:
+                    connection.execute('INSERT INTO schema_migrations VALUES (?,0)', (version,))
+                before = connection.serialize()
+                changes = connection.total_changes
+                factory = connection.row_factory
+                connection.execute('PRAGMA query_only=ON')
+                with self.assertRaisesRegex(context.ProjectContextError, 'project_context.invalid'):
+                    context.validate_project_context_connection(connection)
+                self.assertEqual(connection.serialize(), before)
+                self.assertEqual(connection.total_changes, changes)
+                self.assertIs(connection.row_factory, factory)
+
     def test_virtual_empty_snapshot_identity_is_stable(self):
         first = backups.empty_private_console_unit()
         second = backups.empty_private_console_unit()
         self.assertEqual(backups.private_console_unit_digest(first), backups.private_console_unit_digest(second))
 
-    def test_full_schema27_context_budget_migrates_and_remains_retirable_and_restorable(self):
+    def test_full_current_context_allocation_remains_retirable_and_restorable(self):
         fixture = context_tests.ProjectContextTests()
-        old_migrations = tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 27)
-        with patch.object(mentat_db, 'MIGRATIONS', old_migrations), patch.object(mentat_db, 'SCHEMA_VERSION', 27):
-            fixture.setUp()
-            self.addCleanup(fixture.doCleanups)
-            root = fixture.root
-            extra = [project(f'Capacity {index}', f'project_capacity_{index}') for index in range(1,8)]
-            mutate_authoritative_projects(root, lambda rows: ([*rows, *extra], None))
-            registry = AgentRegistry(root, supported_runtime_types=('hermes',))
-            for index in range(128):
-                registry.create_agent(agent_id='agent_'+f'{index:0122d}',name=f'Agent {index}',runtime_config_id=f'config_{index}',runtime_type='hermes',runtime_agent_ref=f'profile_{index}',capabilities=('run.start',))
-            projects = ['project_mentat', *[item['id'] for item in extra]]
-            scopes = [[f'project_scope_{index:032x}', project_id, 32, 1.0, None] for index, project_id in enumerate(projects)]
-            empty_digest = hashlib.sha256(b'[]').hexdigest()
-            versions = [[f'project_context_{index:032x}', scopes[index//32][0], index%32+1, '', empty_digest, 1.0] for index in range(256)]
-            remaining = context.LEGACY_MAX_METADATA_BYTES - len(context._encoded([scopes,versions,[]]))
-            self.assertLessEqual(remaining, 256 * context.MAX_BRIEF_BYTES)
-            for row in versions:
-                count = min(remaining, context.MAX_BRIEF_BYTES)
-                row[3] = 'x' * count
-                remaining -= count
-            self.assertEqual(remaining, 0)
-            self.assertEqual(len(context._encoded([scopes,versions,[]])), context.LEGACY_MAX_METADATA_BYTES)
-            with closing(mentat_db.connect(root)) as connection:
-                connection.executemany('INSERT INTO mentat_project_context_scopes VALUES(?,?,?,?,?)', scopes)
-                connection.executemany('INSERT INTO mentat_project_context_versions VALUES(?,?,?,?,?,?)', versions)
-                context.validate_project_context_connection(connection)
-            with private_state_lock(root):
-                historical = backups.capture_private_console_unit(root)
-        backups.validate_private_console_unit(historical)
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        root = fixture.root
+        extra = [project(f'Capacity {index}', f'project_capacity_{index}') for index in range(1,8)]
+        mutate_authoritative_projects(root, lambda rows: ([*rows, *extra], None))
+        registry = AgentRegistry(root, supported_runtime_types=('hermes',))
+        for index in range(128):
+            registry.create_agent(agent_id='agent_'+f'{index:0122d}',name=f'Agent {index}',runtime_config_id=f'config_{index}',runtime_type='hermes',runtime_agent_ref=f'profile_{index}',capabilities=('run.start',))
+        projects = ['project_mentat', *[item['id'] for item in extra]]
+        scopes = [[f'project_scope_{index:032x}', project_id, 32, 1.0, None] for index, project_id in enumerate(projects)]
+        empty_digest = hashlib.sha256(b'[]').hexdigest()
+        versions = [[f'project_context_{index:032x}', scopes[index//32][0], index%32+1, '', empty_digest, 1.0] for index in range(256)]
+        remaining = context.CONTEXT_MAX_METADATA_BYTES - len(context._encoded([scopes,versions,[]]))
+        self.assertLessEqual(remaining, 256 * context.MAX_BRIEF_BYTES)
+        for row in versions:
+            count = min(remaining, context.MAX_BRIEF_BYTES)
+            row[3] = 'x' * count
+            remaining -= count
+        self.assertEqual(remaining, 0)
+        self.assertEqual(len(context._encoded([scopes,versions,[]])), context.CONTEXT_MAX_METADATA_BYTES)
+        with closing(mentat_db.connect(root)) as connection:
+            connection.executemany('INSERT INTO mentat_project_context_scopes VALUES(?,?,?,?,?)', scopes)
+            connection.executemany('INSERT INTO mentat_project_context_versions VALUES(?,?,?,?,?,?)', versions)
+            context.validate_project_context_connection(connection)
+        with private_state_lock(root):
+            captured = backups.capture_private_console_unit(root)
+        backups.validate_private_console_unit(captured)
         with closing(mentat_db.connect(root)) as connection:
             self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
             context.validate_project_context_connection(connection)

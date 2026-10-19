@@ -17,7 +17,6 @@ import private_console_unit
 import project_context
 from project_repository import mutate_authoritative_projects
 from tests.test_project_repository import project
-from task_repository import _schema5_private_unit
 from mentat.project_worker_scope import LinuxWorkerScope, WorkerScopeLimits
 from tests import test_project_worker_journal as fixtures
 
@@ -25,7 +24,7 @@ _RETAINED_STALLED_FIXTURES = []
 
 
 def planned_fixture():
-    # Deliberately inert historical fixture, not a qualified Linux scope.
+    # Deliberately inert retained-evidence fixture, not a qualified Linux scope.
     scope = LinuxWorkerScope.__new__(LinuxWorkerScope)
     scope._uid = 1000
     scope._unit = 'mentat-project-worker-' + 'c'*32 + '.scope'
@@ -145,10 +144,6 @@ class ScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
                         claim_token=first.claim_token,expected_revision=1,target='starting')
                 connection.rollback()
                 self.assertEqual(scopes.read_scope(connection,self.run).revision,1)
-            compatible = _schema5_private_unit(unit)
-            with closing(sqlite3.connect(':memory:')) as connection:
-                connection.deserialize(compatible.database_raw)
-                self.assertIsNone(connection.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_scopes'").fetchone())
 
     def test_active_private_capture_refuses_without_source_change(self):
         first = self.prepare()
@@ -160,59 +155,7 @@ class ScopeJournalTests(_ScopeJournalFixture, unittest.TestCase):
         with closing(mentat_db.connect(self.root)) as connection:
             self.assertEqual(list(connection.iterdump()),before)
 
-    def test_source43_drift_and_post_ddl_failure_roll_back(self):
-        for tamper in ('ALTER TABLE mentat_runs ADD COLUMN injected_drift TEXT',None):
-            with self.subTest(tamper=tamper), TemporaryDirectory() as temporary:
-                path = Path(temporary)/'mentat.sqlite3'
-                private_console_unit._initialize_database(path,schema_version=43)
-                with closing(sqlite3.connect(path)) as connection:
-                    if tamper:
-                        connection.execute(tamper)
-                        connection.commit()
-                    before = list(connection.iterdump())
-                    execute = mentat_db._execute_script_in_active_transaction
-                    def fail_after_ddl(active,script):
-                        execute(active,script)
-                        if script == dict(mentat_db.MIGRATIONS)[44]:
-                            self.assertIsNotNone(active.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_scopes'").fetchone())
-                            raise RuntimeError('after scope DDL fixture')
-                    if tamper:
-                        with self.assertRaisesRegex(mentat_db.MentatDatabaseError,'schema 43'):
-                            mentat_db.migrate(connection)
-                    else:
-                        with patch.object(mentat_db,'_execute_script_in_active_transaction',side_effect=fail_after_ddl):
-                            with self.assertRaisesRegex(RuntimeError,'after scope DDL'):
-                                mentat_db.migrate(connection)
-                    self.assertEqual(list(connection.iterdump()),before)
-                    self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0],43)
-                    self.assertFalse(connection.in_transaction)
 
-    def test_exact_schema43_private_capture_validates_then_upgrades_without_losing_graph(self):
-        with closing(mentat_db.connect(self.root)) as connection:
-            connection.execute('BEGIN IMMEDIATE')
-            connection.execute('DROP TRIGGER mentat_project_output_reservation_immutable')
-            from tests.producer_schema_support import remove_schema46
-            remove_schema46(connection)
-            connection.execute('DROP TRIGGER mentat_project_output_reservation_retained')
-            connection.execute('DROP TABLE mentat_project_output_reservations')
-            connection.execute('DROP TRIGGER mentat_project_worker_scope_immutable')
-            connection.execute('DROP TRIGGER mentat_project_worker_scope_retained')
-            connection.execute('DROP TABLE mentat_project_worker_scopes')
-            connection.execute('DELETE FROM schema_migrations WHERE version>=44')
-            connection.commit()
-            self.assertEqual(mentat_db.schema_signature_state(connection,43),'expected')
-            before = journal.validate_worker_journal_connection(connection)
-        unit = private_console_unit.capture_private_console_unit(self.root)
-        private_console_unit.validate_private_console_unit(unit)
-        with TemporaryDirectory() as temporary:
-            copied = Path(temporary)/'old43.sqlite'
-            copied.write_bytes(unit.database_raw)
-            with closing(sqlite3.connect(copied)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection,43),'expected')
-        with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection,46),'expected')
-            self.assertEqual(journal.validate_worker_journal_connection(connection),before)
-            self.assertEqual(scopes.validate_scope_journal_connection(connection),[])
 
     def test_competing_connections_mint_one_token_and_transition_once(self):
         barrier = threading.Barrier(2)

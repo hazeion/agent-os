@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import patch
 
 import agent_run_history
+from tests.test_private_console_state import save_current_run_summaries
+from run_repository import load_authoritative_run_summaries
 import server
 from agent_console_artifacts import (
     SECURE_DIR_FD_DELETE,
@@ -305,10 +307,10 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             "created_at": "2026-07-25T12:00:00-07:00",
         }
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "runs.json"
-            agent_run_history.save_run_summaries(path, [run])
-            loaded, recovered = agent_run_history.load_run_summaries(path)
-        self.assertFalse(recovered)
+            root = Path(temporary)
+            run.update(updated_at=run["created_at"], started_at=run["created_at"], completed_at=run["created_at"])
+            save_current_run_summaries(root, [run])
+            loaded = load_authoritative_run_summaries(root)
         self.assertTrue(loaded[0]["starts_new_session"])
         self.assertEqual(loaded[0]["usage"]["context_length"], 32000)
 

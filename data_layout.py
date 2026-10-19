@@ -723,9 +723,9 @@ def preflight_data_root(
 
     if legacy_names:
         return DataRootPreflight(
-            status="migration_required",
+            status="unsupported_legacy_storage",
             items=tuple(
-                PreflightItem(name=name, status="migrate" if name in legacy_names else "reserved")
+                PreflightItem(name=name, status="blocked" if name in legacy_names else "reserved")
                 for name in names
             ),
         )

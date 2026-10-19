@@ -12,6 +12,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 import agent_run_history
+from tests.test_private_console_state import save_current_run_summaries
+from run_repository import load_authoritative_run_summaries
 from hermes_transport import (
     RemoteHermesConsoleTransport,
     TransportBinding,
@@ -2659,9 +2661,9 @@ class RemoteConsoleRunTests(unittest.TestCase):
             "partial": True,
         })
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "history.json"
-            agent_run_history.save_run_summaries(path, [run])
-            restored, _ = agent_run_history.load_run_summaries(path)
+            root = Path(directory)
+            save_current_run_summaries(root, [run])
+            restored = load_authoritative_run_summaries(root)
         self.assertEqual(restored[0]["usage"]["total_tokens"], 3)
         self.assertTrue(restored[0]["partial"])
 
@@ -2673,13 +2675,21 @@ class RemoteConsoleRunTests(unittest.TestCase):
             "error": "",
         }
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "history.json"
-            agent_run_history.save_run_summaries(path, [active_remote])
-            recovered, changed = agent_run_history.load_run_summaries(path)
-        self.assertTrue(changed)
+            from mentat_db import connect
+            from run_repository import RunRepository
+            root = Path(directory)
+            active_remote["completed_at"] = None
+            save_current_run_summaries(root, [active_remote])
+            connection = connect(root)
+            try:
+                changed = RunRepository(connection).recover_console_runs_as_interrupted()
+            finally:
+                connection.close()
+            recovered = load_authoritative_run_summaries(root)
+        self.assertEqual(changed, ("run_restart_remote",))
         self.assertEqual(recovered[0]["status"], "interrupted")
         self.assertTrue(recovered[0]["partial"])
-        self.assertIn("could not be verified", recovered[0]["error"])
+        self.assertTrue(any(event["type"] == "run.interrupted" for event in recovered[0]["events"]))
 
     def test_remote_start_rejects_deferred_inputs_before_submission(self):
         client = FakeRunClient()

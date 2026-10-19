@@ -107,19 +107,16 @@ profile IDs for compatibility; do not treat that alias or `data/agents.json`
 heartbeat observations as the durable Mentat Agent registry.
 
 Canonical Mentat Agents, runtime bindings, and optional provider settings are
-stored in schema-9 owner-private `mentat.sqlite3`. Existing roots move from
-the retired `agent-registry.sqlite3` source only through `mentat
-agent-registry-migration`: preview is read-only, confirmation requires a
-validated backup, and Agent/config rows plus the receipt commit together. Once
-the receipt exists, live code must never read, write, shadow, synchronize, or
-fall back to the old file. Browser-facing Agent projections may expose Mentat IDs,
-names, runtime types, runtime configuration IDs, and declared capabilities, but
-must not expose adapter-owned runtime references. `data/agents.json` remains a
-legacy heartbeat-observation surface and must not be merged into or substituted
-for the canonical registry. The registry is capped at 128 Agents and is part of
-the validated private Console backup/restore consistency unit. New format-4
-backups carry the embedded authority without a separate registry member;
-format-2/3 restores remain supported and require convergence before normal use.
+stored in current schema 46 owner-private `mentat.sqlite3`. Fresh initialization
+claims empty Agent authority under the existing receipt and path guards.
+Older/future databases and retired standalone registry input are refused; no
+migration, fallback, synchronization or automatic deletion is permitted.
+Browser-facing Agent projections may expose Mentat IDs, names, runtime types,
+runtime configuration IDs and declared capabilities, never private runtime
+references. `data/agents.json` remains heartbeat observation, not canonical
+Agent authority. The registry is capped at 128 Agents and belongs to the validated
+private Console backup/restore consistency unit. Only backup format 5 and restore
+protocol 4 are supported. See [ADR0002](docs/adr/0002-current-only-storage.md).
 
 Vercel is optional. Its private connection record may store validated settings
 and the credential-source kind, but never a credential value. Vercel setup,
@@ -128,8 +125,8 @@ preview/confirmation CLI operations. The browser may see only the safe
 connection projection and cannot create or bind a Vercel Agent directly.
 AI Gateway, Sandbox, and Connect stay behind separate fixed-host, bounded
 adapters. Sandbox accepts no arbitrary commands and Connect tokens must be
-discarded immediately. Schema-5 compatible-root export must omit Vercel Agents
-and provider tables while leaving the schema-9 source unchanged.
+discarded immediately. Current backups retain validated provider settings and
+bound Agents together; credential values remain excluded.
 Browser status reports configuration and credential presence, not live
 readiness. Only an explicit confirmed CLI test may claim readiness. Ambiguous
 Gateway submissions must remain `unknown` without retry until the stopped-
@@ -142,25 +139,15 @@ Pivot Slice 1C-B makes the canonical Task tables in owner-private
 authority receipt commit in the same transaction. After the receipt exists,
 live Task paths must use SQLite exclusively and must never read, write, shadow,
 synchronize, or fall back to stale `tasks.json`; the tracked file is only a
-packaged seed/recovery artifact. `mentat task-migration` remains read-only and
-reports existing authority without consulting stale JSON. Deterministic export
-is recovery infrastructure, not an alternate runtime authority. The offline
-`mentat task-export` command may replace `tasks.json` only after an exact
-preview/confirmation while no Mentat server is active; live code must still
-ignore that file while the SQLite authority receipt exists. Use its
-`--compatible-root` mode for an actual pre-cutover build: it publishes a new
-schema-5 sibling data root whose Task tables are empty and whose exported
-`tasks.json` is the old build's sole Task authority. It must leave the
-authoritative schema-9 root unchanged. Compatible-root export must fail closed
-while the source actively selects remote Hermes because connection credentials
-are deliberately excluded; the operator must explicitly return the source to
-local mode and reconfigure the sibling before any remote operation.
+packaged seed/recovery artifact. Deterministic export is current recovery
+infrastructure, not alternate runtime authority. The offline `mentat task-export`
+command may replace only `tasks.json` after exact preview/confirmation while no
+Mentat server is active. Live code continues using SQLite exclusively. There is
+no compatible-root or older-build export, Task migration command, or database
+upgrade path.
 The exact canonical Task export must remain within the shared document limit;
 do not append or ignore optional formatting bytes during write or verification.
-Compatible sibling publication must fsync its populated staged hierarchy and
-pinned parent on POSIX, or use missing-only Windows directory publication with
-`MOVEFILE_WRITE_THROUGH`, before reporting durable success. Post-rename failures
-must be reported as partial writes.
+
 
 Hermes is the first capability-scoped runtime adapter. Codex is the second,
 through one fixed local App Server stdio connection in `codex_runtime.py`.

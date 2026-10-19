@@ -9,6 +9,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 import agent_run_history
+from tests.test_private_console_state import save_current_run_summaries
+from run_repository import load_authoritative_run_summaries
 from hermes_transport import (
     HermesTransportError,
     LocalHermesConsoleTransport,
@@ -751,7 +753,7 @@ class HermesTransportTests(unittest.TestCase):
                 self.assertEqual(payload["error_code"], "session_connection_mismatch")
                 worker.assert_not_called()
 
-    def test_transport_binding_round_trips_and_malformed_history_is_skipped(self):
+    def test_current_sql_transport_binding_round_trips_and_malformed_binding_rolls_back(self):
         run = {
             "id": "run_bound",
             "agent_id": "default",
@@ -771,23 +773,13 @@ class HermesTransportTests(unittest.TestCase):
         self.assertEqual(legacy["connection_binding_id"], "local-default")
 
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "history.json"
-            malformed = {
-                **summary,
-                "transport_mode": "remote",
-                "connection_binding_id": "local-default",
-            }
-            path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": agent_run_history.SCHEMA_VERSION,
-                        "runs": [summary, malformed],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            loaded, recovered = agent_run_history.load_run_summaries(path)
-        self.assertFalse(recovered)
+            root = Path(temporary)
+            run.update(created_at="2026-07-10T12:00:00-07:00", updated_at="2026-07-10T12:00:00-07:00", completed_at="2026-07-10T12:00:00-07:00")
+            save_current_run_summaries(root, [run])
+            malformed = {**run, "transport_mode": "remote", "connection_binding_id": "local-default"}
+            with self.assertRaisesRegex(ValueError, "transport binding"):
+                save_current_run_summaries(root, [malformed])
+            loaded = load_authoritative_run_summaries(root)
         self.assertEqual([item["id"] for item in loaded], ["run_bound"])
         self.assertEqual(loaded[0]["connection_binding_id"], "a" * 32)
 

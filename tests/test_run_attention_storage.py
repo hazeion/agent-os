@@ -159,32 +159,6 @@ class RunAttentionStorageTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_schema_35_upgrade_surfaces_uncertain_and_failed_but_quiets_verified_history(self):
-        connection = sqlite3.connect(":memory:")
-        try:
-            for version, script in mentat_db.MIGRATIONS:
-                if version > 35:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version,applied_at) VALUES(?,1)", (version,),
-                )
-            _insert(connection, "run_unknown", "unknown", dispatch="accepted")
-            _insert(connection, "run_failed", "failed", dispatch="rejected", finalized=1)
-            _insert(connection, "run_incomplete", "completed", dispatch="accepted", finalized=0)
-            _insert(connection, "run_quiet", "completed", dispatch="accepted", finalized=1)
-            connection.commit()
-            mentat_db.migrate(connection)
-            notices = dict(connection.execute(
-                "SELECT run_id,item_id FROM mentat_run_attention ORDER BY run_id"
-            ).fetchall())
-            self.assertEqual(set(notices), {"run_unknown", "run_failed", "run_incomplete", "run_quiet"})
-            self.assertIsNone(notices["run_quiet"])
-            for identifier in ("run_unknown", "run_failed", "run_incomplete"):
-                self.assertIsNotNone(notices[identifier])
-            validate_run_attention_connection(connection)
-        finally:
-            connection.close()
 
     def test_repository_retention_keeps_retired_failure_notice(self):
         with TemporaryDirectory() as temporary:
@@ -213,9 +187,15 @@ class RunAttentionStorageTests(unittest.TestCase):
                 "(id,source,runtime_type,capabilities_json,status,dispatch_state,"
                 "terminal_finalized,created_at,updated_at,completed_at) "
                 "VALUES(?,'console','hermes','[]','failed','legacy',1,?,?,?)",
-                ((f"run_full_{index:05d}", _CREATED, _UPDATED, _UPDATED)
+                ((f"run_full_{index:05d}".ljust(128, "x"), _CREATED, _UPDATED, _UPDATED)
                  for index in range(10_000)),
             )
+            page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+            database_bytes = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
+            self.assertLess(database_bytes, 63 * 1024 * 1024)
+            self.assertLess(63 * 1024 * 1024 + 24 * 1024 * 1024
+                            + 4 * 1024 * 1024 + 4 * 1024 * 1024,
+                            96 * 1024 * 1024)
             connection.execute("DELETE FROM mentat_runs")
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM mentat_run_attention"
@@ -228,11 +208,12 @@ class RunAttentionStorageTests(unittest.TestCase):
             connection.execute(
                 "UPDATE mentat_run_attention SET read_at=created_at,"
                 "acknowledged_at=created_at,resolved_at=created_at "
-                "WHERE run_id='run_full_00000'"
+                "WHERE run_id=?", ("run_full_00000".ljust(128, "x"),)
             )
             _insert(connection, "run_one_more", "running")
             self.assertIsNone(connection.execute(
-                "SELECT 1 FROM mentat_run_attention WHERE run_id='run_full_00000'"
+                "SELECT 1 FROM mentat_run_attention WHERE run_id=?",
+                ("run_full_00000".ljust(128, "x"),)
             ).fetchone())
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM mentat_run_attention"
@@ -241,39 +222,6 @@ class RunAttentionStorageTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_maximum_schema_35_upgrade_fits_database_and_private_unit_headroom(self):
-        connection = sqlite3.connect(":memory:")
-        try:
-            for version, script in mentat_db.MIGRATIONS:
-                if version > 35:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version,applied_at) VALUES(?,1)", (version,),
-                )
-            connection.executemany(
-                "INSERT INTO mentat_runs "
-                "(id,source,runtime_type,capabilities_json,status,dispatch_state,created_at,updated_at) "
-                "VALUES(?,'console','hermes','[]','completed','legacy',?,?)",
-                (("run_" + f"{index:05d}" + "x" * 119, _CREATED, _UPDATED)
-                 for index in range(10_000)),
-            )
-            connection.commit()
-            page_size = connection.execute("PRAGMA page_size").fetchone()[0]
-            before = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
-            mentat_db.migrate(connection)
-            after = page_size * connection.execute("PRAGMA page_count").fetchone()[0]
-            added = after - before
-            self.assertLess(added, 7 * 1024 * 1024)
-            self.assertLess(56 * 1024 * 1024 + added, 63 * 1024 * 1024)
-            self.assertLess(63 * 1024 * 1024 + 24 * 1024 * 1024
-                            + 4 * 1024 * 1024 + 4 * 1024 * 1024,
-                            96 * 1024 * 1024)
-            self.assertEqual(connection.execute(
-                "SELECT COUNT(*) FROM mentat_run_attention WHERE item_id IS NOT NULL"
-            ).fetchone()[0], 10_000)
-        finally:
-            connection.close()
 
     def test_private_backup_retains_exact_run_notice_and_receipt(self):
         with TemporaryDirectory() as temporary:
@@ -299,7 +247,8 @@ class RunAttentionStorageTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(after, tuple(before))
             target = Path(temporary) / "restored"
-            (target / "private").mkdir(parents=True)
+            (target / "private").mkdir(mode=0o700, parents=True)
+            target.chmod(0o700)
             private_console_unit.materialize_private_console_unit(
                 target, unit, target / "private" / "console"
             )
@@ -311,19 +260,18 @@ class RunAttentionStorageTests(unittest.TestCase):
                 self.assertEqual(tuple(restored), tuple(before))
                 validate_run_attention_connection(connection)
 
-    def test_schema_35_private_unit_restores_and_materializes_failure_once(self):
+    def test_current_private_unit_restores_and_materializes_failure_once(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "source"
-            old_migrations = tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 35)
-            with patch.object(mentat_db, "MIGRATIONS", old_migrations), patch.object(mentat_db, "SCHEMA_VERSION", 35):
-                ensure_run_sqlite_authority(root, history_path(root))
-                save_authoritative_run_summaries(root, [
-                    run_fixture("run_schema35_failure", status="failed", bound=False)
-                ])
-                unit = private_console_unit.capture_private_console_unit(root)
+            ensure_run_sqlite_authority(root, history_path(root))
+            save_authoritative_run_summaries(root, [
+                run_fixture("run_current_failure", status="failed", bound=False)
+            ])
+            unit = private_console_unit.capture_private_console_unit(root)
             private_console_unit.validate_private_console_unit(unit)
             target = Path(temporary) / "target"
-            (target / "private").mkdir(parents=True)
+            (target / "private").mkdir(mode=0o700, parents=True)
+            target.chmod(0o700)
             private_console_unit.materialize_private_console_unit(
                 target, unit, target / "private" / "console"
             )
@@ -331,13 +279,13 @@ class RunAttentionStorageTests(unittest.TestCase):
                 self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 first = connection.execute(
                     "SELECT item_id,revision FROM mentat_run_attention "
-                    "WHERE run_id='run_schema35_failure'"
+                    "WHERE run_id='run_current_failure'"
                 ).fetchone()
                 self.assertIsNotNone(first[0])
                 mentat_db.migrate(connection)
                 second = connection.execute(
                     "SELECT item_id,revision FROM mentat_run_attention "
-                    "WHERE run_id='run_schema35_failure'"
+                    "WHERE run_id='run_current_failure'"
                 ).fetchone()
                 self.assertEqual(tuple(first), tuple(second))
 

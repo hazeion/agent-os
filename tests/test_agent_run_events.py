@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 import agent_run_history
 import server
-from run_repository import RetentionReport
+from run_repository import RetentionReport, load_authoritative_run_summaries
+from tests.test_private_console_state import save_current_run_summaries
+from private_console_unit import capture_private_console_unit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -234,35 +236,22 @@ class AgentRunEventTests(unittest.TestCase):
         self.assertEqual(server.AGENT_CONSOLE_CONTINUATIONS_PENDING, {})
         service_factory.assert_not_called()
 
-    def test_legacy_history_migrates_and_v3_round_trip_preserves_events(self):
-        legacy = {
-            "schema_version": 1,
-            "runs": [{
-                "id": "run_legacy",
-                "status": "completed",
-                "prompt_excerpt": "hello",
-                "response_excerpt": "done",
-                "error_excerpt": "",
-                "created_at": "2026-07-10T12:00:00-07:00",
-                "events": [{
-                    "id": "old_event",
-                    "kind": "status",
-                    "message": "api_key=secret-value",
-                    "timestamp": "2026-07-10T12:00:01-07:00",
-                }],
-            }],
+    def test_current_sql_round_trip_preserves_events_and_redaction(self):
+        run = {
+            "id": "run_current", "status": "completed", "prompt": "hello", "response": "done",
+            "created_at": "2026-07-10T12:00:00-07:00", "updated_at": "2026-07-10T12:00:01-07:00",
+            "completed_at": "2026-07-10T12:00:01-07:00",
+            "events": [{"id": "event_current", "type": "status", "message": "api_key=secret-value",
+                        "timestamp": "2026-07-10T12:00:01-07:00"}],
         }
-        with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "runs.json"
-            path.write_text(json.dumps(legacy), encoding="utf-8")
-            runs, recovered = agent_run_history.load_run_summaries(path)
-            agent_run_history.save_run_summaries(path, runs)
-            stored_text = path.read_text(encoding="utf-8")
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            save_current_run_summaries(root, [run])
+            runs = load_authoritative_run_summaries(root)
+            stored_text = capture_private_console_unit(root).history_raw.decode("utf-8")
             stored = json.loads(stored_text)
-
-        self.assertFalse(recovered)
         self.assertEqual(runs[0]["events"][0]["sequence"], 1)
-        self.assertEqual(runs[0]["events"][0]["run_id"], "run_legacy")
+        self.assertEqual(runs[0]["events"][0]["run_id"], "run_current")
         self.assertEqual(stored["schema_version"], agent_run_history.SCHEMA_VERSION)
         self.assertNotIn("secret-value", stored_text)
         self.assertEqual(stored["runs"][0]["event_cursor"], 1)

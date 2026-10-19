@@ -18,7 +18,6 @@ import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from agent_run_history import (
-    LEGACY_SCHEMA_VERSIONS,
     SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
     _hydrate,
     _safe_event_data,
@@ -29,7 +28,6 @@ from agent_run_history import (
     normalize_events,
     normalize_transport_binding,
     normalize_usage,
-    secure_history_permissions,
     summarize_run,
 )
 from agent_runtime import (
@@ -63,8 +61,13 @@ from mentat_db import (
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
     MentatDatabaseError,
     connect,
+    connect_current_readonly,
+    validate_current_database_root,
 )
-from private_state import private_state_lock
+from private_state import (
+    PrivateStateError, history_path as canonical_history_path,
+    inspect_console_root, private_state_lock,
+)
 from task_repository import (
     TaskRepository,
     TaskRepositoryConflict,
@@ -74,8 +77,6 @@ from task_planning import task_is_deferred, workflow_stage
 
 
 RUN_AUTHORITY_CONTRACT = "mentat-run-sqlite-cutover-v1"
-RUN_SCHEMA_VERSION = 7
-CONVERSATION_SUBMISSION_SCHEMA_VERSION = 11
 MAX_SOURCE_RUNS = 10_000
 TERMINAL_RUN_RETENTION = 250
 EVENT_COUNT_RETENTION = 1_000
@@ -382,22 +383,16 @@ _CODEX_TASK_CREATE_SCHEMA_OBJECTS = frozenset(
 
 
 def _run_schema_objects(schema_version: int) -> frozenset[str]:
-    objects = _RUN_SCHEMA_OBJECTS
-    if schema_version >= 11:
-        objects |= _CONVERSATION_RESULT_SCHEMA_OBJECTS
-    if schema_version >= 14:
-        objects |= _CONVERSATION_ATTEMPT_SCHEMA_OBJECTS
-    if schema_version >= 15:
-        objects |= frozenset({"mentat_conversation_run_contexts"})
-    if schema_version >= 19:
-        objects |= _TASK_EXECUTION_SCHEMA_OBJECTS
-    if schema_version >= 22:
-        objects |= _CODEX_TASK_CREATE_SCHEMA_OBJECTS
-    if schema_version >= 35:
-        objects |= frozenset({"mentat_run_identities"})
-    if schema_version >= 36:
-        objects |= frozenset({"mentat_run_attention", "mentat_inbox_items"})
-    return objects
+    if type(schema_version) is not int or schema_version != DATABASE_SCHEMA_VERSION:
+        raise RunRepositoryError("run_repository.schema_unsupported")
+    return (
+        _RUN_SCHEMA_OBJECTS | _CONVERSATION_RESULT_SCHEMA_OBJECTS
+        | _CONVERSATION_ATTEMPT_SCHEMA_OBJECTS | _TASK_EXECUTION_SCHEMA_OBJECTS
+        | _CODEX_TASK_CREATE_SCHEMA_OBJECTS | frozenset({
+            "mentat_conversation_run_contexts", "mentat_run_identities",
+            "mentat_run_attention", "mentat_inbox_items",
+        })
+    )
 
 
 def _run_schema_fingerprint(
@@ -424,8 +419,10 @@ def _run_schema_fingerprint(
     ).hexdigest()
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=1)
 def _expected_run_schema_fingerprint(schema_version: int) -> str:
+    if type(schema_version) is not int or schema_version != DATABASE_SCHEMA_VERSION:
+        raise RunRepositoryError("run_repository.schema_unsupported")
     connection = sqlite3.connect(":memory:")
     try:
         connection.execute(
@@ -1349,38 +1346,6 @@ def _details_for_run(run: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[
     return summary, events
 
 
-def _exact_schema_three_events(run_id: str, raw_events: Any) -> list[dict[str, Any]] | None:
-    if not isinstance(raw_events, list):
-        return None
-    result: list[dict[str, Any]] = []
-    last_sequence = 0
-    seen_ids: set[str] = set()
-    for item in raw_events:
-        if not isinstance(item, dict):
-            return None
-        event_id = item.get("id")
-        sequence = item.get("sequence")
-        if (
-            item.get("schema_version") != 1
-            or item.get("run_id") != run_id
-            or type(sequence) is not int
-            or sequence <= last_sequence
-            or item.get("cursor") != sequence
-            or not isinstance(event_id, str)
-            or not _EVENT_ID.fullmatch(event_id)
-            or event_id in seen_ids
-            or not isinstance(item.get("timestamp"), str)
-            or not _SOURCE_TYPE.fullmatch(str(item.get("type") or ""))
-        ):
-            return None
-        try:
-            _timestamp(item["timestamp"])
-        except RunRepositoryValidationError:
-            return None
-        result.append(dict(item))
-        seen_ids.add(event_id)
-        last_sequence = sequence
-    return result
 
 
 def _newest_contiguous_event_suffix(
@@ -1403,7 +1368,7 @@ def _newest_contiguous_event_suffix(
 
 
 class RunRepository:
-    """Transaction-friendly repository over one migrated Mentat connection."""
+    """Transaction-friendly repository over one current Mentat connection."""
 
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
@@ -1412,10 +1377,10 @@ class RunRepository:
 
     def _require_schema(self) -> None:
         try:
-            version = int(
-                self.connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-                or 0
-            )
+            versions = [int(row[0]) for row in self.connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )]
+            version = versions[-1] if versions else 0
             names = {
                 str(row[0])
                 for row in self.connection.execute(
@@ -1425,42 +1390,7 @@ class RunRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise RunRepositoryError("run_repository.schema_unsupported") from exc
         if (
-            version not in {
-                RUN_SCHEMA_VERSION,
-                8,
-                9,
-                10,
-                CONVERSATION_SUBMISSION_SCHEMA_VERSION,
-                12,
-                13,
-                14,
-                15,
-                16,
-                18,
-                24,
-                25,
-                26,
-                27,
-                28,
-                29,
-                30,
-                31,
-                32,
-                33,
-                34,
-                35,
-                36,
-                37,
-                38,
-                39,
-                40,
-                41,
-                42,
-                43,
-                44,
-                45,
-                DATABASE_SCHEMA_VERSION,
-            }
+            versions != list(range(1, DATABASE_SCHEMA_VERSION + 1))
             or not _run_schema_objects(version).issubset(names)
             or _run_schema_fingerprint(self.connection, version)
             != _expected_run_schema_fingerprint(version)
@@ -1522,12 +1452,11 @@ class RunRepository:
             yield
             self._validate_temporal_integrity()
             self._validate_run_identities()
-            if self.schema_version >= 36:
-                from run_attention import RunAttentionError, validate_run_attention_connection
-                try:
-                    validate_run_attention_connection(self.connection)
-                except RunAttentionError as exc:
-                    raise RunRepositoryValidationError("run.attention_invalid") from exc
+            from run_attention import RunAttentionError, validate_run_attention_connection
+            try:
+                validate_run_attention_connection(self.connection)
+            except RunAttentionError as exc:
+                raise RunRepositoryValidationError("run.attention_invalid") from exc
             self._enforce_store_budget()
         except Exception:
             if nested:
@@ -1565,21 +1494,18 @@ class RunRepository:
                 "SELECT updated_at FROM mentat_task_dispatch_heads"
             ):
                 _timestamp(row[0])
-            if DATABASE_SCHEMA_VERSION >= 19:
-                for row in self.connection.execute(
-                    "SELECT created_at, updated_at FROM mentat_task_execution_attempts"
-                ):
-                    _ordered_timestamps(row[0], row[1])
-                for row in self.connection.execute(
-                    "SELECT created_at FROM mentat_task_execution_reviews"
-                ):
-                    _timestamp(row[0])
+            for row in self.connection.execute(
+                "SELECT created_at, updated_at FROM mentat_task_execution_attempts"
+            ):
+                _ordered_timestamps(row[0], row[1])
+            for row in self.connection.execute(
+                "SELECT created_at FROM mentat_task_execution_reviews"
+            ):
+                _timestamp(row[0])
         except (TypeError, ValueError, sqlite3.Error, RunRepositoryError) as exc:
             raise RunRepositoryValidationError("run.timestamp_invalid") from exc
 
     def _validate_run_identities(self) -> None:
-        if self.schema_version < 35:
-            return
         rows = self.connection.execute(
             "SELECT r.id,r.created_at,s.incarnation,s.created_at "
             "FROM mentat_runs r LEFT JOIN mentat_run_identities s ON s.run_id=r.id"
@@ -2055,7 +1981,7 @@ class RunRepository:
             "WHERE mentat_task_execution_attempts.run_id = mentat_runs.id) "
             + ("AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
                "WHERE mentat_run_input_receipts.run_id = mentat_runs.id) "
-               if self.schema_version >= 30 else "")
+               )
             + "ORDER BY completed_at, created_at, id LIMIT ?",
             (*tuple(sorted(_ACTIVE_STATUSES)), excess),
         ).fetchall()
@@ -7432,7 +7358,7 @@ class RunRepository:
             "WHERE mentat_task_execution_attempts.run_id = mentat_runs.id) "
             + ("AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
                "WHERE mentat_run_input_receipts.run_id = mentat_runs.id) "
-               if self.schema_version >= 30 else "")
+               )
             + "ORDER BY completed_at DESC, created_at DESC, id DESC",
             tuple(sorted(_ACTIVE_STATUSES)),
         ).fetchall()
@@ -7567,20 +7493,15 @@ class RunRepository:
             self._validate_run_identities()
         except RunRepositoryValidationError as exc:
             raise RunRepositoryError("run_repository.corrupt") from exc
-        if self.schema_version >= 36:
-            from run_attention import RunAttentionError, validate_run_attention_connection
-            try:
-                validate_run_attention_connection(self.connection, archival_proposals=archival_ids)
-            except RunAttentionError as exc:
-                raise RunRepositoryError("run_repository.corrupt") from exc
+        from run_attention import RunAttentionError, validate_run_attention_connection
+        try:
+            validate_run_attention_connection(self.connection, archival_proposals=archival_ids)
+        except RunAttentionError as exc:
+            raise RunRepositoryError("run_repository.corrupt") from exc
         page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
         page_count = int(self.connection.execute("PRAGMA page_count").fetchone()[0])
         if page_size * page_count > RUN_STORE_DATABASE_BUDGET:
             raise RunRepositoryError("run_repository.corrupt")
-        has_terminal_finalized = any(
-            str(column[1]) == "terminal_finalized"
-            for column in self.connection.execute("PRAGMA table_info(mentat_runs)")
-        )
         terminal_count = int(
             self.connection.execute(
                 "SELECT COUNT(*) FROM mentat_runs WHERE status NOT IN ("
@@ -7594,12 +7515,10 @@ class RunRepository:
                     "AND successor.source = 'console' "
                     "AND successor.status = 'reserved' "
                     "AND successor.dispatch_state = 'reserved')"
-                    if has_terminal_finalized
-                    else ""
                 )
                 + (" AND NOT EXISTS (SELECT 1 FROM mentat_run_input_receipts "
                    "WHERE mentat_run_input_receipts.run_id = mentat_runs.id)"
-                   if self.schema_version >= 30 else "")
+                   )
                 + " AND source!='project_proposal'",
                 tuple(sorted(_ACTIVE_STATUSES)),
             ).fetchone()[0]
@@ -7996,7 +7915,9 @@ def _read_exact_file(path: Path) -> tuple[bytes, tuple[int, int, int, int] | Non
             or bool(getattr(lexical, "st_file_attributes", 0) & reparse)
             or not stat.S_ISREG(lexical.st_mode)
             or lexical.st_nlink != 1
-            or (os.name == "posix" and lexical.st_uid != os.getuid())
+            or (os.name == "posix" and (
+                lexical.st_uid != os.getuid() or stat.S_IMODE(lexical.st_mode) != 0o600
+            ))
         ):
             raise RunRepositoryValidationError("run_migration.source_unsafe")
         descriptor = os.open(
@@ -8051,20 +7972,24 @@ def _read_exact_file(path: Path) -> tuple[bytes, tuple[int, int, int, int] | Non
         raise RunRepositoryUnavailable("run_migration.source_unavailable") from exc
 
 
-def _read_legacy_history(
-    path: Path,
-) -> tuple[bytes, list[dict[str, Any]], int, tuple[int, int, int, int] | None]:
-    raw, identity = _read_exact_file(path)
-    if not secure_history_permissions(path, data_root=path.parents[2]):
+def _read_empty_history(
+    root: Path, path: Path,
+) -> tuple[bytes, tuple[int, int, int, int] | None]:
+    """Refuse retired JSON history without hardening or importing its bytes."""
+
+    if path.absolute() != canonical_history_path(root).absolute():
         raise RunRepositoryValidationError("run_migration.source_unsafe")
-    verified_raw, verified_identity = _read_exact_file(path)
-    if raw != verified_raw or identity != verified_identity:
-        raise RunRepositoryConflict("run_migration.source_changed")
-    raw, identity = verified_raw, verified_identity
-    if identity is None:
-        return b"", [], 0, None
+    try:
+        directory_identity = inspect_console_root(root, allow_missing=True)
+        raw, identity = _read_exact_file(path)
+        if inspect_console_root(root, allow_missing=True) != directory_identity:
+            raise RunRepositoryConflict("run_migration.source_changed")
+    except PrivateStateError as exc:
+        raise RunRepositoryValidationError("run_migration.source_unsafe") from exc
     if len(raw) > 4 * 1024 * 1024:
         raise RunRepositoryValidationError("run_migration.source_too_large")
+    if identity is None:
+        return raw, identity
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -8072,114 +7997,76 @@ def _read_legacy_history(
     if (
         not isinstance(payload, dict)
         or set(payload) != {"schema_version", "runs"}
-        or payload.get("schema_version") not in (LEGACY_SCHEMA_VERSIONS | {HISTORY_SCHEMA_VERSION})
-        or not isinstance(payload.get("runs"), list)
-        or len(payload["runs"]) > MAX_SOURCE_RUNS
+        or type(payload.get("schema_version")) is not int
+        or payload["schema_version"] != HISTORY_SCHEMA_VERSION
+        or payload.get("runs") != []
     ):
-        raise RunRepositoryValidationError("run_migration.source_invalid")
-    hydrated: list[dict[str, Any]] = []
-    seen_run_ids: set[str] = set()
-    source_version = int(payload["schema_version"])
-    for item in payload["runs"]:
-        if not isinstance(item, dict):
-            raise RunRepositoryValidationError("run_migration.source_invalid")
-        run = _hydrate(item)
-        if run is None:
-            raise RunRepositoryValidationError("run_migration.source_invalid")
-        run_id = str(run["id"])
-        if run_id in seen_run_ids:
-            raise RunRepositoryValidationError("run_migration.source_invalid")
-        seen_run_ids.add(run_id)
-        exact_events = (
-            _exact_schema_three_events(run_id, item.get("events"))
-            if source_version == HISTORY_SCHEMA_VERSION
-            else None
-        )
-        if source_version == HISTORY_SCHEMA_VERSION and exact_events is None:
-            raise RunRepositoryValidationError("run_migration.source_invalid")
-        if exact_events is None:
-            run["events"] = []
-            run["event_cursor"] = 0
-            run["_migration_timeline_truncated"] = True
-        else:
-            run["events"] = exact_events
-            run["event_cursor"] = exact_events[-1]["sequence"] if exact_events else 0
-            if exact_events and exact_events[0]["sequence"] > 1:
-                run["_migration_timeline_truncated"] = True
-        if str(run.get("status") or "") in _ACTIVE_STATUSES:
-            occurred_at = _now_iso()
-            run["status"] = "interrupted"
-            run["partial"] = True
-            run["updated_at"] = occurred_at
-            run["completed_at"] = occurred_at
-            run["_migration_interrupted"] = True
-        hydrated.append(run)
-    return raw, hydrated, len(payload["runs"]), identity
+        raise RunRepositoryValidationError("run_migration.source_unsupported")
+    return raw, identity
 
 
-def _verify_legacy_history(
-    path: Path,
+def _verify_empty_history(
+    root: Path, path: Path,
     expected_raw: bytes,
     expected_identity: tuple[int, int, int, int] | None,
 ) -> None:
-    raw, identity = _read_exact_file(path)
+    raw, identity = _read_empty_history(root, path)
     if raw != expected_raw or identity != expected_identity:
         raise RunRepositoryConflict("run_migration.source_changed")
 
 
 def ensure_run_sqlite_authority(data_dir: Path, history_path: Path) -> RunAuthorityReceipt:
-    """Import the exact validated legacy summary set once, then ignore stale JSON."""
+    """Claim empty current Run authority, then ignore stale JSON permanently."""
 
     root = Path(data_dir)
-    with private_state_lock(root):
-        connection = None
-        try:
-            connection = connect(root)
-            repository = RunRepository(connection)
-            receipt = repository.authority_receipt()
-            if receipt is not None:
-                repository.validate()
+    source_path = Path(history_path)
+    try:
+        # Read-only admission and receipt lookup precede locks, directories,
+        # permission changes and writable SQLite. Existing authority never
+        # consults JSON, including unsupported or hostile stale history.
+        if validate_current_database_root(root):
+            with connect_current_readonly(root) as existing:
+                repository = RunRepository(existing)
+                receipt = repository.authority_receipt()
+                if receipt is not None:
+                    repository.validate()
+                    return receipt
+        raw, source_identity = _read_empty_history(root, source_path)
+        with private_state_lock(root):
+            connection = None
+            try:
+                connection = connect(root)
+                repository = RunRepository(connection)
+                receipt = repository.authority_receipt()
+                if receipt is not None:
+                    repository.validate()
+                    return receipt
+                with repository.mutation():
+                    empty_tables = (
+                        "mentat_runs", "mentat_agent_events",
+                        "mentat_dispatch_reservations", "mentat_task_dispatch_heads",
+                        "mentat_run_identities", "mentat_run_attention",
+                    )
+                    if any(int(connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]) for table in empty_tables):
+                        raise RunRepositoryConflict("run_migration.destination_not_empty")
+                    _verify_empty_history(root, source_path, raw, source_identity)
+                    receipt = repository.claim_authority(
+                        source_sha256=hashlib.sha256(raw).hexdigest(),
+                        source_run_count=0,
+                    )
+                    repository.validate()
                 return receipt
-            source_path = Path(history_path)
-            raw, runs, source_count, source_identity = _read_legacy_history(source_path)
-            digest = hashlib.sha256(raw).hexdigest()
-            with repository.mutation():
-                empty_tables = (
-                    "mentat_runs",
-                    "mentat_agent_events",
-                    "mentat_dispatch_reservations",
-                    "mentat_task_dispatch_heads",
-                ) + (("mentat_run_identities",) if repository.schema_version >= 35 else ()) + (
-                    ("mentat_run_attention",) if repository.schema_version >= 36 else ()
-                )
-                if any(
-                    int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-                    for table in empty_tables
-                ):
-                    raise RunRepositoryConflict("run_migration.destination_not_empty")
-                for run in runs:
-                    repository._upsert_summary(run)
-                    if run.get("_migration_interrupted") is True:
-                        repository._append_next_lifecycle_event(
-                            str(run["id"]),
-                            event_type=AgentEventType.RUN_INTERRUPTED,
-                            occurred_at=str(run["updated_at"]),
-                            summary="Run interrupted during SQLite authority cutover",
-                            source_key=f"migration:{run['id']}:interrupted",
-                        )
-                _verify_legacy_history(source_path, raw, source_identity)
-                receipt = repository.claim_authority(
-                    source_sha256=digest,
-                    source_run_count=source_count,
-                )
-                repository._apply_retention()
-                repository.validate()
-            return receipt
-        except (MentatDatabaseError, sqlite3.Error) as exc:
+            finally:
+                if connection is not None:
+                    connection.close()
+    except PrivateStateError as exc:
+        if isinstance(exc.__cause__, (MentatDatabaseError, OSError)):
             raise RunRepositoryUnavailable("run_repository.unavailable") from exc
-        finally:
-            if connection is not None:
-                connection.close()
+        raise
+    except (MentatDatabaseError, sqlite3.Error) as exc:
+        raise RunRepositoryUnavailable("run_repository.unavailable") from exc
 
 
 def save_authoritative_run_summaries(
