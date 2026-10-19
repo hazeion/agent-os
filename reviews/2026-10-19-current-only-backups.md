@@ -183,3 +183,11 @@ rewriting history. All nine focused current/refusal methods pass in5.025s.
 These source changes require final independent re-review. The original broad
 run remains diagnostic (known obsolete startup and stale-JSON fixture failures);
 no final exact-head whole-suite pass is claimed yet.
+
+The fresh history open now also uses O_NONBLOCK so replacement of the checked
+regular file with a FIFO cannot block before the opened-file type check. A
+POSIX fixture replaces the file at os.open, requires both NOFOLLOW and NONBLOCK,
+then opens the real FIFO and verifies immediate refusal with no database
+creation. All ten focused current/refusal methods pass in5.787s. Existing
+regular-file and current-present-database behavior is unchanged. This narrow
+followup is subject to independent review before publication.

@@ -173,6 +173,31 @@ class CurrentProjectSchemaBackupTests(unittest.TestCase):
                 self.assertEqual(history.read_bytes(), raw)
                 self.assertFalse((console / "mentat.sqlite3").exists())
 
+    @unittest.skipUnless(os.name == "posix", "POSIX FIFO substitution")
+    def test_fresh_history_fifo_substitution_cannot_block_open(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            console = ensure_console_root(root)
+            history = console / "agent-console-runs.json"
+            history.write_bytes(b'{"schema_version":3,"runs":[]}')
+            history.chmod(0o600)
+            real_open = os.open
+            replaced = False
+            def replace_before_open(path, flags, *args, **kwargs):
+                nonlocal replaced
+                if path == "agent-console-runs.json":
+                    self.assertTrue(flags & os.O_NONBLOCK)
+                    self.assertTrue(flags & os.O_NOFOLLOW)
+                    history.unlink()
+                    os.mkfifo(history, 0o600)
+                    replaced = True
+                return real_open(path, flags, *args, **kwargs)
+            with patch("private_state.os.open", side_effect=replace_before_open):
+                self.assertEqual(fresh_console_storage_issue(root), "private_history_invalid")
+            self.assertTrue(replaced)
+            self.assertTrue(stat.S_ISFIFO(history.lstat().st_mode))
+            self.assertFalse((console / "mentat.sqlite3").exists())
+
     def test_fresh_capture_rechecks_storage_after_empty_template_construction(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
