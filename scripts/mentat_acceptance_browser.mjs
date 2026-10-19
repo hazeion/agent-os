@@ -1,4 +1,4 @@
-// Source-checkout acceptance only. One fixed owned Tasks navigation; no arbitrary evaluation.
+// Source-checkout acceptance only. Observe one fixed Chrome startup Tasks URL; no CDP navigation.
 import { writeSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -108,7 +108,7 @@ export async function observe(input, dependencies = {}) {
     for (const item of items) { clearTimeout(item.timer); item.reject(error); }
   };
   function call(method, params) {
-    if (!['Runtime.enable','Page.enable','Emulation.setFocusEmulationEnabled','Runtime.evaluate','Emulation.setDeviceMetricsOverride','Page.navigate'].includes(method)) throw new Error('browser_protocol_failed');
+    if (!['Runtime.enable','Page.enable','Emulation.setFocusEmulationEnabled','Runtime.evaluate','Emulation.setDeviceMetricsOverride'].includes(method)) throw new Error('browser_protocol_failed');
     if (transport.socket_error) throw new TransportError();
     if (transport.socket_closed || socket.readyState !== 1) throw new TransportClosed();
     const wait = remaining();
@@ -139,14 +139,28 @@ export async function observe(input, dependencies = {}) {
         }
         const pages = JSON.parse(raw);
         if (!Array.isArray(pages) || pages.length > 16) throw new Error('browser_protocol_failed');
-        const blankPages = pages.filter(page => page.type === 'page' && page.url === 'about:blank');
-        if (blankPages.length > 1) { result.code = 'browser_target_ambiguous'; return result; }
-        for (const page of blankPages) {
-          if (page.type !== 'page' || typeof page.url !== 'string' || typeof page.webSocketDebuggerUrl !== 'string') continue;
-          if (page.url !== 'about:blank') continue;
-          const ws = new URL(page.webSocketDebuggerUrl);
-          if (ws.protocol !== 'ws:' || ws.hostname !== '127.0.0.1' || Number(ws.port) !== config.debug_port || !/^\/devtools\/page\/[A-Za-z0-9-]+$/.test(ws.pathname) || ws.search || ws.hash || ws.username || ws.password) throw new Error('browser_protocol_failed');
-          endpoint = ws.href; break;
+        const targets = pages.filter(page => page && page.type === 'page');
+        if (targets.length > 1) { result.code = 'browser_target_ambiguous'; return result; }
+        if (targets.length === 1) {
+          const page = targets[0];
+          if (typeof page.url !== 'string') { result.code = 'browser_protocol_failed'; return result; }
+          if (page.url === 'about:blank') {
+            observation.location_category = 'blank'; publish();
+          } else if (page.url !== config.origin + '/tasks') {
+            let category = 'other';
+            try {
+              const rejected = new URL(page.url);
+              if (rejected.protocol === 'chrome-error:') category = 'browser_error';
+              else if (rejected.origin === config.origin && ['/sign-in','/login','/auth','/owner'].includes(rejected.pathname)) category = 'auth';
+            } catch { /* Only a fixed safe category crosses the boundary. */ }
+            observation.location_category = category; result.code = 'browser_target_rejected'; publish(); return result;
+          } else {
+            if (typeof page.webSocketDebuggerUrl !== 'string') { result.code = 'browser_protocol_failed'; return result; }
+            let ws;
+            try { ws = new URL(page.webSocketDebuggerUrl); } catch { result.code = 'browser_protocol_failed'; return result; }
+            if (ws.protocol !== 'ws:' || ws.hostname !== '127.0.0.1' || Number(ws.port) !== config.debug_port || !/^\/devtools\/page\/[A-Za-z0-9-]+$/.test(ws.pathname) || ws.search || ws.hash || ws.username || ws.password) { result.code = 'browser_protocol_failed'; return result; }
+            endpoint = ws.href;
+          }
         }
       } catch { /* Discovery is bounded by the original browser wall deadline. */ }
       if (!endpoint) await pause();
@@ -197,11 +211,6 @@ export async function observe(input, dependencies = {}) {
     await call('Emulation.setFocusEmulationEnabled', { enabled: true });
     stage('viewport');
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-    stage('navigation');
-    if (remaining() <= 0) { publish(); return result; }
-    const navigation = await call('Page.navigate', { url: config.origin + '/tasks' });
-    if (navigation.errorText) { result.code = 'browser_navigation_failed'; return result; }
-    if (remaining() <= 0) return result;
     stage('evaluation');
     while (remaining() > 0 && socket.readyState === 1) {
       const snapshot = await call('Runtime.evaluate', { expression: expression(config), returnByValue: true, awaitPromise: false, timeout: 250 });
@@ -215,6 +224,7 @@ export async function observe(input, dependencies = {}) {
       Object.assign(diagnostics, observedDiagnostics);
       Object.assign(observation, observedObservation, { snapshots: observation.snapshots + 1, observer_elapsed_ms: Math.max(0, Math.min(40000, Math.floor(config.remaining_ms - remaining()))) });
       publish();
+      if (['auth','browser_error','other'].includes(observation.location_category)) { result.code = 'browser_target_rejected'; return result; }
       if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; stage('ready'); publish(); return result; }
       if (exceptions) { result.code = 'browser_js_exception'; return result; }
       await pause();

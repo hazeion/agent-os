@@ -146,7 +146,7 @@ BROWSER_TRANSPORT_COUNTS = frozenset({"sent_requests", "text_frames", "invalid_f
 BROWSER_TRANSPORT_FLAGS = frozenset({"socket_closed", "socket_error", "counters_saturated"})
 
 
-BROWSER_STAGES = frozenset({"discovery", "connect", "runtime", "page", "focus", "viewport", "navigation", "evaluation", "ready"})
+BROWSER_STAGES = frozenset({"discovery", "connect", "runtime", "page", "focus", "viewport", "evaluation", "ready"})
 
 
 BROWSER_DIAGNOSTICS = frozenset({"project_exists", "project_text_matches", "project_renderable", "project_intersects_viewport",
@@ -373,7 +373,7 @@ class Journey:
                 require(set(value) == {"schema_version", "ready", "code", "stage", "checks", "diagnostics", "observation", "transport"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
                         and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed", "browser_protocol_timeout", "browser_transport_closed", "browser_transport_error",
-                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_navigation_failed", "browser_target_ambiguous"},
+                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_target_ambiguous", "browser_target_rejected"},
                         "browser_output_invalid")
                 final = value
             latest = dict(value["checks"])
@@ -406,7 +406,7 @@ class Journey:
             str(chrome), "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
             "--disable-background-networking", "--window-size=1440,1000",
             "--remote-debugging-address=127.0.0.1", f"--remote-debugging-port={self.browser_debug_port}",
-            "--user-data-dir=" + str(self.root / "browser-profile"), "about:blank",
+            "--user-data-dir=" + str(self.root / "browser-profile"), self.origin + "/tasks",
         ], env=self.environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         owned = False
         while self.browser.poll() is None and time.monotonic() < deadline - 1:

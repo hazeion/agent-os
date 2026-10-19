@@ -286,7 +286,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]) as spawned:
                 with self.assertRaises(BrokenPipeError):
                     journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
-            self.assertEqual(spawned.call_args_list[0].args[0][-1], "about:blank")
+            self.assertEqual(spawned.call_args_list[0].args[0][-1], journey.origin + "/tasks")
             self.assertIs(journey.browser, browser)
             self.assertIs(journey.browser_helper, helper)
             self.assertTrue(journey.cleanup())
@@ -351,8 +351,8 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
     def test_nonready_helper_fixed_code_and_stage_survive_actual_parent_report(self):
         checks = {name: False for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: False for name in acceptance.BROWSER_DIAGNOSTICS}
-        for code, stage in (("browser_protocol_timeout", "navigation"), ("browser_protocol_failed", "focus"),
-                            ("browser_navigation_failed", "navigation"), ("browser_transport_closed", "runtime"), ("browser_transport_error", "page")):
+        for code, stage in (("browser_protocol_timeout", "runtime"), ("browser_protocol_failed", "focus"),
+                            ("browser_target_rejected", "discovery"), ("browser_transport_closed", "runtime"), ("browser_transport_error", "page")):
             with self.subTest(code=code, stage=stage):
                 raw = (json.dumps({"schema_version": 1, "ready": False, "code": code, "stage": stage,
                                    "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT)}) + "\n").encode()
@@ -375,7 +375,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 self.assertTrue(report["owned_state_removed"])
 
     def test_known_but_inconsistent_final_stage_cannot_claim_readiness(self):
-        for ready, code, stage in ((True, "ready", "navigation"), (True, "browser_protocol_failed", "ready"),
+        for ready, code, stage in ((True, "ready", "viewport"), (True, "browser_protocol_failed", "ready"),
                                    (False, "ready", "ready")):
             with self.subTest(ready=ready, code=code, stage=stage), TemporaryDirectory() as directory:
                 journey = acceptance.Journey(Path(directory))
