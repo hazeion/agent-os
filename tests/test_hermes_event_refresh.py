@@ -216,6 +216,9 @@ class HermesEventRefreshTests(unittest.TestCase):
         self.assertFalse(coordinator.enqueue(event("on_session_start", "dropped-before")))
         coordinator.start()
         self.assertTrue(sweep_started.wait(1))
+        # Keep the second periodic sweep from clearing the during-sweep drop
+        # before the test can inspect the first sweep on a loaded CI runner.
+        coordinator._reconciliation_interval = 60
         self.assertTrue(coordinator.enqueue(event("on_session_start", "queued-during")))
         self.assertFalse(coordinator.enqueue(event("on_session_start", "dropped-during")))
         release_sweep.set()

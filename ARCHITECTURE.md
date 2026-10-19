@@ -1023,7 +1023,14 @@ content/size checks, staged expiry, orphan grace and bounded GC batches.
 Initial metadata bounds are 16 KiB of UTF-8 brief/instructions per context,
 16 files per revision, 32 context revisions per Project, 32 versions per
 deliverable, 256 context revisions and 256 deliverable versions globally,
-and 4 MiB total serialized new authority metadata. That shared budget includes
+and a 4 MiB schema-27 metadata budget. Schema 28 adds a fixed 64 KiB of migration
+and control headroom: up to 128 bounded Agent identity/incarnation pairs,
+256 retirement-field reservations and one approval epoch fit within that
+allowance. Schema-27 snapshots retain their original accounting. New admission
+charges worst-case terminal grant state, revision and timestamp representation,
+so revocation cannot make a valid backup exceed its budget. All 128 maximum-size
+Agent identity slots are reserved at admission, so later registry creation or
+replacement cannot invalidate the admitted context budget. That shared budget includes
 Task-input versions, Run-input receipts, grants and retired scope/incarnation
 records as well as context and deliverable records. Task-input versions are
 bounded to 256 globally and 32 per Task. Grant rows are bounded to one current

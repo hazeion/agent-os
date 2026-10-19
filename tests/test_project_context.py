@@ -346,7 +346,7 @@ class ProjectContextMigrationTests(unittest.TestCase):
         connection = self.schema26()
         before = tuple(connection.execute('SELECT * FROM mentat_owner_auth_state').fetchone())
         mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, 27), 'expected')
+        self.assertEqual(mentat_db.schema_signature_state(connection, 28), 'expected')
         self.assertEqual(tuple(connection.execute('SELECT * FROM mentat_owner_auth_state').fetchone()), before)
         self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_project_context_scopes').fetchone()[0], 0)
         self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
@@ -401,7 +401,7 @@ class ProjectContextMigrationTests(unittest.TestCase):
                 repository = RunRepository(connection)
                 self.assertIsNotNone(repository.authority_receipt(required=True))
                 self.assertEqual(connection.execute('SELECT id FROM mentat_runs').fetchone()[0], 'run_historical')
-                self.assertEqual(mentat_db.schema_signature_state(connection, 27), 'expected')
+                self.assertEqual(mentat_db.schema_signature_state(connection, 28), 'expected')
 
 
 if __name__ == '__main__':
