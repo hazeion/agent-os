@@ -60,7 +60,7 @@ class ProjectPlanTests(unittest.TestCase):
                     prior, epoch_seed=b"p" * 32,
                 )
                 target = Path(temporary) / "restored"
-                (target / "private").mkdir(parents=True)
+                (target / "private").mkdir(parents=True, mode=0o700)
                 private_console_unit.materialize_private_console_unit(
                     target, restored, target / "private" / "console",
                 )

@@ -145,6 +145,101 @@ def inspect_console_root(
     return resolved_console, tuple(identities)
 
 
+
+def fresh_console_storage_issue(data_root: Path) -> str | None:
+    """Inspect missing-database storage without creating or hardening anything.
+
+    Only an absent/empty Console or the current empty summary document can be
+    fresh. Existing SQLite authority is outside this helper's contract.
+    """
+    import json
+
+    root = Path(data_root)
+    runtime = root / "runtime"
+    maximum = 4 * 1024 * 1024
+    try:
+        if os.path.lexists(runtime):
+            runtime_details = os.lstat(runtime)
+            if (_is_redirecting_entry(runtime_details) or not stat.S_ISDIR(runtime_details.st_mode)
+                    or (os.name == "posix" and runtime_details.st_uid != os.getuid())):
+                return "private_console_unsafe"
+            with os.scandir(runtime) as entries:
+                if any(entry.name in {DATABASE_NAME, HISTORY_NAME, "blobs", "agent-registry.sqlite3"}
+                       or entry.name.startswith((DATABASE_NAME + "-", "agent-registry.sqlite3-"))
+                       for entry in entries):
+                    return "private_database_unsupported"
+        inspected = inspect_console_root(root, allow_missing=True)
+        if inspected is None:
+            return None
+        source, identity = inspected
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source, flags) if os.name == "posix" else None
+        try:
+            opened = os.fstat(descriptor) if descriptor is not None else os.lstat(source)
+            if (int(opened.st_dev), int(opened.st_ino)) != identity[-1]:
+                return "private_console_changed"
+            def inventory():
+                return tuple(os.listdir(descriptor if descriptor is not None else source))
+            def history_stat():
+                return (os.stat(HISTORY_NAME, dir_fd=descriptor, follow_symlinks=False)
+                        if descriptor is not None else os.lstat(source / HISTORY_NAME))
+            entries = inventory()
+            if not entries:
+                return None if not inventory() and inspect_console_root(root)[1] == identity else "private_console_changed"
+            if entries != (HISTORY_NAME,):
+                return "private_database_missing"
+            lexical = history_stat()
+            if (not stat.S_ISREG(lexical.st_mode) or _is_redirecting_entry(lexical)
+                    or lexical.st_nlink != 1 or lexical.st_size > maximum
+                    or (os.name == "posix" and (lexical.st_uid != os.getuid()
+                        or stat.S_IMODE(lexical.st_mode) != 0o600))):
+                return "private_history_invalid"
+            history_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            history_descriptor = (os.open(HISTORY_NAME, history_flags, dir_fd=descriptor)
+                                  if descriptor is not None else os.open(source / HISTORY_NAME, history_flags))
+            try:
+                before = os.fstat(history_descriptor)
+                if (before.st_dev, before.st_ino) != (lexical.st_dev, lexical.st_ino):
+                    return "private_console_changed"
+                raw = bytearray()
+                while len(raw) <= maximum:
+                    chunk = os.read(history_descriptor, min(65536, maximum + 1 - len(raw)))
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+                after = os.fstat(history_descriptor)
+                if (len(raw) > maximum or len(raw) != before.st_size
+                        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+                    return "private_console_changed"
+            finally:
+                os.close(history_descriptor)
+            def unique_pairs(items):
+                result = {}
+                for key, value in items:
+                    if key in result:
+                        raise ValueError("duplicate history key")
+                    result[key] = value
+                return result
+            document = json.loads(raw, object_pairs_hook=unique_pairs)
+            if (not isinstance(document, dict) or set(document) != {"schema_version", "runs"}
+                    or type(document["schema_version"]) is not int or document["schema_version"] != 3
+                    or document["runs"] != []):
+                return "private_history_invalid"
+            current = history_stat()
+            if (inventory() != entries
+                    or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or inspect_console_root(root)[1] != identity):
+                return "private_console_changed"
+            return None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    except (OSError, ValueError, UnicodeError, RecursionError, TypeError):
+        return "private_console_unsafe"
+
+
 def ensure_private_root(data_root: Path) -> Path:
     """Create and verify only the owner-private root, not the Console destination."""
 

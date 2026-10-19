@@ -24,7 +24,7 @@ from data_layout import (
     _open_readonly_no_follow,
     _pinned_root_identity,
 )
-from data_migration import _publish_raw_missing
+from data_documents import _publish_raw_missing
 from data_schema import (
     CURRENT_DOCUMENT_VERSION,
     SCHEMA_FORMAT_VERSION,

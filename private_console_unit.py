@@ -52,6 +52,7 @@ from private_state import (
     ensure_console_root,
     history_path,
     inspect_console_root,
+    fresh_console_storage_issue,
 )
 from run_repository import MAX_SOURCE_RUNS, RunRepository, RunRepositoryError
 from task_repository import TaskRepositoryError, validate_repository_connection
@@ -1171,6 +1172,16 @@ def _require_current_source_database(path: Path) -> None:
             connection.close()
 
 
+def _empty_current_source_unit(data_root: Path) -> PrivateConsoleUnit:
+    issue = fresh_console_storage_issue(data_root)
+    if issue is not None:
+        raise PrivateConsoleUnitError(issue)
+    unit = empty_private_console_unit()
+    if fresh_console_storage_issue(data_root) is not None:
+        raise PrivateConsoleUnitError("private_console_changed")
+    return unit
+
+
 def capture_private_console_unit(
     data_root: Path, *, source_console: Path | None = None,
     copy_sqlite_source: bool = True, harden_source: bool = True,
@@ -1178,18 +1189,15 @@ def capture_private_console_unit(
     """Capture only current private authority; inspect before source hardening."""
     inspected = inspect_console_root(data_root, allow_missing=True) if source_console is None else None
     if source_console is None and inspected is None:
-        runtime = Path(data_root) / "runtime"
-        if any(os.path.lexists(runtime / name) for name in ("mentat.sqlite3", "agent-console-runs.json", "blobs")):
-            raise PrivateConsoleUnitError("private_database_unsupported")
-        return empty_private_console_unit()
+        return _empty_current_source_unit(data_root)
     source = Path(source_console) if source_console is not None else inspected[0]
     if source.is_symlink() or not source.is_dir():
         raise PrivateConsoleUnitError("private_console_unsafe")
     database = source / database_path(data_root).name
     if not os.path.lexists(database):
-        if any(source.iterdir()):
+        if source_console is not None:
             raise PrivateConsoleUnitError("private_database_missing")
-        return empty_private_console_unit()
+        return _empty_current_source_unit(data_root)
     _require_current_source_database(database)
     readonly_identity = inspected[1] if inspected is not None else None
     if source_console is None and harden_source:
