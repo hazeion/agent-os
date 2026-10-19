@@ -241,7 +241,7 @@ not a reusable message or execution framework.
    descriptor to recompute size/hash and parse the exact sealed bytes. Bind
    the four graph comparisons to those sealed reads. Do not send a manifest
    before this sealed-object validation finishes. No mmap or executable use.
-4. Send one MANIFEST packet without descriptors, at most the existing 64 KiB
+4. Send one MANIFEST packet without descriptors, at most the existing 16 KiB
    result bound. It contains nonce, sequence, the existing fixed snapshot and
    package identities, ordered regular rows (virtual path, size, SHA256,
    st_dev/st_ino from the sealed object), ordered alias path/text rows and the
