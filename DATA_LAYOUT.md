@@ -227,8 +227,10 @@ migration command is available.
 ## Backup and restore contract
 
 Only `mentat-backup-v5-<id>.zip` archives and restore protocol 4 are supported.
-Older/future archive versions and older/incomplete restore reservations are
-refused before source mutation. A current archive contains canonical manifest,
+Older/future archive versions, unsupported reservation versions and
+unrecognized or malformed incomplete restore states are refused before source
+mutation. Exact recognized current protocol4 interruption recovery remains
+supported. A current archive contains canonical manifest,
 the nine fixed durable JSON documents and one validated private Console set:
 current SQLite, SQL-derived retained Console history and exactly referenced
 ready blobs. The unit has history bytes, database bytes and blobs; there is no

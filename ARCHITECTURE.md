@@ -1645,7 +1645,7 @@ offer an explicit two-step Enable files action only for a stopped, exact local
 Hermes Agent; the mutation is bound to its current capability set and rechecks
 that the fixed local runtime supports the file boundary. Codex, Vercel, remote
 Hermes, and incomplete adapters remain unsupported. Unsent staging is removed
-from private backup snapshots and compatible export, while retained Run inputs
+from private backup snapshots, while retained Run inputs
 and trusted export artifacts remain part of the validated private consistency
 unit. Startup and periodic reconciliation discard an entire staged Context Pack
 if any of its snapshots becomes unavailable.
@@ -2059,7 +2059,7 @@ URLs, HTML, headers, addresses, or original images and is capped at 512 rows and
 64 MiB of transformed images. Process-local no-store and capacity states use a
 separate 512-entry LRU, and persisted results are not duplicated there. The
 256-bit cache secret and cache members are
-excluded from backup, restore, and compatible export. The enabled-by-default,
+excluded from backup and restore. The enabled-by-default,
 exact-revision privacy preference lives separately at
 `config/link-previews-v1.json`; clearing cache cannot change it. Disabling
 cancels/suppresses work and cards, and re-enabling never automatically fetches
