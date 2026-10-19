@@ -1,6 +1,7 @@
 """Boundary checks for the disposable release runner; real execution is a separate command."""
 from pathlib import Path
 import json
+import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -167,6 +168,8 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertEqual(report["primary_code"], "browser_child_remains")
             self.assertEqual(report["cleanup"], {
                 "browser_terminal": True, "browser_group_absent": False,
+                "browser_helper_terminal": True, "browser_helper_group_absent": True,
+                "browser_debug_listener_closed": True,
                 "launcher_terminal": True, "launcher_groups_absent": True,
                 "captured_children_absent": True, "listener_closed": True,
             })
@@ -174,7 +177,9 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             children.assert_has_calls([unittest.mock.call(45678), unittest.mock.call(56789)])
             browser.terminate.assert_not_called()
             launcher.terminate.assert_not_called()
-            browser.wait.assert_called_once_with(timeout=15)
+            self.assertEqual(browser.wait.call_count, 1)
+            self.assertGreaterEqual(browser.wait.call_args.kwargs["timeout"], 0)
+            self.assertLessEqual(browser.wait.call_args.kwargs["timeout"], 15)
             launcher.wait.assert_called_once_with(timeout=15)
             self.assertNotIn("23456", output.call_args.args[0])
             self.assertNotIn(str(root), output.call_args.args[0])
@@ -195,6 +200,115 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertEqual(report["code"], "cleanup_incomplete")
             self.assertNotIn("secret", output.call_args.args[0])
             self.assertNotIn("/owner", output.call_args.args[0])
+
+    def test_browser_helper_is_a_required_fixed_regular_source_sibling(self):
+        original = acceptance.browser_helper_path()
+        with TemporaryDirectory() as directory, patch.object(acceptance, "REPO", Path(directory)):
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_helper_missing"):
+                acceptance.browser_helper_path()
+            sibling = Path(directory) / "scripts" / original.name
+            sibling.parent.mkdir()
+            sibling.write_bytes(original.read_bytes())
+            self.assertEqual(acceptance.browser_helper_path(), sibling)
+            if acceptance.os.name != "nt":
+                sibling.unlink()
+                sibling.symlink_to(original)
+                with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_helper_missing"):
+                    acceptance.browser_helper_path()
+
+    def test_debug_listener_requires_exact_loopback_and_owned_group_without_signals(self):
+        browser = unittest.mock.Mock(pid=23456)
+        browser.poll.return_value = None
+        for address, group, expected in ((b"127.0.0.1:54322", 23456, True),
+                                         (b"127.0.0.1:54322", 99999, False),
+                                         (b"*:54322", 23456, False),
+                                         (b"127.0.0.1:54323", 23456, False)):
+            with self.subTest(address=address, group=group), patch.object(
+                acceptance.shutil, "which", return_value="/lsof"
+            ), patch.object(acceptance.subprocess, "run", return_value=unittest.mock.Mock(
+                returncode=0, stdout=b"p23456\nn" + address + b"\n"
+            )), patch.object(acceptance.os, "getpgid", return_value=group):
+                self.assertIs(acceptance.browser_listener_owned(browser, 54322, {}), expected)
+        browser.terminate.assert_not_called()
+
+    def test_browser_helper_start_failure_keeps_both_owned_handles(self):
+        with TemporaryDirectory() as directory:
+            journey = acceptance.Journey(Path(directory))
+            browser = unittest.mock.Mock(pid=23456)
+            helper = unittest.mock.Mock(pid=34567)
+            browser.poll.return_value = helper.poll.return_value = None
+            helper.stdin.write.side_effect = BrokenPipeError
+            with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
+                acceptance, "browser_listener_owned", return_value=True
+            ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]):
+                with self.assertRaises(BrokenPipeError):
+                    journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+            self.assertIs(journey.browser, browser)
+            self.assertIs(journey.browser_helper, helper)
+            self.assertTrue(journey.cleanup())
+            browser.terminate.assert_called_once()
+            helper.terminate.assert_called_once()
+            helper.stdin.close.assert_called_once()
+            self.assertLessEqual(browser.wait.call_args.kwargs["timeout"], 15)
+            self.assertLessEqual(helper.wait.call_args.kwargs["timeout"], browser.wait.call_args.kwargs["timeout"])
+
+    def test_invisible_or_unbound_browser_evidence_never_claims_render_success(self):
+        for invalid in (False, 1):
+            with self.subTest(invalid=invalid), TemporaryDirectory() as directory:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                browser = unittest.mock.Mock(pid=23456)
+                browser.poll.return_value = None
+                helper = unittest.mock.Mock(pid=34567, returncode=0)
+                checks = {name: True for name in acceptance.BROWSER_CHECKS}
+                checks["task_visible"] = invalid
+                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks}
+                output = unittest.mock.MagicMock()
+                output.__enter__.return_value = output
+                output.read.return_value = json.dumps(result).encode()
+                with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
+                    acceptance, "browser_listener_owned", return_value=True
+                ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
+                    acceptance.tempfile, "TemporaryFile", return_value=output
+                ):
+                    with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_(readiness_failed|output_invalid)"):
+                        journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+                browser.terminate.assert_not_called()
+                self.assertIs(journey.browser, browser)
+                self.assertIs(journey.browser_helper, helper)
+
+    def test_failed_positive_browser_stop_cannot_reset_cleanup_deadline(self):
+        with TemporaryDirectory() as directory:
+            journey = acceptance.Journey(Path(directory))
+            browser = unittest.mock.Mock(pid=23456, returncode=None)
+            browser.poll.return_value = None
+            browser.wait.side_effect = subprocess.TimeoutExpired("owned", 15)
+            helper = unittest.mock.Mock(pid=34567, returncode=0)
+            helper.poll.return_value = 0
+            checks = {name: True for name in acceptance.BROWSER_CHECKS}
+            output = unittest.mock.MagicMock()
+            output.__enter__.return_value = output
+            output.read.return_value = json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks}).encode()
+            with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
+                acceptance, "browser_listener_owned", return_value=True
+            ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
+                acceptance.tempfile, "TemporaryFile", return_value=output
+            ), patch.object(acceptance.time, "monotonic", return_value=0):
+                with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_stop_timeout"):
+                    journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+            self.assertEqual(journey.browser_cleanup_deadline, 15)
+            with patch.object(acceptance.time, "monotonic", return_value=20):
+                self.assertFalse(journey.cleanup())
+            self.assertEqual(journey.browser_cleanup_deadline, 15)
+            browser.terminate.assert_called_once()
+            self.assertEqual([call.kwargs["timeout"] for call in browser.wait.call_args_list], [15, 0])
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required for the fixed CDP helper contract")
+    def test_browser_helper_fixed_predicates_and_transport_boundary(self):
+        test_file = acceptance.REPO / "tests" / "test_local_release_browser.mjs"
+        result = subprocess.run([shutil.which("node"), "--test", str(test_file)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace"))
 
     def test_restart_wait_has_a_deadline_and_does_not_relaunch(self):
         with patch.object(acceptance.time, "monotonic", side_effect=[0, 76]), patch.object(

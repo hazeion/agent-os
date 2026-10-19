@@ -21,11 +21,15 @@ Required scenarios:
    close. The two direct owned gateway/bridge processes must also be gone. Restart, then require the exact Project/Task to survive.
 4. Stop again before backup. Create a backup with the CLI and validate it with
    the read-only restore preview. Never confirm a restore or export.
-5. Optionally render Projects & Tasks with a fresh headless Chrome profile.
-   This is a browser rendering check; creation is exercised through HTTP.
+5. Optionally render the original `/tasks` landing with a fresh headless Chrome
+   profile at a fixed 1440×1000 desktop viewport. The fixed sibling Node24 helper
+   observes only that owned loopback tab. Within the original 40-second wall
+   deadline it requires a complete hydrated shell, ready bridge, the selected
+   exact created Project and actual visible Project/Task rows bound to their
+   canonical IDs and exact titles. Creation remains through fixed HTTP APIs.
 
 Success emits a bounded JSON report containing fixed scenario names and
-booleans only. Raw process output, private paths, IDs and restore tokens are
+booleans and fixed failure codes only. Raw process output, private paths, IDs and restore tokens are
 never printed. Failure emits a fixed phase/code and exits nonzero. Temporary
 files are removed only after the owned launcher, its private process group and
 listening socket have closed. The group is recorded before readiness so early
@@ -52,3 +56,22 @@ and does not satisfy release restart acceptance.
 The reviewed POSIX preflight repair is integrated on this branch. The default
 immediate same-port restart journey now passes; the TIME_WAIT discussion above
 retains the baseline failure and diagnostic distinction.
+
+The browser step uses CDP readiness rather than `--dump-dom`, virtual time or
+Chrome's natural CLI exit. A diagnostic instrumented run produced actual rows
+and hydration markers before its process-exit timeout; the earlier
+uninstrumented failure emitted no DOM, so their underlying causes are not
+claimed identical. Readiness never falls back to API responses or hidden text.
+The runner stops only its retained Chrome/helper handles after readiness and
+requires both process groups and the allocated debug listener absent before
+counting browser success or proceeding to offline backup. A failed stop reuses
+one original 15-second cleanup window; final cleanup cannot grant another.
+
+The runner and `scripts/mentat_acceptance_browser.mjs` are source-checkout tools,
+not installed package commands. Keep the fixed regular helper beside the runner
+when copying a source archive. A missing or linked helper refuses before Chrome
+launch. CDP methods are fixed Runtime enable/read-only evaluation and the fixed
+desktop metric override; no arbitrary evaluation, navigation, response bodies,
+provider or Run control is exposed. Loopback listener ownership uses `lsof` plus
+the retained Chrome process group. No raw DOM, URL, debugger token or exception
+payload is included in reports.
