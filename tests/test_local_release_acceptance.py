@@ -352,7 +352,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
         checks = {name: False for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: False for name in acceptance.BROWSER_DIAGNOSTICS}
         for code, stage in (("browser_protocol_timeout", "runtime"), ("browser_protocol_failed", "focus"),
-                            ("browser_target_rejected", "discovery"), ("browser_transport_closed", "runtime"), ("browser_transport_error", "page")):
+                            ("browser_target_rejected", "discovery"), ("browser_evaluation_exception", "evaluation"), ("browser_transport_closed", "runtime"), ("browser_transport_error", "page")):
             with self.subTest(code=code, stage=stage):
                 raw = (json.dumps({"schema_version": 1, "ready": False, "code": code, "stage": stage,
                                    "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT)}) + "\n").encode()

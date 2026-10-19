@@ -7,7 +7,7 @@ test('configuration refuses arbitrary origins, ids, fields and extended wall bud
   for (const change of [{ origin: 'https://example.invalid' }, { origin: 'http://127.0.0.1:54321/tasks' }, { project_id: '";execute()' }, { task_id: '../outside' }, { expression: 'arbitrary' }, { elapsed_offset_ms: 39999, remaining_ms: 2 }]) assert.throws(() => configuration({ ...config, ...change }));
 });
 function snapshot(changes = {}) {
-  const root = { dataset: { shellHydrated: 'true', shellRuntime: 'ready' } };
+  const root = changes.missingDocumentRoot ? null : { dataset: { shellHydrated: 'true', shellRuntime: 'ready' } };
   const parent = { hidden: false, getAttribute: () => null, parentElement: null };
   const strong = text => ({ textContent: text, parentElement: parent, getAttribute: () => null, getBoundingClientRect: () => ({ width: 100, height: 20, left: 1, top: 1, right: 101, bottom: 21 }) });
   const projectText = strong('Disposable acceptance Project'), taskText = strong('Disposable acceptance Task');
@@ -18,9 +18,9 @@ function snapshot(changes = {}) {
   if (changes.wrongTask) task.dataset.planningTaskId = 'task_other';
   if (changes.unselected) project.getAttribute = () => 'false';
   if (changes.notHydrated) root.dataset.shellHydrated = 'false';
-  const context = { document: { readyState: 'complete', documentElement: root,
-    querySelectorAll: selector => selector.includes('button') ? [project] : [task],
-    querySelector: selector => selector === '#main-content h1' ? { textContent: changes.wrongHeading ? 'Other page' : 'Projects & Tasks' } : selector.includes('bridge') ? { dataset: { state: changes.bridgeChecking ? 'checking' : 'ready' } } : {} },
+  const context = { document: { readyState: changes.missingDocumentRoot ? 'loading' : 'complete', documentElement: root,
+    querySelectorAll: selector => changes.missingDocumentRoot ? [] : selector.includes('button') ? [project] : [task],
+    querySelector: selector => changes.missingDocumentRoot ? null : selector === '#main-content h1' ? { textContent: changes.wrongHeading ? 'Other page' : 'Projects & Tasks' } : selector.includes('bridge') ? { dataset: { state: changes.bridgeChecking ? 'checking' : 'ready' } } : {} },
     location: changes.browserError ? { origin: 'null', pathname: '/chromewebdata/', href: 'chrome-error://chromewebdata/', protocol: 'chrome-error:' } : changes.foreign ? { origin: 'https://other.invalid', pathname: '/tasks', href: 'https://other.invalid/tasks', protocol: 'https:' } : changes.auth ? { origin: config.origin, pathname: '/sign-in', href: config.origin + '/sign-in?return=%2Ftasks', protocol: 'http:' } : changes.blank ? { origin: 'null', pathname: 'blank', href: 'about:blank', protocol: 'about:' } : { origin: config.origin, pathname: '/tasks' }, innerWidth: changes.wrongViewport ? 800 : 1440, innerHeight: 1000,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) };
   return JSON.parse(JSON.stringify(vm.runInNewContext(expression(config), context)));
@@ -392,4 +392,56 @@ test('a retained startup exception replayed before Runtime enable ACK prevents r
   assert.equal(result.transport.matched_responses, 5);
   assert.equal(methods.includes('Page.navigate'), false);
   assert.equal(JSON.stringify({ progress, result }).includes('private'), false);
+});
+
+test('an absent document root yields valid nonready boolean predicates', () => {
+  const value = snapshot({ missingDocumentRoot: true });
+  const { diagnostics, observation, ...checks } = value;
+  assert.equal(value.document_complete, false);
+  assert.equal(value.shell_hydrated, false); assert.equal(value.shell_runtime_ready, false);
+  assert.equal(validChecks({ ...checks, no_js_exceptions: true }), true);
+  assert.equal(value.project_visible, false); assert.equal(value.task_visible, false);
+  assert.equal(observation.ready_state, 'loading');
+});
+test('a null-root nonready snapshot may become ready within the same original budget', async () => {
+  let evaluations = 0; const methods = [];
+  class Socket {
+    constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+    send(raw) {
+      const message = JSON.parse(raw); methods.push(message.method);
+      const value = message.method === 'Runtime.evaluate' ? snapshot({ missingDocumentRoot: ++evaluations === 1 }) : undefined;
+      queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, result: value ? { result: { value } } : {} }) }));
+    }
+    close() { this.readyState = 3; }
+  }
+  const result = await observe({ ...config, remaining_ms: 1000 }, { WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: config.origin + '/tasks', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+  assert.equal(result.ready, true); assert.equal(evaluations, 2);
+  assert.ok(CHECKS.every(key => result.checks[key])); assert.equal(methods.includes('Page.navigate'), false);
+});
+test('evaluation exceptions and malformed values fail closed with distinct fixed codes', async () => {
+  const cases = [
+    [{ exceptionDetails: { text: 'private evaluation message URL and ID' } }, 'browser_evaluation_exception'],
+    [{ result: { value: snapshot() }, exceptionDetails: { text: 'private otherwise ready exception' } }, 'browser_evaluation_exception'],
+    [{ result: { value: snapshot() }, exceptionDetails: null }, 'browser_evaluation_exception'],
+    [{}, 'browser_readiness_invalid'],
+    [{ result: { type: 'undefined' } }, 'browser_readiness_invalid'],
+    [{ result: { value: null } }, 'browser_readiness_invalid'],
+    [{ result: { value: { raw: 'private malformed payload' } } }, 'browser_readiness_invalid'],
+  ];
+  for (const [reply, code] of cases) {
+    const progress = [], methods = [];
+    class Socket {
+      constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+      send(raw) { const message = JSON.parse(raw); methods.push(message.method); queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, result: message.method === 'Runtime.evaluate' ? reply : {} }) })); }
+      close() { this.readyState = 3; }
+    }
+    const result = await observe(config, { now: () => 0, WebSocket: Socket, onProgress: value => progress.push(value),
+      fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: config.origin + '/tasks', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+    assert.equal(result.ready, false); assert.equal(result.code, code); assert.equal(result.stage, 'evaluation');
+    if (code === 'browser_evaluation_exception') assert.equal(result.checks.no_js_exceptions, false);
+    assert.equal(methods.filter(method => method === 'Runtime.evaluate').length, 1);
+    assert.equal(methods.includes('Page.navigate'), false);
+    assert.equal(JSON.stringify({ progress, result }).includes('private'), false);
+  }
 });
