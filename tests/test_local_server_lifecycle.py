@@ -885,7 +885,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
             config = self.make_config(Path(tmpdir) / "platform-data")
             cli_args = server.parse_cli_args([])
             order = []
-            with patch.object(
+            with patch.object(lifecycle, "mark_native_startup_phase", side_effect=lambda phase: order.append("phase:" + phase)), patch.object(
                 lifecycle,
                 "load_runtime_request",
                 return_value=(cli_args, config),
@@ -901,7 +901,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
                 result = lifecycle.main(["preflight"])
 
             self.assertEqual(result, 0)
-            self.assertEqual(order, ["initialize", "cleanup"])
+            self.assertEqual(order, ["phase:data-preflight", "initialize", "phase:data-preflight-done", "phase:listener-preflight", "cleanup", "phase:listener-preflight-done"])
 
     def test_preflight_print_config_remains_side_effect_free(self):
         with TemporaryDirectory() as tmpdir, patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(

@@ -73,6 +73,17 @@ test("unresolved stale Inbox item stays an inert navigation link", async () => {
   assert.equal(screen.getByRole("link", { name: /Review Garage 1 results/u }).getAttribute("href"), `/inbox?item=${itemId("1")}`);
 });
 
+test("Home labels uncertain Run attention without presenting Project review", async () => {
+  const run = { id: itemId("9"), kind: "run_outcome", revision: 1, created_at: 1790035200,
+    unread: true, acknowledged: false, state: "checking", title: "Agent run needs checking" };
+  globalThis.fetch = async () => Response.json({ items: [run], next_cursor: null,
+    counts: { needs_me: 1, unread: 1, all: 1 } });
+  render(<HomeInboxAttention />);
+  await screen.findByText("Run needs checking");
+  assert.equal(screen.queryByText("Review saved results"), null);
+  assert.equal(screen.getByRole("link", { name: /Agent run needs checking/u }).getAttribute("href"), `/inbox?item=${run.id}`);
+});
+
 test("a late response from an unmounted Home card cannot replace fresh attention", async () => {
   let calls = 0, releaseOld: (() => void) | null = null;
   globalThis.fetch = async () => { calls++; if (calls === 1) await new Promise<void>((resolve) => { releaseOld = resolve; });

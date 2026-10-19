@@ -606,8 +606,9 @@ Schema 36 reserves one private owner-attention row per Run attempt, including
 hidden rows before any notice exists. Canonical status changes materialize or
 reopen one source-bound notice, and a Run deletion freezes its bounded outcome
 on that row before the live identity is removed. Project result-review rows
-remain their own authority; the owner Inbox must merge both sources under one
-guarded snapshot before Run notices are browser-visible.
+remain their own authority; the owner Inbox merges both sources under one
+guarded snapshot. Browser detail and owner attention actions bind the opaque
+item to its exact Run incarnation or retained receipt and never dispatch work.
 Schema startup verifies the exact Run/Event/dispatch table and index
 fingerprint, and semantic validation rechecks retention and relationship
 invariants. Legacy authority import performs that complete validation inside

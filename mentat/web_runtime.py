@@ -33,6 +33,7 @@ from run_repository import RunRepositoryError, ensure_run_sqlite_authority
 from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 from .local_bridge import BRIDGE_TOKEN_ENV, BRIDGE_TOKEN_HEADER
 from .process_identity import IS_LINUX, linux_process_start_ticks
+from .native_startup_diagnostics import mark_native_startup_phase
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
@@ -457,10 +458,12 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         from owner_gateway import owner_origin as configured_origin
         if sys.platform != 'linux' or safe_host != '127.0.0.1' or port != 8888 or configured_origin(OwnerAuthAuthority(data_dir)) != owner_origin:
             raise WebRuntimeError('owner_gateway_configuration_invalid')
+    mark_native_startup_phase("node-check")
     node_path = find_node_24()
     if node_path is None:
         raise WebRuntimeError("node_unavailable")
     require_node_24(node_path)
+    mark_native_startup_phase("node-check-done")
     standalone = standalone_root or default_standalone_root()
     if not (standalone / "server.js").is_file():
         raise WebRuntimeError("standalone_build_missing")
@@ -490,25 +493,33 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             continue
 
     try:
+        mark_native_startup_phase("authority")
         try:
             reserve_mentat_server(data_dir)
             reserved = True
         except PrivateStateError as exc:
             raise WebRuntimeError("mentat_server_already_active") from exc
         try:
+            mark_native_startup_phase("startup-cleanup")
             from owner_auth import OwnerAuthError, cleanup_owner_auth_at_startup
 
             cleanup_owner_auth_at_startup(data_dir)
         except OwnerAuthError as exc:
             raise WebRuntimeError("owner_auth_startup_cleanup_unavailable") from exc
+        mark_native_startup_phase("startup-cleanup-done")
+        mark_native_startup_phase("task-authority")
         establish_task_authority(data_dir)
+        mark_native_startup_phase("project-authority")
         establish_project_authority(data_dir)
+        mark_native_startup_phase("run-authority")
         establish_run_authority(data_dir)
+        mark_native_startup_phase("authority-done")
         bridge_environment = child_environment(token=token, runtime_environment=runtime_environment)
         if owner_origin is not None:
             bridge_environment['MENTAT_OWNER_ORIGIN'] = owner_origin
         else:
             bridge_environment.pop('MENTAT_OWNER_ORIGIN', None)
+        mark_native_startup_phase("private-bridge")
         bridge_process = subprocess.Popen(
             bridge_command(bridge_port, safe_host), cwd=application_root(),
             env=bridge_environment,
@@ -516,12 +527,14 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         wait_for_health(port=bridge_port, path="/bridge/v1/health", process=bridge_process,
                         host=safe_host, token=token,
                         timeout_error="private_bridge_readiness_timeout")
+        mark_native_startup_phase("private-bridge-ready")
         if owner_origin is None:
             node_startup_log_path, node_startup_log = open_gateway_startup_log(data_dir)
         gateway_environment = node_environment(token=token, bridge_port=bridge_port, gateway_port=port, gateway_host=safe_host)
         if owner_origin is not None:
             gateway_environment.update(MENTAT_GATEWAY_MODE='owner', MENTAT_OWNER_ORIGIN=owner_origin,
                 MENTAT_GATEWAY_INSTANCE=os.environ.get('MENTAT_GATEWAY_INSTANCE', ''))
+        mark_native_startup_phase("node-launch")
         node_process = subprocess.Popen(
             node_command(node_path, standalone), cwd=standalone,
             env=gateway_environment,
@@ -533,12 +546,14 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             port=port, path="/api/gateway/health", process=node_process, host=safe_host,
             timeout_error="node_gateway_readiness_timeout",
         )
+        mark_native_startup_phase("node-gateway-ready")
         if owner_origin is None:
             wait_for_health(
                 port=port, path="/api/bridge/health", process=node_process, host=safe_host,
                 unavailable_error="gateway_bridge_unavailable", timeout_error="node_bridge_readiness_timeout",
                 required_process=bridge_process,
             )
+            mark_native_startup_phase("node-bridge-ready")
         write_runtime_state(data_dir=data_dir, node_process=node_process, host=safe_host, port=port,
                             standalone_root=standalone)
         display_host = f"[{safe_host}]" if ":" in safe_host else safe_host
