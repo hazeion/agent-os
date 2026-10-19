@@ -2823,7 +2823,6 @@ def _validate_current_database(connection: sqlite3.Connection) -> None:
 def migrate(
     connection: sqlite3.Connection,
     *,
-    claim_fresh_agent_authority: bool = True,
     fresh_agent_authority_allowed: Callable[[], bool] | None = None,
 ) -> float | None:
     """Initialize an empty connection or validate an existing current database."""
@@ -2835,6 +2834,8 @@ def migrate(
         return None
     fresh_agent_cutover_at = None
     try:
+        if fresh_agent_authority_allowed is not None and not fresh_agent_authority_allowed():
+            raise MentatDatabaseError("Retired Agent registry state changed during authority claim")
         connection.execute("BEGIN IMMEDIATE")
         for version, script in MIGRATIONS:
             _execute_script_in_active_transaction(connection, script)
@@ -2849,9 +2850,7 @@ def migrate(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (version, time.time()),
             )
-        if claim_fresh_agent_authority and (
-            fresh_agent_authority_allowed is None or fresh_agent_authority_allowed()
-        ):
+        if fresh_agent_authority_allowed is None or fresh_agent_authority_allowed():
             cutover_at = time.time()
             connection.execute(
                 "INSERT INTO mentat_agent_registry_state ("
@@ -2863,6 +2862,8 @@ def migrate(
             if fresh_agent_authority_allowed is not None and not fresh_agent_authority_allowed():
                 raise MentatDatabaseError("Retired Agent registry state changed during authority claim")
             fresh_agent_cutover_at = cutover_at
+        else:
+            raise MentatDatabaseError("Retired Agent registry state changed during authority claim")
         _validate_current_database(connection)
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise MentatDatabaseError("Mentat database initialization produced invalid foreign keys")
@@ -2953,15 +2954,10 @@ def _remove_exact_fresh_authority_if_unchanged(
 
 def _connect_with_identity_locked(
     data_dir: Path,
-    *,
-    claim_fresh_agent_authority: bool = True,
 ) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
     for attempt in range(DATABASE_OPEN_ATTEMPTS):
         try:
-            return _connect_with_identity_once(
-                data_dir,
-                claim_fresh_agent_authority=claim_fresh_agent_authority,
-            )
+            return _connect_with_identity_once(data_dir)
         except _TransientDatabaseSidecarRace as exc:
             if attempt + 1 == DATABASE_OPEN_ATTEMPTS:
                 raise MentatDatabaseError(
@@ -2973,27 +2969,33 @@ def _connect_with_identity_locked(
 
 def _connect_with_identity_once(
     data_dir: Path,
-    *,
-    claim_fresh_agent_authority: bool = True,
 ) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
     # Admission must precede directory hardening, writable SQLite and WAL setup.
     admitted_identity = _admit_current_database_root(data_dir)
+    if admitted_identity is None and legacy_agent_registry_artifacts_present(data_dir):
+        raise MentatDatabaseError("Retired Agent registry storage is unsupported")
     private = ensure_private_console_dir(data_dir)
     path = private / DATABASE_NAME
     _validate_database_set(path, private)
     created = False
+    created_identity = None
     if not path.exists():
+        if legacy_agent_registry_artifacts_present(data_dir):
+            raise MentatDatabaseError("Retired Agent registry storage is unsupported")
         descriptor = None
         try:
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
             created = True
+            details = os.fstat(descriptor)
+            created_identity = (int(details.st_dev), int(details.st_ino))
         except FileExistsError:
             pass
         finally:
             if descriptor is not None:
                 os.close(descriptor)
     identities = _validate_database_set(path, private)
-    if admitted_identity is not None and identities[path] != admitted_identity:
+    expected_identity = created_identity if created else admitted_identity
+    if expected_identity is None or identities[path] != expected_identity:
         raise MentatDatabaseError("Mentat database file identity changed while opening")
     connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     connection.row_factory = sqlite3.Row
@@ -3003,7 +3005,6 @@ def _connect_with_identity_once(
         if created:
             fresh_agent_cutover_at = migrate(
                 connection,
-                claim_fresh_agent_authority=claim_fresh_agent_authority,
                 fresh_agent_authority_allowed=lambda: not legacy_agent_registry_artifacts_present(data_dir),
             )
         else:
@@ -3050,17 +3051,6 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     return connection
 
 
-def connect_for_agent_registry_migration(data_dir: Path) -> sqlite3.Connection:
-    """Open a destination without claiming empty authority before legacy import."""
-
-    with DATABASE_OPEN_BARRIER:
-        connection, _identities = _connect_with_identity_locked(
-            data_dir,
-            claim_fresh_agent_authority=False,
-        )
-    return connection
-
-
 def validate_current_database_root(data_dir: Path) -> bool:
     """Read-only admission: False for missing SQLite, True for exact current.
 
@@ -3079,7 +3069,7 @@ def _admit_current_database_root(data_dir: Path) -> tuple[int, int] | None:
         path, identities = source
         with _current_admission_snapshot(path, identities) as connection:
             _validate_current_database(connection)
-        if _validate_database_set(path, path.parent)[path] != identities[path]:
+        if _validate_database_file(path, path.parent) != identities[path]:
             raise MentatDatabaseError("Mentat database file identity changed while opening")
         return identities[path]
 
@@ -3100,6 +3090,8 @@ def _current_database_files(
     if identities[path] is None:
         if any(identity is not None for identity in identities.values()):
             raise MentatDatabaseError("Mentat database sidecars have no database")
+        if legacy_agent_registry_artifacts_present(root):
+            raise MentatDatabaseError("Retired Agent registry storage is unsupported")
         return None
     _existing_console_dir(root)
     return path, identities
@@ -3182,7 +3174,7 @@ def _current_admission_snapshot(
             (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
             != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
             or len(raw) + len(wal_raw) > MAX_READONLY_SNAPSHOT_BYTES
-            or _validate_database_set(path, path.parent) != identities
+            or _validate_database_file(path, path.parent) != identities[path]
         ):
             raise MentatDatabaseError("Mentat database changed while reading")
         with TemporaryDirectory(prefix="mentat-current-admission-") as temporary:
@@ -3200,7 +3192,7 @@ def _current_admission_snapshot(
                 yield connection
             finally:
                 connection.close()
-        if _validate_database_set(path, path.parent) != identities:
+        if _validate_database_file(path, path.parent) != identities[path]:
             raise MentatDatabaseError("Mentat database file identity changed while opening")
     except (OSError, sqlite3.Error) as exc:
         raise MentatDatabaseError("Mentat database is unavailable") from exc
