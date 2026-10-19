@@ -35,7 +35,7 @@ PUBLIC_MODULES = {
     "agent_console_artifacts", "agent_console_attachments", "agent_console_telemetry",
     "agent_registry", "agent_setup", "agent_registry_migration", "agent_run_history", "agent_runtime",
     "codex_runtime", "codex_task_creation", "planning_calendar", "planning_deletion", "command_manifest", "conversation_attachments", "conversation_planning", "conversation_repository", "data_backup_restore", "data_layout",
-    "data_migration",
+    "data_documents", "data_migration",
     "data_schema", "delegation_artifacts", "diagnostics_bundle", "health_checks",
     "hermes_browser_events", "hermes_event_refresh", "hermes_kanban", "hermes_local_control",
     "http_read_deadline",
