@@ -97,8 +97,11 @@ Existing current rows retain all semantic, foreign-key, retention and receipt
 checks. Unknown external outcomes never retry automatically.
 
 Fresh Task and Project setup may consume the exact packaged/root seed documents
-once and commit rows with their authority receipts. After those receipts exist,
-SQLite is the sole live authority; stale `tasks.json` and `projects.json` are
+once and commit rows with their authority receipts.
+Task seed/recovery input must already have the complete current shape; sparse
+records, naive timestamps and historical aliases are not converted. Current
+timezone offsets, `Z` timestamps and validated metadata remain supported.
+After those receipts exist, SQLite is the sole live authority; stale `tasks.json` and `projects.json` are
 never synchronized or used as fallback. Run initialization claims an empty
 current Run store; nonempty JSON history is not imported. Existing SQL Run
 authority ignores stale history. Backup derives its bounded history projection
