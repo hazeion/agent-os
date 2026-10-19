@@ -3,6 +3,7 @@ import { writeSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const CHECKS = Object.freeze(['document_complete','shell_hydrated','shell_runtime_ready','bridge_ready','workspace_exists','heading_correct','viewport_correct','project_selected','project_visible','task_visible','no_js_exceptions']);
+export const DIAGNOSTICS = Object.freeze(['project_exists','project_text_matches','project_renderable','project_intersects_viewport','task_exists','task_text_matches','task_renderable','task_intersects_viewport']);
 export function configuration(value) {
   if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'debug_port,elapsed_offset_ms,origin,project_id,remaining_ms,task_id') throw new Error('browser_configuration_invalid');
   const origin = new URL(value.origin);
@@ -19,16 +20,22 @@ export function expression(config) {
   return `(() => {
     const project = [...document.querySelectorAll('main button[data-project-id]')].find(row => row.dataset.projectId === ${JSON.stringify(config.project_id)});
     const task = [...document.querySelectorAll('main li[data-planning-task-id]')].find(row => row.dataset.planningTaskId === ${JSON.stringify(config.task_id)});
-    const visible = node => {
+    const renderable = node => {
       if (!node) return false;
       const box = node.getBoundingClientRect();
-      if (!box.width || !box.height || box.right <= 0 || box.bottom <= 0 || box.left >= innerWidth || box.top >= innerHeight) return false;
+      if (!box.width || !box.height) return false;
       for (let parent = node; parent; parent = parent.parentElement) {
         const style = getComputedStyle(parent);
         if (parent.hidden || parent.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
       }
       return true;
     };
+    const intersects = node => {
+      if (!node) return false;
+      const box = node.getBoundingClientRect();
+      return Boolean(box.width && box.height && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight);
+    };
+    const visible = node => renderable(node) && intersects(node);
     const projectText = project?.querySelector('strong');
     const taskText = task?.querySelector('strong');
     return {
@@ -41,12 +48,21 @@ export function expression(config) {
       viewport_correct: innerWidth === 1440 && innerHeight === 1000,
       project_selected: project?.getAttribute('aria-current') === 'true',
       project_visible: projectText?.textContent.trim() === 'Disposable acceptance Project' && visible(projectText),
-      task_visible: taskText?.textContent.trim() === 'Disposable acceptance Task' && visible(taskText)
+      task_visible: taskText?.textContent.trim() === 'Disposable acceptance Task' && visible(taskText),
+      diagnostics: {
+        project_exists: Boolean(project), project_text_matches: projectText?.textContent.trim() === 'Disposable acceptance Project',
+        project_renderable: renderable(projectText), project_intersects_viewport: intersects(projectText),
+        task_exists: Boolean(task), task_text_matches: taskText?.textContent.trim() === 'Disposable acceptance Task',
+        task_renderable: renderable(taskText), task_intersects_viewport: intersects(taskText)
+      }
     };
   })()`;
 }
 export function validChecks(value) {
   return value && typeof value === 'object' && Object.keys(value).sort().join(',') === CHECKS.toSorted().join(',') && CHECKS.every(key => typeof value[key] === 'boolean');
+}
+export function validDiagnostics(value) {
+  return value && typeof value === 'object' && Object.keys(value).sort().join(',') === DIAGNOSTICS.toSorted().join(',') && DIAGNOSTICS.every(key => typeof value[key] === 'boolean');
 }
 export async function observe(input, dependencies = {}) {
   const config = configuration(input);
@@ -59,7 +75,20 @@ export async function observe(input, dependencies = {}) {
   const checks = Object.fromEntries(CHECKS.map(key => [key, false]));
   let socket, sequence = 1, exceptions = 0;
   const pending = new Map();
-  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', checks };
+  const diagnostics = Object.fromEntries(DIAGNOSTICS.map(key => [key, false]));
+  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', checks, diagnostics };
+  let progressCount = 0, progressBytes = 0, lastProgress;
+  const publish = () => {
+    const progress = { schema_version: 1, event: 'progress', checks: { ...checks }, diagnostics: { ...diagnostics } };
+    const fingerprint = JSON.stringify(progress);
+    const bytes = Buffer.byteLength(fingerprint) + 1;
+    // Reserve 4KiB for the fixed final record within the parent's 16KiB cap.
+    if (progressCount < 16 && progressBytes + bytes <= 12288 && fingerprint !== lastProgress) {
+      progressCount++; progressBytes += bytes; lastProgress = fingerprint;
+      dependencies.onProgress?.(progress);
+    }
+  };
+  publish();
   function call(method, params) {
     if (!['Runtime.enable','Runtime.evaluate','Emulation.setDeviceMetricsOverride'].includes(method)) throw new Error('browser_protocol_failed');
     const id = sequence++;
@@ -112,9 +141,12 @@ export async function observe(input, dependencies = {}) {
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     while (remaining() > 0 && socket.readyState === 1) {
       const snapshot = await call('Runtime.evaluate', { expression: expression(config), returnByValue: true, awaitPromise: false, timeout: 250 });
-      const value = { ...snapshot.result?.value, no_js_exceptions: exceptions === 0 && !snapshot.exceptionDetails };
-      if (!validChecks(value)) { result.code = 'browser_readiness_invalid'; return result; }
+      const { diagnostics: observedDiagnostics, ...observedChecks } = snapshot.result?.value || {};
+      const value = { ...observedChecks, no_js_exceptions: exceptions === 0 && !snapshot.exceptionDetails };
+      if (!validChecks(value) || !validDiagnostics(observedDiagnostics)) { result.code = 'browser_readiness_invalid'; return result; }
       Object.assign(checks, value);
+      Object.assign(diagnostics, observedDiagnostics);
+      publish();
       if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; return result; }
       if (exceptions) { result.code = 'browser_js_exception'; return result; }
       await pause();
@@ -132,12 +164,12 @@ async function main() {
     if (Buffer.byteLength(raw) + chunk.length > 4096) throw new Error('browser_configuration_invalid');
     raw += chunk.toString('utf8');
   }
-  return observe(JSON.parse(raw));
+  return observe(JSON.parse(raw), { onProgress: value => writeSync(1, JSON.stringify(value) + '\n') });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let result;
   try { result = await main(); }
-  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', checks: Object.fromEntries(CHECKS.map(key => [key,false])) }; }
+  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])) }; }
   // Never wait for a CDP close handshake to release the exact owned helper.
   writeSync(1, JSON.stringify(result) + '\n');
   process.exit(result.ready ? 0 : 1);

@@ -75,3 +75,19 @@ desktop metric override; no arbitrary evaluation, navigation, response bodies,
 provider or Run control is exposed. Loopback listener ownership uses `lsof` plus
 the retained Chrome process group. No raw DOM, URL, debugger token or exception
 payload is included in reports.
+
+Browser diagnostics stream bounded, changed-only boolean snapshots so the
+original 40-second timeout can retain the last complete observation. Separate
+Project/Task existence, exact-text, CSS renderability and viewport-intersection
+flags explain a failed visibility check; they never satisfy a success check.
+At most 16 progress records use 12 KiB, reserving 4 KiB for one final record.
+The parent reads at most 16 KiB without changing the child's stdout offset.
+Success still requires the final typed ready result, exit zero, all eleven
+checks and receipt before the original parent deadline. Progress or an
+incomplete trailing record cannot grant success. Cleanup rules remain unchanged.
+
+The current348442 end-to-end attempt failed at browser readiness and retained
+its disposable state because browser-group absence was false at cleanup.
+Later group absence does not change that result. Its final-only output lost the
+predicate state at timeout; the progress reporting change has only mock-test
+verification until a separately authorized actual run is recorded.

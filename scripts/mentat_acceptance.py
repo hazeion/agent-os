@@ -141,6 +141,10 @@ def wait_for_reusable_port(port: int, timeout: float = 75) -> None:
     raise AcceptanceFailure("restart_port_not_reusable")
 
 
+BROWSER_DIAGNOSTICS = frozenset({"project_exists", "project_text_matches", "project_renderable", "project_intersects_viewport",
+                                 "task_exists", "task_text_matches", "task_renderable", "task_intersects_viewport"})
+
+
 class Journey:
     def __init__(self, root: Path):
         self.root = root
@@ -164,6 +168,7 @@ class Journey:
         self.browser_cleanup_deadline: float | None = None
         self.browser_stop_requested: set[int] = set()
         self.browser_checks: dict[str, bool] = {}
+        self.browser_diagnostics: dict[str, bool] = {}
         self.cleanup_observations: dict[str, bool] = {}
         self.launch_output = tempfile.TemporaryFile()
         self.opener = build_opener(ProxyHandler({}))
@@ -266,6 +271,46 @@ class Journey:
                 process.terminate()
         return self.browser_cleanup_deadline
 
+    def capture_browser_evidence(self, output, *, require_final: bool) -> dict | None:
+        # Positional reads never move the stdout descriptor shared with the child.
+        raw = os.pread(output.fileno(), 16385, 0)
+        require(len(raw) <= 16384, "browser_output_limit")
+        lines = raw.split(b"\n")
+        tail = lines.pop()
+        require(not require_final or not tail, "browser_output_invalid")
+        require(len(lines) <= 17, "browser_output_limit")
+        final = None
+        latest = None
+        diagnostics = None
+        for line in lines:
+            try:
+                value = json.loads(line)
+            except (ValueError, UnicodeError):
+                raise AcceptanceFailure("browser_output_invalid") from None
+            require(isinstance(value, dict) and final is None
+                    and type(value.get("schema_version")) is int and value["schema_version"] == 1
+                    and isinstance(value.get("checks"), dict) and set(value["checks"]) == BROWSER_CHECKS
+                    and all(type(check) is bool for check in value["checks"].values())
+                    and isinstance(value.get("diagnostics"), dict) and set(value["diagnostics"]) == BROWSER_DIAGNOSTICS
+                    and all(type(item) is bool for item in value["diagnostics"].values()), "browser_output_invalid")
+            if "event" in value:
+                require(set(value) == {"schema_version", "event", "checks", "diagnostics"}
+                        and value["event"] == "progress", "browser_output_invalid")
+            else:
+                require(set(value) == {"schema_version", "ready", "code", "checks", "diagnostics"}
+                        and type(value["ready"]) is bool and isinstance(value["code"], str)
+                        and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed",
+                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid"},
+                        "browser_output_invalid")
+                final = value
+            latest = dict(value["checks"])
+            diagnostics = dict(value["diagnostics"])
+        require(not require_final or final is not None, "browser_final_evidence_missing")
+        if latest is not None:
+            self.browser_checks = latest
+            self.browser_diagnostics = diagnostics
+        return final
+
     def render_browser(self, chrome: Path, project_id: str, task_id: str) -> None:
         require(self.browser is None and self.browser_helper is None, "browser_already_started")
         require(re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", project_id)
@@ -304,23 +349,14 @@ class Journey:
             try:
                 self.browser_helper.wait(timeout=max(0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
+                try:
+                    self.capture_browser_evidence(output, require_final=False)
+                except AcceptanceFailure:
+                    pass  # Malformed diagnostics never replace the authoritative wall timeout.
                 raise AcceptanceFailure("browser_readiness_timeout") from None
             require(process_group_absent(self.browser_helper.pid), "browser_helper_child_remains")
-            output.seek(0)
-            raw = output.read(4097)
-        require(len(raw) <= 4096, "browser_output_limit")
-        try:
-            result = json.loads(raw)
-        except (ValueError, UnicodeError):
-            raise AcceptanceFailure("browser_output_invalid") from None
-        require(isinstance(result, dict) and set(result) == {"schema_version", "ready", "code", "checks"}
-                and type(result["schema_version"]) is int and result["schema_version"] == 1
-                and type(result["ready"]) is bool and result["code"] in {
-                    "ready", "browser_readiness_timeout", "browser_protocol_failed", "browser_readiness_invalid",
-                    "browser_js_exception", "browser_configuration_invalid"}
-                and isinstance(result["checks"], dict) and set(result["checks"]) == BROWSER_CHECKS
-                and all(type(value) is bool for value in result["checks"].values()), "browser_output_invalid")
-        self.browser_checks = dict(result["checks"])
+            result = self.capture_browser_evidence(output, require_final=True)
+            require(time.monotonic() <= deadline, "browser_readiness_timeout")
         require(result["ready"] is True and result["code"] == "ready"
                 and all(self.browser_checks.values()) and self.browser_helper.returncode == 0,
                 "browser_readiness_failed")
@@ -458,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
             report["cleanup"] = journey.cleanup_observations
         if journey is not None and journey.browser_checks:
             report["browser_checks"] = journey.browser_checks
+            report["browser_diagnostics"] = journey.browser_diagnostics
         if not cleaned:
             primary_phase = report.get("phase", "complete")
             primary_code = report.get("code", "none")

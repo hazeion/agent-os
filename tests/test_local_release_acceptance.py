@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import shutil
 import subprocess
+import tempfile
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -282,15 +283,15 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 helper = unittest.mock.Mock(pid=34567, returncode=0)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 checks["task_visible"] = invalid
-                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks}
+                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}}
                 output = unittest.mock.MagicMock()
                 output.__enter__.return_value = output
-                output.read.return_value = json.dumps(result).encode()
+                output.read.return_value = (json.dumps(result) + "\n").encode()
                 with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                     acceptance, "browser_listener_owned", return_value=True
                 ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
                     acceptance.tempfile, "TemporaryFile", return_value=output
-                ):
+                ), patch.object(acceptance.os, "pread", side_effect=lambda *_: output.read.return_value):
                     with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_(readiness_failed|output_invalid)"):
                         journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
                 browser.terminate.assert_not_called()
@@ -308,12 +309,12 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             checks = {name: True for name in acceptance.BROWSER_CHECKS}
             output = unittest.mock.MagicMock()
             output.__enter__.return_value = output
-            output.read.return_value = json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks}).encode()
+            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}}) + "\n").encode()
             with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                 acceptance, "browser_listener_owned", return_value=True
             ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
                 acceptance.tempfile, "TemporaryFile", return_value=output
-            ), patch.object(acceptance.time, "monotonic", return_value=0):
+            ), patch.object(acceptance.os, "pread", side_effect=lambda *_: output.read.return_value), patch.object(acceptance.time, "monotonic", return_value=0):
                 with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_stop_timeout"):
                     journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
             self.assertEqual(journey.browser_cleanup_deadline, 15)
@@ -322,6 +323,72 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             self.assertEqual(journey.browser_cleanup_deadline, 15)
             browser.terminate.assert_called_once()
             self.assertEqual([call.kwargs["timeout"] for call in browser.wait.call_args_list], [15, 0])
+
+    def test_progress_capture_is_bounded_positional_and_never_final_success(self):
+        checks = {name: True for name in acceptance.BROWSER_CHECKS}
+        diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics}
+        with TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
+            journey = acceptance.Journey(Path(directory))
+            self.addCleanup(journey.launch_output.close)
+            output.write((json.dumps(progress) + "\n" + '{"partial":').encode())
+            output.flush()
+            position = output.tell()
+            self.assertIsNone(journey.capture_browser_evidence(output, require_final=False))
+            self.assertEqual(output.tell(), position)
+            self.assertEqual(journey.browser_checks, checks)
+            self.assertEqual(journey.browser_diagnostics, diagnostics)
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_output_invalid"):
+                journey.capture_browser_evidence(output, require_final=True)
+            output.seek(0); output.truncate()
+            output.write((json.dumps(progress) + "\n").encode()); output.flush()
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_final_evidence_missing"):
+                journey.capture_browser_evidence(output, require_final=True)
+
+    def test_invalid_framing_diagnostics_and_duplicate_final_refuse_success(self):
+        checks = {name: True for name in acceptance.BROWSER_CHECKS}
+        diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
+        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics}
+        line = (json.dumps(final) + "\n").encode()
+        for raw in (line + line, line + b"unframed", b"x" * 16385,
+                    (json.dumps({**final, "diagnostics": {**diagnostics, "raw_dom": "private"}}) + "\n").encode()):
+            with self.subTest(raw_length=len(raw)), TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                output.write(raw); output.flush()
+                with self.assertRaises(acceptance.AcceptanceFailure):
+                    journey.capture_browser_evidence(output, require_final=True)
+                self.assertEqual(journey.browser_checks, {})
+
+    def test_browser_timeout_retains_progress_without_promoting_it_or_late_final(self):
+        for late in (False, True):
+            with self.subTest(late_final=late), TemporaryDirectory() as directory:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                checks = {name: True for name in acceptance.BROWSER_CHECKS}
+                diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
+                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics}
+                record.update({"ready": True, "code": "ready"} if late else {"event": "progress"})
+                raw = (json.dumps(record) + "\n").encode()
+                browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
+                helper = unittest.mock.Mock(pid=34567, returncode=0)
+                clock = [0]
+                def wait(**_):
+                    clock[0] = 41
+                    if not late:
+                        raise subprocess.TimeoutExpired("owned", 40)
+                helper.wait.side_effect = wait
+                with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
+                    acceptance, "browser_listener_owned", return_value=True
+                ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
+                    acceptance.os, "pread", return_value=raw
+                ), patch.object(acceptance.time, "monotonic", side_effect=lambda: clock[0]):
+                    with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_readiness_timeout"):
+                        journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+                self.assertEqual(journey.browser_checks, checks)
+                self.assertEqual(journey.browser_diagnostics, diagnostics)
+                self.assertNotIn("isolated_browser_render", journey.completed)
+                browser.terminate.assert_not_called()
 
     @unittest.skipUnless(shutil.which("node"), "Node is required for the fixed CDP helper contract")
     def test_browser_helper_fixed_predicates_and_transport_boundary(self):
