@@ -5,7 +5,7 @@ Root and independent review approved the requirements and protocol through
 33ccd78, including the d1b62a1 trust-class correction. This checkpoint does not
 clear Linux execution, signatures, loader behavior, FUSE or Run admission.
 
-The private operation uses the existing19 fixed public inputs. Thirteen
+The private operation uses the existing 19 fixed public inputs. Thirteen
 library/loader objects follow the captured signed archive chain; four helper
 ELF objects bind only to their reviewed compiled size/SHA256 pins. No helper
 archive is added or newly authenticated. The parent checks the exact fixed
@@ -13,36 +13,36 @@ member-to-class mapping, not membership in a caller-selected class enum.
 
 The origin comparison keeps its ordinary API. A private retained context holds
 the exact captured bytes and source descriptors while the custody worker seals
-all17 regular objects, rehashes and reparses their sealed bytes, and repeats the
+all 17 regular objects, rehashes and reparses their sealed bytes, and repeats the
 four shared graph comparisons. Ten aliases remain authenticated library
 metadata, never filesystem links. A fresh private sequenced socket transfers
 one descriptor at a time with kernel credentials and strict nonce/order/hash,
 identity and class binding. No caller report creates a custody lease.
 
 Successful publication requires READY, RELEASE, EOF without extra packets,
-normal exit0 from the exact owned worker and read-only group-absence proof
-inside the original30 seconds. Failure signals target only the pinned original
+normal exit 0 from the exact owned worker and read-only group-absence proof
+inside the original 30 seconds. Failure signals target only the pinned original
 unreaped leader's group. After reap, a surviving or reused group refuses with
 retained uncertainty and no further signal. A successful lease exposes byte
 reads and close only; it does not launch anything or persist readiness.
 
 ## Descriptor and allocation accounting
 
-The worker retains19 input descriptors plus one capture-root descriptor.
-During sealing it adds17 regular memfds, one socket and three standard
-descriptors:41 stable descriptors. Decoder commands run before those17 member
-memfds are created. A conservative decoder-phase allowance of12 temporary
+The worker retains 19 input descriptors plus one capture-root descriptor.
+During sealing it adds 17 regular memfds, one socket and three standard
+descriptors: 41 stable descriptors. Decoder commands run before those 17 member
+memfds are created. A conservative decoder-phase allowance of 12 temporary
 descriptors for sealed command input, pipes, spawn error channel, selector and
-transient directory opens gives36, below the unchanged64 ceiling. Terminal
+transient directory opens gives 36, below the unchanged 64 ceiling. Terminal
 source revalidation needs at most one additional directory descriptor while
 the worker copies are being released after ACK. The exact fixed graph must
-remain17 regular members and10 aliases; a different selection refuses.
+remain 17 regular members and 10 aliases; a different selection refuses.
 
-The parent owns17 received descriptors, one socket and one pidfd beyond its
+The parent owns 17 received descriptors, one socket and one pidfd beyond its
 existing controller state. Each accepted right is owned immediately, including
-malformed-packet paths. Input bounds,32 MiB selected library bytes, the four
-existing helper-size bounds,512 MiB worker address space,15 CPU seconds and
-core size0 remain unchanged. Real Linux FD/resource peak observations are
+malformed-packet paths. Input bounds, 32 MiB selected library bytes, the four
+existing helper-size bounds, 512 MiB worker address space, 15 CPU seconds and
+core size 0 remain unchanged. Real Linux FD/resource peak observations are
 still required; this arithmetic does not substitute for them.
 
 ## Portable verification
@@ -53,7 +53,7 @@ After the parent released the browser quiet window, the focused command was:
 /private/tmp/mentat-ci-recovery-venv/bin/python -W error::ResourceWarning -m unittest tests.test_project_helper_byte_custody tests.test_project_library_origin tests.test_project_library_plt tests.test_project_runtime_host_trust tests.test_project_runtime_elf -v
 ```
 
-Result:64 methods,63 passed and one existing actual-Linux skip,0.509 seconds.
+Result: 64 methods, 63 passed and one existing actual-Linux skip, 0.509 seconds.
 Log: /private/tmp/mentat-helper-byte-custody-focused.log. No real worker,
 decoder, signature utility, helper ELF, library load, network request, image or
 actual Linux qualification was executed. Source edits were made during the
