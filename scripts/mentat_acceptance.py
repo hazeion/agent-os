@@ -120,6 +120,7 @@ class Journey:
         self.children: tuple[int, ...] = ()
         self.launcher_groups: set[int] = set()
         self.browser: subprocess.Popen | None = None
+        self.cleanup_observations: dict[str, bool] = {}
         self.launch_output = tempfile.TemporaryFile()
         self.opener = build_opener(ProxyHandler({}))
         self.phase = "setup"
@@ -266,16 +267,17 @@ class Journey:
                 "immediate_restart_acceptance": not diagnostic_port_wait}
 
     def cleanup(self) -> bool:
-        clean = True
+        browser_terminal = True
+        browser_group_absent = True
+        launcher_terminal = True
         if self.browser is not None:
             if self.browser.poll() is None:
                 self.browser.terminate()
             try:
                 self.browser.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                clean = False
-            if not process_group_absent(self.browser.pid):
-                clean = False
+                browser_terminal = False
+            browser_group_absent = process_group_absent(self.browser.pid)
         if self.process is not None:
             # Only signal the Popen handle we created, never a discovered PID or listener.
             if self.process.poll() is None:
@@ -283,10 +285,19 @@ class Journey:
             try:
                 self.process.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                clean = False
+                launcher_terminal = False
         self.launch_output.close()
-        return (clean and all(process_group_absent(group) for group in self.launcher_groups)
-                and all(process_absent(pid) for pid in self.children) and listener_closed(self.port))
+        # Evaluate every owned boundary even when another one failed, so the
+        # bounded report identifies which exact cleanup proof was unavailable.
+        self.cleanup_observations = {
+            "browser_terminal": browser_terminal,
+            "browser_group_absent": browser_group_absent,
+            "launcher_terminal": launcher_terminal,
+            "launcher_groups_absent": all(process_group_absent(group) for group in self.launcher_groups),
+            "captured_children_absent": all(process_absent(pid) for pid in self.children),
+            "listener_closed": listener_closed(self.port),
+        }
+        return all(self.cleanup_observations.values())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -303,7 +314,10 @@ def main(argv: list[str] | None = None) -> int:
         require(args.chrome is None or args.chrome.is_absolute() and args.chrome.is_file(), "chrome_invalid")
         journey = Journey(root)
         report = journey.run(args.chrome, diagnostic_port_wait=args.diagnostic_port_wait)
-    except (AcceptanceFailure, subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError) as exc:
+    except subprocess.TimeoutExpired:
+        report = {"ok": False, "phase": journey.phase if journey else "initialization",
+                  "code": "operation_timeout"}
+    except (AcceptanceFailure, OSError, ValueError, KeyError, TypeError) as exc:
         report = {"ok": False, "phase": journey.phase if journey else "initialization",
                   "code": str(exc) if isinstance(exc, AcceptanceFailure) else "operation_failed"}
     finally:
@@ -314,8 +328,13 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, subprocess.TimeoutExpired):
             cleaned = False
         report["owned_state_removed"] = cleaned
+        if journey is not None and journey.cleanup_observations:
+            report["cleanup"] = journey.cleanup_observations
         if not cleaned:
-            report.update(ok=False, code="cleanup_incomplete")
+            primary_phase = report.get("phase", "complete")
+            primary_code = report.get("code", "none")
+            report.update(ok=False, code="cleanup_incomplete",
+                          primary_phase=primary_phase, primary_code=primary_code)
     print(json.dumps(report, sort_keys=True))
     return 0 if report.get("ok") else 1
 
