@@ -31,7 +31,6 @@ from data_schema import (
     _entry_exists_at,
     _guarded_child_directory,
     _names_from_pinned_directory,
-    _pinned_existing_child_directory,
     _pinned_existing_child_directory_state,
     _read_private_artifact_at,
     _unlink_relative,
@@ -50,21 +49,16 @@ from private_console_unit import (
     MAX_DATABASE_BYTES,
     MAX_HISTORY_BYTES,
     MAX_PRIVATE_UNIT_BYTES,
-    MAX_REGISTRY_DATABASE_BYTES,
     PrivateBlob,
     PrivateConsoleUnit,
     PrivateConsoleUnitError,
     capture_private_console_unit,
-    empty_legacy_registry_raw,
-    empty_preconvergence_private_console_unit,
     empty_private_console_unit,
     agent_registry_digest,
-    legacy_private_console_unit_digest,
     materialize_private_console_unit,
     private_console_unit_digest,
     remove_private_console_tree,
     sanitize_owner_auth_restore_unit,
-    matching_legacy_owner_restore_unit,
     validate_private_console_unit,
     validate_private_console_stage_inventory,
 )
@@ -75,14 +69,8 @@ from private_state import console_root as private_console_root
 BACKUP_FORMAT_VERSION = 5
 SANITIZED_RESTORE_PROTOCOL_VERSION = 4
 RESTORE_PROTOCOL_VERSION = SANITIZED_RESTORE_PROTOCOL_VERSION
-PREVIOUS_RESTORE_PROTOCOL_VERSION = 3
-LEGACY_RESTORE_PROTOCOL_VERSION = 2
 BACKUP_KIND = "mentat-general-backup"
 BACKUP_PREFIX = "mentat-backup-v5-"
-V4_BACKUP_PREFIX = "mentat-backup-v4-"
-V3_BACKUP_PREFIX = "mentat-backup-v3-"
-V2_BACKUP_PREFIX = "mentat-backup-v2-"
-LEGACY_BACKUP_PREFIX = "mentat-backup-v1-"
 RESTORE_STATE_NAME = "restore-state-v1.json"
 MAX_BACKUP_MANIFEST_BYTES = 1024 * 1024
 MAX_BACKUP_CENTRAL_DIRECTORY_BYTES = 64 * 1024
@@ -91,17 +79,16 @@ MAX_GENERAL_BACKUP_BYTES = (
     + MAX_BACKUP_MANIFEST_BYTES
     + MAX_HISTORY_BYTES
     + MAX_DATABASE_BYTES
-    + MAX_REGISTRY_DATABASE_BYTES
     + MAX_PRIVATE_UNIT_BYTES
     + 2 * 1024 * 1024
 )
 _TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
-_BACKUP_RE = re.compile(r"^mentat-backup-v([12345])-([0-9a-f]{24})\.zip$")
+_BACKUP_RE = re.compile(r"^mentat-backup-v(5)-([0-9a-f]{24})\.zip$")
 _STATE_TEMP_RE = re.compile(
     r"^\.(restore-state-v1\.json)\.mentat-init-[0-9a-f]{32}\.tmp$"
 )
 _BACKUP_TEMP_RE = re.compile(
-    r"^\.(mentat-backup-v[12345]-[0-9a-f]{24}\.zip)\.mentat-init-[0-9a-f]{32}\.tmp$"
+    r"^\.(mentat-backup-v5-[0-9a-f]{24}\.zip)\.mentat-init-[0-9a-f]{32}\.tmp$"
 )
 
 _EXCLUDED_CLASSES: tuple[dict[str, str], ...] = (
@@ -184,7 +171,7 @@ class RestorePreview:
     _backup_raw: bytes | None = None
     _backup_documents: tuple[_Document, ...] = ()
     _backup_private: PrivateConsoleUnit | None = None
-    _backup_format_version: int = 1
+    _backup_format_version: int = BACKUP_FORMAT_VERSION
     _target_documents: tuple[_Document, ...] = ()
     _target_private: PrivateConsoleUnit | None = None
     _target_binding: str | None = None
@@ -292,136 +279,56 @@ def _document_identity(documents: tuple[_Document, ...]) -> list[dict[str, Any]]
     ]
 
 
+def _require_backup_format(version: object) -> None:
+    if type(version) is not int or version != BACKUP_FORMAT_VERSION:
+        raise ValueError("backup_format_newer" if type(version) is int and version > BACKUP_FORMAT_VERSION else "backup_format_unsupported")
+
+
 def _private_identity(unit: PrivateConsoleUnit, *, format_version: int) -> dict[str, Any]:
-    identity = {
-        "name": "private_console",
-        "classification": "durable_private_consistency_unit",
-        "history_schema_version": 3,
-        "database_schema_version": 1,
-        "history_size": len(unit.history_raw),
-        "history_sha256": _digest(unit.history_raw),
-        "database_size": len(unit.database_raw),
-        "database_sha256": _digest(unit.database_raw),
-        "blob_count": len(unit.blobs),
-        "blobs": [
-            {
-                "entry": f"private/blobs/{index:04d}",
-                "storage_key": blob.storage_key,
-                "size": len(blob.raw),
-                "sha256": blob.sha256,
-            }
-            for index, blob in enumerate(unit.blobs)
-        ],
-    }
-    if format_version == 3:
-        if unit.registry_database_raw is None:
-            raise ValueError("legacy backup requires standalone Agent registry")
-        identity.update(
-            {
-                "agent_registry_schema_version": 1,
-                "agent_registry_size": len(unit.registry_database_raw),
-                "agent_registry_sha256": _digest(unit.registry_database_raw),
-            }
-        )
-    elif format_version >= 4:
-        if unit.registry_database_raw is not None:
-            raise ValueError("converged backup requires embedded Agent registry")
-        identity.update(
-            {
-                "agent_registry_storage": "mentat.sqlite3",
-                "agent_count": unit.agent_count,
-            }
-        )
-        if format_version >= 5:
-            # Version 5 makes the owner-auth restore rule explicit.  Older
-            # format-4 archives remain valid and migrate before use.
-            identity["owner_auth_restore"] = "invalidate_live_grants"
-    return identity
-
-
-def _empty_private_unit_for_format(format_version: int) -> PrivateConsoleUnit | None:
-    if format_version == 1:
-        return None
-    if format_version in {2, 3}:
-        return empty_preconvergence_private_console_unit()
-    return empty_private_console_unit()
-
-
-def _backup_id(
-    documents: tuple[_Document, ...],
-    private_unit: PrivateConsoleUnit | None = None,
-    *,
-    format_version: int = BACKUP_FORMAT_VERSION,
-) -> str:
-    if format_version == 1:
-        private_items: list[dict[str, Any]] = []
-        excluded = [
-            {"name": "private_console", "classification": "deferred_private_consistency_unit"},
-            *[dict(item) for item in _EXCLUDED_CLASSES],
-        ]
-    else:
-        unit = private_unit or _empty_private_unit_for_format(format_version)
-        assert unit is not None
-        private_items = [_private_identity(unit, format_version=format_version)]
-        excluded = [dict(item) for item in _EXCLUDED_CLASSES]
-    identity = {
-        "format_version": format_version,
-        "kind": BACKUP_KIND,
-        "data_schema_format_version": SCHEMA_FORMAT_VERSION,
-        "document_version": CURRENT_DOCUMENT_VERSION,
-        "items": [*_document_identity(documents), *private_items],
-        "excluded": excluded,
-    }
-    return _digest(_canonical_json(identity))[:24]
-
-
-def _backup_manifest(
-    documents: tuple[_Document, ...],
-    private_unit: PrivateConsoleUnit | None = None,
-    *,
-    format_version: int = BACKUP_FORMAT_VERSION,
-) -> dict[str, Any]:
-    unit = private_unit or _empty_private_unit_for_format(format_version)
-    excluded = [dict(item) for item in _EXCLUDED_CLASSES]
-    items = _document_identity(documents)
-    if format_version == 1:
-        excluded.insert(0, {"name": "private_console", "classification": "deferred_private_consistency_unit"})
-    else:
-        assert unit is not None
-        items.append(_private_identity(unit, format_version=format_version))
+    _require_backup_format(format_version)
     return {
-        "format_version": format_version,
-        "kind": BACKUP_KIND,
-        "backup_id": _backup_id(documents, unit, format_version=format_version),
-        "data_schema_format_version": SCHEMA_FORMAT_VERSION,
-        "document_version": CURRENT_DOCUMENT_VERSION,
-        "items": items,
-        "excluded": excluded,
+        "name": "private_console", "classification": "durable_private_consistency_unit",
+        "history_schema_version": 3, "database_schema_version": 1,
+        "history_size": len(unit.history_raw), "history_sha256": _digest(unit.history_raw),
+        "database_size": len(unit.database_raw), "database_sha256": _digest(unit.database_raw),
+        "agent_registry_storage": "mentat.sqlite3", "agent_count": unit.agent_count,
+        "owner_auth_restore": "invalidate_live_grants", "blob_count": len(unit.blobs),
+        "blobs": [{"entry": f"private/blobs/{index:04d}", "storage_key": blob.storage_key,
+                   "size": len(blob.raw), "sha256": blob.sha256} for index, blob in enumerate(unit.blobs)],
     }
 
 
-def _backup_name(
-    documents: tuple[_Document, ...],
-    private_unit: PrivateConsoleUnit | None = None,
-    *,
-    format_version: int = BACKUP_FORMAT_VERSION,
-) -> str:
-    prefix = (
-        BACKUP_PREFIX
-        if format_version == 5
-        else V4_BACKUP_PREFIX
-        if format_version == 4
-        else V3_BACKUP_PREFIX
-        if format_version == 3
-        else V2_BACKUP_PREFIX
-        if format_version == 2
-        else LEGACY_BACKUP_PREFIX
-    )
-    return f"{prefix}{_backup_id(documents, private_unit, format_version=format_version)}.zip"
 
 
-def _private_backup_format(unit: PrivateConsoleUnit) -> int:
-    return BACKUP_FORMAT_VERSION if unit.registry_database_raw is None else 3
+def _backup_id(documents: tuple[_Document, ...], private_unit: PrivateConsoleUnit | None = None,
+               *, format_version: int = BACKUP_FORMAT_VERSION) -> str:
+    _require_backup_format(format_version)
+    unit = private_unit or empty_private_console_unit()
+    return _digest(_canonical_json({
+        "format_version": BACKUP_FORMAT_VERSION, "kind": BACKUP_KIND,
+        "data_schema_format_version": SCHEMA_FORMAT_VERSION, "document_version": CURRENT_DOCUMENT_VERSION,
+        "items": [*_document_identity(documents), _private_identity(unit, format_version=format_version)],
+        "excluded": [dict(item) for item in _EXCLUDED_CLASSES],
+    }))[:24]
+
+
+def _backup_manifest(documents: tuple[_Document, ...], private_unit: PrivateConsoleUnit | None = None,
+                     *, format_version: int = BACKUP_FORMAT_VERSION) -> dict[str, Any]:
+    _require_backup_format(format_version)
+    unit = private_unit or empty_private_console_unit()
+    return {"format_version": BACKUP_FORMAT_VERSION, "kind": BACKUP_KIND,
+            "backup_id": _backup_id(documents, unit), "data_schema_format_version": SCHEMA_FORMAT_VERSION,
+            "document_version": CURRENT_DOCUMENT_VERSION,
+            "items": [*_document_identity(documents), _private_identity(unit, format_version=format_version)],
+            "excluded": [dict(item) for item in _EXCLUDED_CLASSES]}
+
+
+def _backup_name(documents: tuple[_Document, ...], private_unit: PrivateConsoleUnit | None = None,
+                 *, format_version: int = BACKUP_FORMAT_VERSION) -> str:
+    _require_backup_format(format_version)
+    return f"{BACKUP_PREFIX}{_backup_id(documents, private_unit)}.zip"
+
+
 
 
 def _zip_entry(name: str) -> zipfile.ZipInfo:
@@ -438,7 +345,8 @@ def _build_backup(
     *,
     format_version: int = BACKUP_FORMAT_VERSION,
 ) -> bytes:
-    unit = private_unit or _empty_private_unit_for_format(format_version)
+    _require_backup_format(format_version)
+    unit = private_unit or empty_private_console_unit()
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr(
@@ -450,15 +358,6 @@ def _build_backup(
         if unit is not None:
             archive.writestr(_zip_entry("private/history.json"), unit.history_raw)
             archive.writestr(_zip_entry("private/mentat.sqlite3"), unit.database_raw)
-            if format_version == 3:
-                if unit.registry_database_raw is None:
-                    raise ValueError(
-                        "legacy backup requires standalone Agent registry"
-                    )
-                archive.writestr(
-                    _zip_entry("private/agent-registry.sqlite3"),
-                    unit.registry_database_raw,
-                )
             for index, blob in enumerate(unit.blobs):
                 archive.writestr(_zip_entry(f"private/blobs/{index:04d}"), blob.raw)
     raw = output.getvalue()
@@ -492,7 +391,7 @@ def _contents_from_backup(
         or central_disk != 0
         or entries_on_disk != entry_count
         or entry_count < 1 + len(SEED_FILE_NAMES)
-        or entry_count > 1 + len(SEED_FILE_NAMES) + 3 + MAX_BLOBS
+        or entry_count > 1 + len(SEED_FILE_NAMES) + 2 + MAX_BLOBS
         or central_size > MAX_BACKUP_CENTRAL_DIRECTORY_BYTES
         or comment_size != 0
         or central_offset + central_size != len(raw) - 22
@@ -512,8 +411,6 @@ def _contents_from_backup(
                     if info.filename == "private/history.json"
                     else MAX_DATABASE_BYTES
                     if info.filename == "private/mentat.sqlite3"
-                    else MAX_REGISTRY_DATABASE_BYTES
-                    if info.filename == "private/agent-registry.sqlite3"
                     else MAX_BLOB_BYTES
                     if info.filename.startswith("private/blobs/")
                     else MAX_PREFLIGHT_JSON_BYTES
@@ -545,50 +442,22 @@ def _contents_from_backup(
             _document_from_raw(name, archive.read(f"data/{name}"))
             for name in SEED_FILE_NAMES
         )
-        private_unit: PrivateConsoleUnit | None = None
-        if format_version == 1:
-            if names != base_names:
-                raise ValueError("backup_inventory_invalid")
-        elif format_version in {2, 3, 4, 5}:
-            manifest_items = manifest.get("items") if isinstance(manifest, dict) else None
-            if not isinstance(manifest_items, list) or not all(
-                isinstance(item, dict) for item in manifest_items
-            ):
-                raise ValueError("backup_manifest_invalid")
-            private_items = [item for item in manifest_items if item.get("name") == "private_console"]
-            if len(private_items) != 1 or not isinstance(private_items[0].get("blobs"), list):
-                raise ValueError("backup_manifest_invalid")
-            blob_items = private_items[0]["blobs"]
-            if not all(isinstance(item, dict) for item in blob_items):
-                raise ValueError("backup_manifest_invalid")
-            expected_private = ["private/history.json", "private/mentat.sqlite3"]
-            if format_version == 3:
-                expected_private.append("private/agent-registry.sqlite3")
-            expected_private.extend(
-                f"private/blobs/{index:04d}" for index in range(len(blob_items))
-            )
-            if names != [*base_names, *expected_private]:
-                raise ValueError("backup_inventory_invalid")
-            blobs = tuple(
-                PrivateBlob(storage_key=str(item.get("storage_key") or ""), raw=archive.read(f"private/blobs/{index:04d}"))
-                for index, item in enumerate(blob_items)
-            )
-            private_unit = validate_private_console_unit(
-                PrivateConsoleUnit(
-                    history_raw=archive.read("private/history.json"),
-                    database_raw=archive.read("private/mentat.sqlite3"),
-                    registry_database_raw=(
-                        archive.read("private/agent-registry.sqlite3")
-                        if format_version == 3
-                        else empty_legacy_registry_raw()
-                        if format_version == 2
-                        else None
-                    ),
-                    blobs=blobs,
-                )
-            )
-        else:
-            raise ValueError("backup_format_newer" if isinstance(format_version, int) and format_version > BACKUP_FORMAT_VERSION else "backup_manifest_invalid")
+        _require_backup_format(format_version)
+        manifest_items = manifest.get("items")
+        if not isinstance(manifest_items, list) or not all(isinstance(item, dict) for item in manifest_items):
+            raise ValueError("backup_manifest_invalid")
+        private_items = [item for item in manifest_items if item.get("name") == "private_console"]
+        if len(private_items) != 1 or not isinstance(private_items[0].get("blobs"), list):
+            raise ValueError("backup_manifest_invalid")
+        blob_items = private_items[0]["blobs"]
+        if not all(isinstance(item, dict) for item in blob_items):
+            raise ValueError("backup_manifest_invalid")
+        expected_private = ["private/history.json", "private/mentat.sqlite3", *(f"private/blobs/{index:04d}" for index in range(len(blob_items)))]
+        if names != [*base_names, *expected_private]:
+            raise ValueError("backup_inventory_invalid")
+        blobs = tuple(PrivateBlob(str(item.get("storage_key") or ""), archive.read(f"private/blobs/{index:04d}")) for index, item in enumerate(blob_items))
+        private_unit = validate_private_console_unit(PrivateConsoleUnit(
+            history_raw=archive.read("private/history.json"), database_raw=archive.read("private/mentat.sqlite3"), blobs=blobs))
     if (
         manifest != _backup_manifest(documents, private_unit, format_version=format_version)
         or raw != _build_backup(documents, private_unit, format_version=format_version)
@@ -1160,6 +1029,11 @@ def create_durable_backup(data_root: Path) -> BackupResult:
 
     target = _absolute_without_following(Path(data_root))
     try:
+        if (schema_preflight_status(target) != "current"
+                or private_control_issue(target) is not None
+                or _restore_artifact_issue(target) is not None):
+            return _blocked_backup("backup_source_invalid")
+        capture_private_console_unit(target, harden_source=False)
         with _durable_mutation_lock(target) as root_descriptor:
             if (
                 not _pinned_root_matches(target, root_descriptor)
@@ -1170,7 +1044,7 @@ def create_durable_backup(data_root: Path) -> BackupResult:
                 return _blocked_backup("backup_source_invalid")
             documents = _load_live_documents(target, root_descriptor)
             private_unit = capture_private_console_unit(target)
-            format_version = _private_backup_format(private_unit)
+            format_version = BACKUP_FORMAT_VERSION
             raw = _build_backup(
                 documents,
                 private_unit,
@@ -1268,13 +1142,13 @@ def _capture_private_for_restore_state(
 ) -> PrivateConsoleUnit:
     console = private_console_root(target)
     if os.path.lexists(os.fspath(console)):
-        return capture_private_console_unit(target)
+        return capture_private_console_unit(target, harden_source=False)
     token = state.get("preview_token") if isinstance(state, Mapping) else None
     if isinstance(token, str) and _TOKEN_RE.fullmatch(token):
         old = target / "private" / f".console-restore-{token[:24]}-old"
         if os.path.lexists(os.fspath(old)):
-            return capture_private_console_unit(target, source_console=old)
-    return capture_private_console_unit(target)
+            return capture_private_console_unit(target, source_console=old, harden_source=False)
+    return capture_private_console_unit(target, harden_source=False)
 
 
 def _valid_sanitization_timestamp(value: object) -> bool:
@@ -1293,13 +1167,7 @@ def _new_restore_sanitization(source: PrivateConsoleUnit | None) -> dict | None:
 
 
 def _sanitized_restore_source(source: PrivateConsoleUnit | None, state: Mapping[str, Any], *, live: PrivateConsoleUnit | None = None) -> PrivateConsoleUnit | None:
-    if state.get('protocol_version') in {LEGACY_RESTORE_PROTOCOL_VERSION, PREVIOUS_RESTORE_PROTOCOL_VERSION}:
-        # Published legacy code did not record its clock. Recognize only an
-        # exact replay from its complete published private tree. Before that
-        # publication, confirmation may choose a clock; the result becomes the
-        # durable witness. Schema 28 never uses these old receipt protocols.
-        return matching_legacy_owner_restore_unit(source, live) if source is not None and live is not None else None
-    if state.get('protocol_version') != SANITIZED_RESTORE_PROTOCOL_VERSION:
+    if type(state.get('protocol_version')) is not int or state.get('protocol_version') != SANITIZED_RESTORE_PROTOCOL_VERSION:
         raise ValueError('restore sanitization invalid')
     context = state.get('sanitization')
     if source is None:
@@ -1340,11 +1208,9 @@ def _restore_state_document(
         else protocol_version
     )
     old_by_name = {item.name: item for item in old_documents}
-    private_digest = (
-        legacy_private_console_unit_digest
-        if effective_protocol == LEGACY_RESTORE_PROTOCOL_VERSION
-        else private_console_unit_digest
-    )
+    if effective_protocol != RESTORE_PROTOCOL_VERSION:
+        raise ValueError("restore_protocol_unsupported")
+    private_digest = private_console_unit_digest
     document = {
         "protocol_version": effective_protocol,
         "restore_id": token[:24],
@@ -1366,11 +1232,7 @@ def _restore_state_document(
         "recovery_backup_name": _backup_name(
             old_documents,
             old_private,
-            format_version=(
-                2
-                if effective_protocol == LEGACY_RESTORE_PROTOCOL_VERSION
-                else _private_backup_format(old_private)
-            ),
+            format_version=BACKUP_FORMAT_VERSION,
         ),
         "recovery_backup_sha256": _digest(recovery_raw),
         "recovery_private_sha256": private_digest(old_private),
@@ -1425,18 +1287,11 @@ def _validated_resume(
     protocol_version = state.get("protocol_version")
     if protocol_version == SANITIZED_RESTORE_PROTOCOL_VERSION:
         expected_keys.add('sanitization')
-    private_digest = (
-        legacy_private_console_unit_digest
-        if protocol_version == LEGACY_RESTORE_PROTOCOL_VERSION
-        else private_console_unit_digest
-    )
+    private_digest = private_console_unit_digest
     if (
         set(state) != expected_keys
-        or protocol_version not in {
-            LEGACY_RESTORE_PROTOCOL_VERSION,
-            PREVIOUS_RESTORE_PROTOCOL_VERSION,
-            SANITIZED_RESTORE_PROTOCOL_VERSION,
-        }
+        or type(protocol_version) is not int
+        or protocol_version != RESTORE_PROTOCOL_VERSION
         or not isinstance(token, str)
         or _TOKEN_RE.fullmatch(token) is None
         or state.get("restore_id") != token[:24]
@@ -1685,6 +1540,7 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
         issue = str(exc)
         status = "unsupported" if issue in {
             "backup_format_newer",
+            "backup_format_unsupported",
             "backup_schema_newer",
         } else "unsafe"
         return _blocked_preview(status, issue if len(issue) <= 80 else "backup_invalid")
@@ -2064,12 +1920,7 @@ def restore_durable_backup(
                 recovery_raw = _build_backup(
                     recovery_documents,
                     recovery_private,
-                    format_version=(
-                        2
-                        if RESTORE_PROTOCOL_VERSION
-                        == LEGACY_RESTORE_PROTOCOL_VERSION
-                        else _private_backup_format(recovery_private)
-                    ),
+                    format_version=BACKUP_FORMAT_VERSION,
                 )
                 mutation_started = True
                 internal_source_name = _publish_verified_backup(
@@ -2157,8 +2008,7 @@ def restore_durable_backup(
                     raise OSError("restore recovery private unit missing")
             sanitized_source_private = _sanitized_restore_source(source_private, state, live=live_private)
             if source_private is not None and sanitized_source_private is None:
-                # Only a validated legacy recovery tree reaches this case.
-                sanitized_source_private = sanitize_owner_auth_restore_unit(source_private, legacy=True)
+                raise ValueError("restore sanitization missing")
             if sanitized_source_private is not None:
                 # Sanitize only after the exact backup's unsanitized identity
                 # has bound the preview and any resumable restore receipt.

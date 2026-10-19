@@ -17,16 +17,11 @@ from unittest.mock import patch
 import zipfile
 
 import data_backup_restore
-from agent_registry_migration import (
-    confirm_agent_registry_migration,
-    preview_agent_registry_migration,
-)
 import agent_console_attachments
 import data_layout
 import data_schema
 import json_store
 import mentat_db
-import private_console_migration
 import private_console_unit
 import run_repository
 from agent_registry import AgentRegistry
@@ -39,12 +34,9 @@ from agent_console_attachments import (
     resolve_blob_path,
 )
 from agent_runtime import AgentEvent, AgentEventType
-from agent_run_history import save_run_summaries
 from conversation_repository import ConversationRepository
-from private_console_migration import migrate_private_console, preview_private_console_migration
 from private_console_unit import (
     capture_private_console_unit,
-    standalone_agent_registry_raw,
 )
 from private_state import history_path, private_state_lock
 from mentat_db import SCHEMA_VERSION as DATABASE_SCHEMA_VERSION, MentatDatabaseError, connect
@@ -59,7 +51,6 @@ from run_repository import (
     runtime_binding_digest,
     save_authoritative_run_summaries,
 )
-from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from runtime_config import AppConfig, prepare_data_root_for_startup
 from task_repository import TaskRepository, TaskSourceSnapshot
 from vercel_connections import (
@@ -74,283 +65,46 @@ from vercel_connections import (
 THREAD_TIMEOUT_SECONDS = 15
 
 
+def initialize_current_run_store(root: Path) -> None:
+    connection = connect(root)
+    try:
+        tasks, runs = TaskRepository(connection), RunRepository(connection)
+        with connection:
+            if tasks.authority_receipt() is None:
+                connection.execute("BEGIN IMMEDIATE")
+                tasks.claim_authority(TaskSourceSnapshot(b"[]", (), hashlib.sha256(b"[]").hexdigest(), (0, 0, 0, 0)))
+            if runs.authority_receipt() is None:
+                runs.claim_authority(source_sha256=hashlib.sha256(b"[]").hexdigest(), source_run_count=0)
+    finally:
+        connection.close()
+
+
+def save_current_run_summaries(root: Path, runs: list[dict]) -> None:
+    initialize_current_run_store(root)
+    save_authoritative_run_summaries(root, runs)
+
+
 class PrivateConsoleStateTests(unittest.TestCase):
     def make_current(self, base: Path, name: str, marker: str) -> Path:
-        seeds = base / f"{name}-seeds"
-        target = base / name
-        for root, value in ((seeds, "seed"), (target, marker)):
-            root.mkdir()
-            for filename in data_layout.SEED_FILE_NAMES:
-                payload = {"theme": "midnight"} if filename == "dashboard.json" else []
-                if filename == "tasks.json":
-                    payload = [{"id": f"task-{value}"}]
-                path = root / filename
-                path.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
-                if os.name == "posix":
-                    path.chmod(0o600)
-            for directory in data_layout.DATA_ROOT_DIRECTORY_NAMES:
-                (root / directory).mkdir()
-                if os.name == "posix":
-                    (root / directory).chmod(0o700)
-        preview = data_schema.preview_schema_migration(seeds, target, home=base / "home")
-        result = data_schema.migrate_data_schema(
-            seeds,
-            target,
-            confirmation_token=preview.confirmation_token or "",
-            home=base / "home",
-        )
-        self.assertEqual(result.status, "migrated")
+        helper = __import__("tests.test_data_backup_restore", fromlist=["DataBackupRestoreTests"]).DataBackupRestoreTests()
+        _seeds, target = helper.make_current(base, name, marker)
         return target
 
-    def schema_four_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 4)
-
-    def schema_six_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 6)
-
-    def schema_seven_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 7)
-
-    def schema_eight_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 8)
-
-    def schema_ten_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 10)
-
-    def schema_twelve_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 12)
-
-    def schema_thirteen_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        return self.rebuild_schema_unit(unit, 13)
-
-    def rebuild_schema_unit(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-        schema_version: int,
-    ) -> private_console_unit.PrivateConsoleUnit:
-        """Build a genuine historical schema instead of relabeling the current one."""
-
-        registry_raw = (
-            standalone_agent_registry_raw(unit) if schema_version < 8 else None
-        )
-        tables = (
-            "blobs",
-            "attachments",
-            "run_attachments",
-            "task_artifacts",
-            "hermes_webhook_deliveries",
-        )
-        if schema_version >= 5:
-            tables += (
-                "mentat_tasks",
-                "mentat_task_tags",
-                "mentat_task_dependencies",
-            )
-        if schema_version >= 6:
-            tables += ("mentat_task_store_state",)
-        if schema_version >= 7:
-            tables += (
-                "mentat_run_store_state",
-                "mentat_runs",
-                "mentat_agent_events",
-                "mentat_dispatch_reservations",
-                "mentat_task_dispatch_heads",
-            )
-        if schema_version >= 8:
-            tables += (
-                "agent_runtime_configs",
-                "mentat_agents",
-                "mentat_agent_registry_state",
-            )
-        if schema_version >= 9:
-            tables += ("provider_connections",)
-        if schema_version >= 10:
-            tables += (
-                "mentat_conversations",
-                "mentat_conversation_messages",
-                "mentat_conversation_turns",
-            )
-        if schema_version >= 11:
-            tables += ("mentat_conversation_submission_results",)
-
-        with TemporaryDirectory() as temporary:
-            source_path = Path(temporary) / "source.sqlite3"
-            source_path.write_bytes(unit.database_raw)
-            target_path = Path(temporary) / "mentat.sqlite3"
-            private_console_unit._initialize_database(
-                target_path,
-                schema_version=schema_version,
-            )
-            source = sqlite3.connect(source_path)
-            target = sqlite3.connect(target_path)
-            source.row_factory = sqlite3.Row
-            target.row_factory = sqlite3.Row
-            try:
-                for table in tables:
-                    source_columns = {
-                        str(row[1])
-                        for row in source.execute(f"PRAGMA table_info({table})")
-                    }
-                    target_columns = [
-                        str(row[1])
-                        for row in target.execute(f"PRAGMA table_info({table})")
-                    ]
-                    columns = [
-                        column
-                        for column in target_columns
-                        if column in source_columns
-                    ]
-                    if not columns:
-                        continue
-                    quoted = ", ".join(f'"{column}"' for column in columns)
-                    rows = source.execute(
-                        f"SELECT {quoted} FROM {table}"
-                    ).fetchall()
-                    placeholders = ", ".join("?" for _ in columns)
-                    insert_verb = (
-                        "INSERT OR REPLACE"
-                        if table == "mentat_agent_registry_state"
-                        else "INSERT"
-                    )
-                    target.executemany(
-                        f"{insert_verb} INTO {table} ({quoted}) VALUES ({placeholders})",
-                        [tuple(row) for row in rows],
-                    )
-                target.commit()
-                if schema_version in {12, 13}:
-                    # Released backup captures normalize the standalone SQLite
-                    # snapshot through the same filtered VACUUM boundary.
-                    # Keep this historical fixture storage-stable across its
-                    # materialize-and-recapture restore verification.
-                    target.execute("VACUUM")
-            finally:
-                target.close()
-                source.close()
-            return private_console_unit.PrivateConsoleUnit(
-                history_raw=unit.history_raw,
-                database_raw=target_path.read_bytes(),
-                registry_database_raw=registry_raw,
-                blobs=unit.blobs,
-            )
-
-    def released_private_unit_digest(
-        self,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> str:
-        """Reproduce the standalone-registry digest shipped before schema 8."""
-
-        private_console_unit.validate_private_console_unit(unit)
-        self.assertIsNotNone(unit.registry_database_raw)
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            database = base / "mentat.sqlite3"
-            registry = base / "agent-registry.sqlite3"
-            database.write_bytes(unit.database_raw)
-            registry.write_bytes(unit.registry_database_raw or b"")
-            database_connection = sqlite3.connect(database)
-            registry_connection = sqlite3.connect(registry)
-            try:
-                logical_database = "\n".join(
-                    database_connection.iterdump()
-                ).encode("utf-8")
-                logical_registry = "\n".join(
-                    registry_connection.iterdump()
-                ).encode("utf-8")
-            finally:
-                registry_connection.close()
-                database_connection.close()
-        identity = {
-            "history": hashlib.sha256(unit.history_raw).hexdigest(),
-            "database": hashlib.sha256(logical_database).hexdigest(),
-            "agent_registry": hashlib.sha256(logical_registry).hexdigest(),
-            "blobs": [
-                (blob.storage_key, blob.sha256, len(blob.raw))
-                for blob in unit.blobs
-            ],
-        }
-        return hashlib.sha256(
-            private_console_unit._canonical_json(identity)
-        ).hexdigest()
-
-    def install_legacy_runtime_unit(
-        self,
-        root: Path,
-        unit: private_console_unit.PrivateConsoleUnit,
-    ) -> None:
-        console = root / "private" / "console"
-        if console.exists():
-            shutil.rmtree(console)
-        runtime = root / "runtime"
-        runtime.mkdir(parents=True, exist_ok=True)
-        if os.name == "posix":
-            runtime.chmod(0o700)
-        for path, raw in (
-            (runtime / "agent-console-runs.json", unit.history_raw),
-            (runtime / "mentat.sqlite3", unit.database_raw),
-        ):
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-        blob_root = runtime / "blobs" / "sha256"
-        blob_root.mkdir(parents=True, exist_ok=True)
-        if os.name == "posix":
-            (runtime / "blobs").chmod(0o700)
-            blob_root.chmod(0o700)
-        for blob in unit.blobs:
-            path = blob_root / blob.storage_key
-            path.parent.mkdir(mode=0o700, exist_ok=True)
-            path.write_bytes(blob.raw)
-            if os.name == "posix":
-                path.parent.chmod(0o700)
-                path.chmod(0o600)
 
     def add_retained_attachment(self, root: Path, run_id: str, content: bytes) -> dict:
         attachment = create_attachment(root, original_name="note.txt", content=content)
         bind_run_attachment(root, attachment["id"], run_id)
-        save_run_summaries(
-            history_path(root),
+        save_current_run_summaries(
+            root,
             [{
                 "id": run_id,
                 "status": "completed",
                 "created_at": "2026-07-18T00:00:00+00:00",
                 "attachments": [attachment],
             }],
-            data_root=root,
         )
         return attachment
 
-    def move_console_to_legacy_runtime(self, root: Path) -> None:
-        runtime = root / "runtime"
-        runtime.mkdir(exist_ok=True)
-        console = root / "private" / "console"
-        for name in ("agent-console-runs.json", "mentat.sqlite3", "blobs"):
-            shutil.move(os.fspath(console / name), os.fspath(runtime / name))
-        for suffix in ("-wal", "-shm"):
-            path = console / f"mentat.sqlite3{suffix}"
-            if path.exists():
-                shutil.move(os.fspath(path), os.fspath(runtime / path.name))
-        console.rmdir()
 
     def config(self, target: Path) -> AppConfig:
         return AppConfig(
@@ -392,341 +146,9 @@ class PrivateConsoleStateTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), b"SQLite\n\x1a\x00")
             self.assertTrue(observed_flags[0] & synthetic_binary)
 
-    def test_previewed_private_migration_preserves_source_and_is_idempotent(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            attachment = self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            before = {
-                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
-                for path in (root / "runtime").rglob("*")
-                if path.is_file()
-            }
-            preview = preview_private_console_migration(root)
-            self.assertEqual(preview.status, "ready")
-            after = {
-                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
-                for path in (root / "runtime").rglob("*")
-                if path.is_file()
-            }
-            self.assertEqual(after, before)
-            result = migrate_private_console(root, confirmation_token=preview.confirmation_token or "")
-            self.assertEqual(result.status, "migrated")
-            self.assertEqual(resolve_blob_path(root, attachment["id"]).read_bytes(), b"legacy")
-            self.assertTrue((root / "runtime" / "agent-console-runs.json").is_file())
-            self.assertEqual(preview_private_console_migration(root).status, "already_migrated")
-
-    def test_bridge_recovery_does_not_create_destination_before_private_migration(self):
-        from mentat import local_bridge
-        import server
-
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            before = {
-                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
-                for path in (root / "runtime").rglob("*")
-                if path.is_file()
-            }
-            self.assertEqual(preview_private_console_migration(root).status, "ready")
-
-            with patch.object(server, "DATA_DIR", root), self.assertRaises(
-                (MentatDatabaseError, run_repository.RunRepositoryError)
-            ):
-                local_bridge._recover_bridge_runs_before_ready()
-
-            self.assertFalse((root / "private" / "console").exists())
-            after = {
-                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
-                for path in (root / "runtime").rglob("*")
-                if path.is_file()
-            }
-            self.assertEqual(after, before)
-            self.assertEqual(preview_private_console_migration(root).status, "ready")
-
-    def test_changed_legacy_source_invalidates_migration_confirmation(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            (root / "runtime" / "agent-console-runs.json").write_text(
-                json.dumps({"schema_version": 3, "runs": []}, sort_keys=True, separators=(",", ":")) + "\n"
-            )
-            result = migrate_private_console(root, confirmation_token=preview.confirmation_token or "")
-            self.assertEqual(result.status, "blocked")
-            self.assertFalse((root / "private" / "console").exists())
-
-    def test_private_migration_creates_missing_root_and_rebuilds_partial_stage(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            (root / "private").rmdir()
-            preview = preview_private_console_migration(root)
-
-            def leave_partial(_root, _unit, destination):
-                destination.mkdir(parents=True, mode=0o700)
-                partial = destination / "agent-console-runs.json"
-                partial.write_text("{}\n")
-                if os.name == "posix":
-                    destination.chmod(0o700)
-                    partial.chmod(0o600)
-                raise OSError("injected interruption")
-
-            with patch.object(
-                private_console_migration,
-                "materialize_private_console_unit",
-                side_effect=leave_partial,
-            ):
-                first = migrate_private_console(
-                    root, confirmation_token=preview.confirmation_token or ""
-                )
-            self.assertEqual(first.status, "partial_failure")
-            resumed_preview = preview_private_console_migration(root)
-            self.assertEqual(resumed_preview.status, "resume_required")
-            resumed = migrate_private_console(
-                root, confirmation_token=resumed_preview.confirmation_token or ""
-            )
-            self.assertEqual(resumed.status, "resumed")
-
-    def test_private_migration_receipt_crash_resumes_without_recopy(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            real_unlink = Path.unlink
-
-            def interrupt_reservation(path, *args, **kwargs):
-                if path.name.endswith("reservation.json"):
-                    raise OSError("injected interruption")
-                return real_unlink(path, *args, **kwargs)
-
-            with patch.object(Path, "unlink", interrupt_reservation):
-                first = migrate_private_console(
-                    root, confirmation_token=preview.confirmation_token or ""
-                )
-            self.assertEqual(first.status, "partial_failure")
-            resumed_preview = preview_private_console_migration(root)
-            self.assertEqual(resumed_preview.status, "resume_required")
-            resumed = migrate_private_console(
-                root, confirmation_token=resumed_preview.confirmation_token or ""
-            )
-            self.assertEqual(resumed.status, "resumed")
-
-    def test_schema_seven_private_migration_receipt_survives_digest_upgrade(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            legacy_unit = self.schema_seven_unit(
-                capture_private_console_unit(root)
-            )
-            self.assertEqual(
-                private_console_unit.private_console_unit_digest(legacy_unit),
-                self.released_private_unit_digest(legacy_unit),
-            )
-            self.install_legacy_runtime_unit(root, legacy_unit)
-            preview = preview_private_console_migration(root)
-            real_unlink = Path.unlink
-
-            def interrupt_reservation(path, *args, **kwargs):
-                if path.name.endswith("reservation.json"):
-                    raise OSError("injected interruption")
-                return real_unlink(path, *args, **kwargs)
-
-            with (
-                patch.object(
-                    private_console_migration,
-                    "private_console_unit_digest",
-                    side_effect=self.released_private_unit_digest,
-                ),
-                patch.object(Path, "unlink", interrupt_reservation),
-            ):
-                first = migrate_private_console(
-                    root,
-                    confirmation_token=preview.confirmation_token or "",
-                )
-            self.assertEqual(first.status, "partial_failure")
-            resumed_preview = preview_private_console_migration(root)
-            self.assertEqual(resumed_preview.status, "resume_required")
-            resumed = migrate_private_console(
-                root,
-                confirmation_token=resumed_preview.confirmation_token or "",
-            )
-            self.assertEqual(resumed.status, "resumed")
-
-    def test_private_migration_receipt_crash_rejects_changed_destination(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            real_unlink = Path.unlink
-
-            def interrupt_reservation(path, *args, **kwargs):
-                if path.name.endswith("reservation.json"):
-                    raise OSError("injected interruption")
-                return real_unlink(path, *args, **kwargs)
-
-            with patch.object(Path, "unlink", interrupt_reservation):
-                first = migrate_private_console(
-                    root, confirmation_token=preview.confirmation_token or ""
-                )
-            self.assertEqual(first.status, "partial_failure")
-            database = root / "private" / "console" / "mentat.sqlite3"
-            connection = sqlite3.connect(database)
-            try:
-                connection.execute(
-                    "UPDATE schema_migrations SET applied_at = applied_at + 1 WHERE version = 1"
-                )
-                connection.commit()
-            finally:
-                connection.close()
-            changed = preview_private_console_migration(root)
-            self.assertEqual(changed.status, "blocked")
-            self.assertEqual(changed.issues, ("private_migration_destination_changed",))
-
-    def test_private_migration_never_promotes_extra_stage_entries(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            real_materialize = private_console_migration.materialize_private_console_unit
-
-            def leave_extra(data_root, unit, destination):
-                real_materialize(data_root, unit, destination)
-                (destination / "unknown.private").write_bytes(b"unknown")
-                raise OSError("injected interruption")
-
-            with patch.object(
-                private_console_migration,
-                "materialize_private_console_unit",
-                side_effect=leave_extra,
-            ):
-                first = migrate_private_console(
-                    root, confirmation_token=preview.confirmation_token or ""
-                )
-            self.assertEqual(first.status, "partial_failure")
-            resumed_preview = preview_private_console_migration(root)
-            resumed = migrate_private_console(
-                root, confirmation_token=resumed_preview.confirmation_token or ""
-            )
-            self.assertEqual(resumed.status, "partial_failure")
-            self.assertFalse((root / "private" / "console").exists())
-            self.assertTrue(any((root / "private").glob(".console-migration-*/unknown.private")))
 
     @unittest.skipIf(os.name == "nt", "POSIX nested-symlink staging test")
-    def test_private_migration_never_promotes_nested_stage_symlink(self):
-        with TemporaryDirectory() as temporary, TemporaryDirectory() as outside:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            real_materialize = private_console_migration.materialize_private_console_unit
 
-            def leave_symlink(data_root, unit, destination):
-                real_materialize(data_root, unit, destination)
-                (destination / "blobs" / "sha256" / "linked").symlink_to(
-                    outside, target_is_directory=True
-                )
-                raise OSError("injected interruption")
-
-            with patch.object(
-                private_console_migration,
-                "materialize_private_console_unit",
-                side_effect=leave_symlink,
-            ):
-                first = migrate_private_console(
-                    root, confirmation_token=preview.confirmation_token or ""
-                )
-            self.assertEqual(first.status, "partial_failure")
-            resumed_preview = preview_private_console_migration(root)
-            resumed = migrate_private_console(
-                root, confirmation_token=resumed_preview.confirmation_token or ""
-            )
-            self.assertEqual(resumed.status, "partial_failure")
-            self.assertFalse((root / "private" / "console").exists())
-
-    def test_private_migration_revalidates_inventory_after_rename(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            real_rename = private_console_migration.os.rename
-            injected = False
-
-            def inject_inside_rename(source, destination):
-                nonlocal injected
-                source_path = Path(source)
-                if not injected and source_path.name.startswith(".console-migration-"):
-                    injected = True
-                    extra = source_path / "injected-after-validation.private"
-                    extra.write_bytes(b"unknown")
-                    if os.name == "posix":
-                        extra.chmod(0o600)
-                return real_rename(source, destination)
-
-            with patch.object(
-                private_console_migration.os, "rename", side_effect=inject_inside_rename
-            ):
-                result = migrate_private_console(
-                    root, confirmation_token=preview.confirmation_token or ""
-                )
-            self.assertEqual(result.status, "partial_failure")
-            self.assertFalse((root / "private" / "console").exists())
-            self.assertTrue(any(
-                (root / "private").glob(
-                    ".console-migration-*/injected-after-validation.private"
-                )
-            ))
-
-    def test_already_migrated_summary_uses_current_canonical_counts(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary) / "data"
-            legacy = self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            preview = preview_private_console_migration(root)
-            result = migrate_private_console(
-                root, confirmation_token=preview.confirmation_token or ""
-            )
-            self.assertEqual(result.status, "migrated")
-            current = create_attachment(root, original_name="current.txt", content=b"current")
-            bind_run_attachment(root, current["id"], "run_current")
-            save_run_summaries(
-                history_path(root),
-                [
-                    {
-                        "id": "run_legacy",
-                        "status": "completed",
-                        "created_at": "2026-07-18T00:00:00+00:00",
-                        "attachments": [legacy],
-                    },
-                    {
-                        "id": "run_current",
-                        "status": "completed",
-                        "created_at": "2026-07-18T01:00:00+00:00",
-                        "attachments": [current],
-                    },
-                ],
-                data_root=root,
-            )
-            completed = preview_private_console_migration(root)
-            self.assertEqual(completed.status, "already_migrated")
-            self.assertEqual(completed.run_count, 2)
-            self.assertEqual(completed.blob_count, 2)
-
-    def test_startup_refuses_legacy_private_state_until_migrated(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            root = self.make_current(base, "target", "target")
-            self.add_retained_attachment(root, "run_legacy", b"legacy")
-            self.move_console_to_legacy_runtime(root)
-            error = prepare_data_root_for_startup(self.config(root))
-            self.assertIn("private_console_migration_required", error or "")
 
     def test_backup_filters_unretained_rows_and_includes_only_referenced_blob(self):
         with TemporaryDirectory() as temporary:
@@ -895,7 +317,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 restored_authority.authenticate_session(renewed.cookie_value)
             )
 
-    def test_schema_nine_backup_restores_vercel_connection_and_agent_together(self):
+    def test_current_backup_restores_vercel_connection_and_agent_together(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
             source = self.make_current(base, "source", "source")
@@ -921,7 +343,6 @@ class PrivateConsoleStateTests(unittest.TestCase):
 
             captured = capture_private_console_unit(source)
             self.assertEqual(captured.agent_count, 1)
-            self.assertIsNone(captured.registry_database_raw)
             backup = data_backup_restore.create_durable_backup(source)
             self.assertEqual(backup.status, "created")
 
@@ -948,251 +369,6 @@ class PrivateConsoleStateTests(unittest.TestCase):
             ).list_agents()
             self.assertEqual([agent.id for agent in agents], [expected_agent.id])
 
-    def test_released_schema_eight_format_four_backup_restores_and_upgrades(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-eight", "source")
-            AgentRegistry(source, supported_runtime_types={"hermes"}).create_agent(
-                agent_id="agent_schema_eight",
-                name="Schema Eight Agent",
-                runtime_config_id="runtime_config_schema_eight",
-                runtime_type="hermes",
-                runtime_agent_ref="schema-eight-profile",
-                capabilities=(),
-            )
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_eight = self.schema_eight_unit(
-                capture_private_console_unit(source)
-            )
-            private_console_unit.validate_private_console_unit(schema_eight)
-            raw = data_backup_restore._build_backup(
-                documents,
-                schema_eight,
-                format_version=4,
-            )
-            path = base / data_backup_restore._backup_name(
-                documents,
-                schema_eight,
-                format_version=4,
-            )
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-
-            target = self.make_current(base, "target-eight", "target")
-            preview = data_backup_restore.preview_durable_restore(target, path)
-            restored = data_backup_restore.restore_durable_backup(
-                target,
-                path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-            self.assertEqual(restored.status, "restored")
-            database = connect(target)
-            try:
-                self.assertEqual(
-                    database.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0],
-                    DATABASE_SCHEMA_VERSION,
-                )
-                self.assertEqual(
-                    database.execute(
-                        "SELECT COUNT(*) FROM provider_connections"
-                    ).fetchone()[0],
-                    0,
-                )
-            finally:
-                database.close()
-            agents = AgentRegistry(
-                target,
-                supported_runtime_types=("codex", "hermes", "vercel"),
-            ).list_agents()
-            self.assertEqual([agent.id for agent in agents], ["agent_schema_eight"])
-
-    def test_released_schema_ten_format_four_backup_restores_and_upgrades(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-ten", "source")
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_ten = self.schema_ten_unit(
-                capture_private_console_unit(source)
-            )
-            private_console_unit.validate_private_console_unit(schema_ten)
-            raw = data_backup_restore._build_backup(
-                documents,
-                schema_ten,
-                format_version=4,
-            )
-            path = base / data_backup_restore._backup_name(
-                documents,
-                schema_ten,
-                format_version=4,
-            )
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-
-            target = self.make_current(base, "target-ten", "target")
-            preview = data_backup_restore.preview_durable_restore(target, path)
-            restored = data_backup_restore.restore_durable_backup(
-                target,
-                path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-
-            self.assertEqual(restored.status, "restored")
-            database = connect(target)
-            try:
-                self.assertEqual(
-                    database.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0],
-                    DATABASE_SCHEMA_VERSION,
-                )
-                self.assertEqual(
-                    database.execute(
-                        "SELECT COUNT(*) FROM mentat_conversation_submission_results"
-                    ).fetchone()[0],
-                    0,
-                )
-            finally:
-                database.close()
-
-    def test_released_schema_twelve_format_four_backup_restores_and_upgrades(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-twelve", "source")
-            AgentRegistry(
-                source,
-                supported_runtime_types=("hermes",),
-            ).create_agent(
-                agent_id="agent_schema_twelve",
-                name="Schema Twelve Agent",
-                runtime_config_id="config_schema_twelve",
-                runtime_type="hermes",
-                runtime_agent_ref="profile-schema-twelve",
-                capabilities=("run.start", "run.message"),
-            )
-            conversation = ConversationRepository(
-                source,
-                supported_runtime_types=("hermes",),
-            ).create(agent_id="agent_schema_twelve").conversation
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_twelve = self.schema_twelve_unit(
-                capture_private_console_unit(source)
-            )
-            private_console_unit.validate_private_console_unit(schema_twelve)
-            raw = data_backup_restore._build_backup(
-                documents,
-                schema_twelve,
-                format_version=4,
-            )
-            path = base / data_backup_restore._backup_name(
-                documents,
-                schema_twelve,
-                format_version=4,
-            )
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-
-            target = self.make_current(base, "target-twelve", "target")
-            preview = data_backup_restore.preview_durable_restore(target, path)
-            restored = data_backup_restore.restore_durable_backup(
-                target,
-                path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-
-            self.assertEqual(
-                restored.status,
-                "restored",
-                restored.public_summary(),
-            )
-            database = connect(target)
-            try:
-                self.assertEqual(
-                    database.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0],
-                    DATABASE_SCHEMA_VERSION,
-                )
-                columns = {
-                    str(row[1])
-                    for row in database.execute("PRAGMA table_info(mentat_runs)")
-                }
-                self.assertIn("terminal_finalized", columns)
-                restored_conversation = database.execute(
-                    "SELECT agent_id FROM mentat_conversations WHERE id = ?",
-                    (conversation.id,),
-                ).fetchone()
-                self.assertIsNotNone(restored_conversation)
-                self.assertEqual(
-                    restored_conversation[0],
-                    "agent_schema_twelve",
-                )
-            finally:
-                database.close()
-
-    def test_released_schema_thirteen_format_four_backup_restores_and_upgrades(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-thirteen", "source")
-            AgentRegistry(
-                source,
-                supported_runtime_types=("hermes",),
-            ).create_agent(
-                agent_id="agent_schema_thirteen",
-                name="Schema Thirteen Agent",
-                runtime_config_id="config_schema_thirteen",
-                runtime_type="hermes",
-                runtime_agent_ref="profile-schema-thirteen",
-                capabilities=("run.start", "run.message"),
-            )
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_thirteen = self.schema_thirteen_unit(
-                capture_private_console_unit(source)
-            )
-            private_console_unit.validate_private_console_unit(schema_thirteen)
-            raw = data_backup_restore._build_backup(
-                documents,
-                schema_thirteen,
-                format_version=4,
-            )
-            path = base / data_backup_restore._backup_name(
-                documents,
-                schema_thirteen,
-                format_version=4,
-            )
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-
-            target = self.make_current(base, "target-thirteen", "target")
-            preview = data_backup_restore.preview_durable_restore(target, path)
-            restored = data_backup_restore.restore_durable_backup(
-                target,
-                path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-
-            self.assertEqual(restored.status, "restored", restored.public_summary())
-            database = connect(target)
-            try:
-                self.assertEqual(
-                    database.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0],
-                    DATABASE_SCHEMA_VERSION,
-                )
-                self.assertEqual(
-                    database.execute(
-                        "SELECT COUNT(*) FROM mentat_conversation_run_attempts"
-                    ).fetchone()[0],
-                    0,
-                )
-            finally:
-                database.close()
 
     def test_missing_referenced_blob_blocks_backup(self):
         with TemporaryDirectory() as temporary:
@@ -1234,8 +410,8 @@ class PrivateConsoleStateTests(unittest.TestCase):
             root = Path(temporary) / "data"
             connection = connect(root)
             connection.close()
-            save_run_summaries(
-                history_path(root),
+            save_current_run_summaries(
+                root,
                 [{
                     "id": "run_active",
                     "status": "running",
@@ -1243,8 +419,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                     "updated_at": "2026-07-18T01:01:00+00:00",
                     "started_at": "2026-07-18T01:00:10+00:00",
                 }],
-                data_root=root,
-            )
+                )
             unit = capture_private_console_unit(root)
             run = json.loads(unit.history_raw)["runs"][0]
             self.assertEqual(run["status"], "running")
@@ -1252,13 +427,13 @@ class PrivateConsoleStateTests(unittest.TestCase):
             self.assertEqual(run["started_at"], "2026-07-18T01:00:10+00:00")
             self.assertIsNone(run["completed_at"])
 
-    def test_schema_seven_backup_derives_runs_from_sqlite_and_rejects_event_corruption(self):
+    def test_current_backup_derives_runs_from_sqlite_and_rejects_event_corruption(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
             connection = connect(root)
             connection.close()
-            save_run_summaries(
-                history_path(root),
+            save_current_run_summaries(
+                root,
                 [{
                     "id": "run_sqlite_backup",
                     "status": "completed",
@@ -1266,9 +441,8 @@ class PrivateConsoleStateTests(unittest.TestCase):
                     "updated_at": "2026-08-18T01:01:00+00:00",
                     "completed_at": "2026-08-18T01:01:00+00:00",
                 }],
-                data_root=root,
-            )
-            ensure_run_sqlite_authority(root, history_path(root))
+                )
+            initialize_current_run_store(root)
             connection = connect(root)
             try:
                 RunRepository(connection).append_event(
@@ -1325,7 +499,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             corrupted = private_console_unit.PrivateConsoleUnit(
                 history_raw=unit.history_raw,
                 database_raw=database.read_bytes(),
-                registry_database_raw=unit.registry_database_raw,
+
                 blobs=unit.blobs,
             )
             with self.assertRaisesRegex(
@@ -1334,10 +508,10 @@ class PrivateConsoleStateTests(unittest.TestCase):
             ):
                 private_console_unit.validate_private_console_unit(corrupted)
 
-    def test_schema_seven_backup_bounds_legacy_projection_without_dropping_canonical_runs(self):
+    def test_current_backup_bounds_summary_projection_without_dropping_canonical_runs(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
-            ensure_run_sqlite_authority(root, history_path(root))
+            initialize_current_run_store(root)
             runs = []
             for run_number in range(120):
                 run_id = f"run_backup_bound_{run_number:03d}"
@@ -1380,7 +554,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
         self.assertEqual(len(projected["runs"]), 120)
         self.assertTrue(all(item["events"] == [] for item in projected["runs"]))
 
-    def test_schema_seven_capture_ignores_malformed_stale_legacy_history(self):
+    def test_current_capture_ignores_malformed_stale_history(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = self.make_current(base, "source", "source")
@@ -1401,7 +575,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.commit()
             finally:
                 connection.close()
-            ensure_run_sqlite_authority(root, history_path(root))
+            initialize_current_run_store(root)
             stale = history_path(root)
             stale.write_text("{malformed stale history", encoding="utf-8")
             if os.name != "nt":
@@ -1419,7 +593,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             (root / "tasks.json").write_text("[]\n", encoding="utf-8")
             if os.name == "posix":
                 (root / "tasks.json").chmod(0o600)
-            ensure_run_sqlite_authority(root, history_path(root))
+            initialize_current_run_store(root)
             connection = connect(root)
             try:
                 repository = RunRepository(connection)
@@ -1519,7 +693,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             corrupted_unit = private_console_unit.PrivateConsoleUnit(
                 history_raw=unit.history_raw,
                 database_raw=corrupted_path.read_bytes(),
-                registry_database_raw=unit.registry_database_raw,
+
                 blobs=unit.blobs,
             )
             with self.assertRaisesRegex(
@@ -1569,7 +743,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             capability_unit = private_console_unit.PrivateConsoleUnit(
                 history_raw=unit.history_raw,
                 database_raw=capability_path.read_bytes(),
-                registry_database_raw=unit.registry_database_raw,
+
                 blobs=unit.blobs,
             )
             with self.assertRaisesRegex(
@@ -1587,7 +761,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
     def test_referenced_blob_count_boundary_remains_backup_capable(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
-            ensure_run_sqlite_authority(root, history_path(root))
+            initialize_current_run_store(root)
             runs = [
                 {
                     "id": f"run_blob_count_{index:03d}",
@@ -1621,7 +795,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             agent_console_attachments, "MAX_RETAINED_BLOB_BYTES", 10
         ), patch.object(private_console_unit, "MAX_RETAINED_BLOB_BYTES", 10):
             root = Path(temporary) / "data"
-            ensure_run_sqlite_authority(root, history_path(root))
+            initialize_current_run_store(root)
             blob_count = 2
             runs = [
                 {
@@ -1649,459 +823,6 @@ class PrivateConsoleStateTests(unittest.TestCase):
 
         self.assertEqual(sum(len(blob.raw) for blob in unit.blobs), 10)
 
-    def test_v2_restore_replaces_private_unit_and_v1_preserves_it(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source", "source")
-            source_attachment = self.add_retained_attachment(source, "run_source", b"source")
-            backup = data_backup_restore.create_durable_backup(source)
-            backup_path = source / "backups" / str(backup.backup_name)
-            target = self.make_current(base, "target", "target")
-            target_attachment = self.add_retained_attachment(target, "run_target", b"target")
-            preview = data_backup_restore.preview_durable_restore(target, backup_path)
-            private_item = next(
-                item for item in preview.items if item["name"] == "private_console"
-            )
-            self.assertEqual(private_item["action"], "replace")
-            restored = data_backup_restore.restore_durable_backup(
-                target, backup_path, confirmation_token=preview.confirmation_token or ""
-            )
-            self.assertEqual(restored.status, "restored")
-            self.assertIn("private_console", {item["name"] for item in restored.items})
-            self.assertEqual(resolve_blob_path(target, source_attachment["id"]).read_bytes(), b"source")
-            with self.assertRaises(AttachmentError):
-                resolve_blob_path(target, target_attachment["id"])
-
-            legacy_target = self.make_current(base, "legacy-target", "legacy")
-            preserved = self.add_retained_attachment(legacy_target, "run_preserved", b"preserved")
-            documents = data_backup_restore._load_live_documents(source, None)
-            legacy_raw = data_backup_restore._build_backup(documents, format_version=1)
-            legacy_name = data_backup_restore._backup_name(documents, format_version=1)
-            legacy_path = base / legacy_name
-            legacy_path.write_bytes(legacy_raw)
-            if os.name == "posix":
-                legacy_path.chmod(0o600)
-            legacy_preview = data_backup_restore.preview_durable_restore(legacy_target, legacy_path)
-            legacy_result = data_backup_restore.restore_durable_backup(
-                legacy_target, legacy_path, confirmation_token=legacy_preview.confirmation_token or ""
-            )
-            self.assertEqual(legacy_result.status, "restored")
-            self.assertEqual(resolve_blob_path(legacy_target, preserved["id"]).read_bytes(), b"preserved")
-
-    def test_pre_registry_v2_backup_restores_with_an_empty_registry(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source", "source")
-            documents = data_backup_restore._load_live_documents(source, None)
-            source_unit = self.schema_four_unit(
-                capture_private_console_unit(source)
-            )
-            v2_raw = data_backup_restore._build_backup(
-                documents,
-                source_unit,
-                format_version=2,
-            )
-            v2_name = data_backup_restore._backup_name(
-                documents,
-                source_unit,
-                format_version=2,
-            )
-            v2_path = base / v2_name
-            v2_path.write_bytes(v2_raw)
-            if os.name == "posix":
-                v2_path.chmod(0o600)
-
-            target = self.make_current(base, "target", "target")
-            AgentRegistry(target, supported_runtime_types={"hermes"}).create_agent(
-                agent_id="agent_target",
-                name="Target Agent",
-                runtime_config_id="runtime_config_target",
-                runtime_type="hermes",
-                runtime_agent_ref="target-profile",
-                capabilities=(),
-            )
-            preview = data_backup_restore.preview_durable_restore(target, v2_path)
-            self.assertEqual(preview.status, "ready")
-            private_item = next(
-                item for item in preview.items if item["name"] == "private_console"
-            )
-            self.assertEqual(private_item["agent_count"], 0)
-            self.assertEqual(private_item["target_agent_count"], 1)
-            self.assertEqual(private_item["agent_registry_action"], "clear")
-            result = data_backup_restore.restore_durable_backup(
-                target,
-                v2_path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-            self.assertEqual(result.status, "restored")
-            migration = preview_agent_registry_migration(target)
-            self.assertEqual(migration.status, "ready")
-            confirm_agent_registry_migration(
-                target,
-                migration.confirmation_token or "",
-            )
-            self.assertEqual(
-                AgentRegistry(target, supported_runtime_types={"hermes"}).list_agents(),
-                (),
-            )
-
-    def test_released_schema_four_v2_and_v3_backups_restore_and_migrate(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source", "source")
-            AgentRegistry(source, supported_runtime_types={"hermes"}).create_agent(
-                agent_id="agent_source",
-                name="Source Agent",
-                runtime_config_id="runtime_config_source",
-                runtime_type="hermes",
-                runtime_agent_ref="source-profile",
-                capabilities=(),
-            )
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_four = self.schema_four_unit(capture_private_console_unit(source))
-            self.assertEqual(schema_four.task_count, 0)
-
-            for format_version in (2, 3):
-                with self.subTest(format_version=format_version):
-                    raw = data_backup_restore._build_backup(
-                        documents,
-                        schema_four,
-                        format_version=format_version,
-                    )
-                    name = data_backup_restore._backup_name(
-                        documents,
-                        schema_four,
-                        format_version=format_version,
-                    )
-                    path = base / name
-                    path.write_bytes(raw)
-                    if os.name == "posix":
-                        path.chmod(0o600)
-                    target = self.make_current(
-                        base,
-                        f"target-{format_version}",
-                        f"target-{format_version}",
-                    )
-                    preview = data_backup_restore.preview_durable_restore(target, path)
-                    self.assertEqual(preview.status, "ready")
-                    private_item = next(
-                        item for item in preview.items if item["name"] == "private_console"
-                    )
-                    self.assertEqual(private_item["task_count"], 0)
-                    self.assertEqual(
-                        private_item["agent_count"],
-                        0 if format_version == 2 else 1,
-                    )
-                    result = data_backup_restore.restore_durable_backup(
-                        target,
-                        path,
-                        confirmation_token=preview.confirmation_token or "",
-                    )
-                    self.assertEqual(result.status, "restored")
-                    migrated = connect(target)
-                    try:
-                        self.assertEqual(
-                            migrated.execute(
-                                "SELECT MAX(version) FROM schema_migrations"
-                            ).fetchone()[0],
-                            DATABASE_SCHEMA_VERSION,
-                        )
-                    finally:
-                        migrated.close()
-                    registry_migration = preview_agent_registry_migration(target)
-                    self.assertEqual(registry_migration.status, "ready")
-                    confirm_agent_registry_migration(
-                        target,
-                        registry_migration.confirmation_token or "",
-                    )
-                    agents = AgentRegistry(
-                        target,
-                        supported_runtime_types={"hermes"},
-                    ).list_agents()
-                    self.assertEqual(
-                        [agent.id for agent in agents],
-                        [] if format_version == 2 else ["agent_source"],
-                    )
-
-    def test_schema_six_backup_restores_and_migrates_to_current_schema(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-six", "source")
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_six = self.schema_six_unit(capture_private_console_unit(source))
-            private_console_unit.validate_private_console_unit(schema_six)
-            raw = data_backup_restore._build_backup(documents, schema_six, format_version=3)
-            path = base / data_backup_restore._backup_name(
-                documents, schema_six, format_version=3
-            )
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-            target = self.make_current(base, "target-six", "target")
-            preview = data_backup_restore.preview_durable_restore(target, path)
-            result = data_backup_restore.restore_durable_backup(
-                target,
-                path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-            self.assertEqual(result.status, "restored")
-            migrated = connect(target)
-            try:
-                self.assertEqual(
-                    migrated.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0],
-                    DATABASE_SCHEMA_VERSION,
-                )
-            finally:
-                migrated.close()
-
-    def test_released_schema_seven_v3_backup_restores_and_converges_agents(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-seven", "source")
-            AgentRegistry(source, supported_runtime_types={"hermes"}).create_agent(
-                agent_id="agent_source",
-                name="Source Agent",
-                runtime_config_id="runtime_config_source",
-                runtime_type="hermes",
-                runtime_agent_ref="source-profile",
-                capabilities=(),
-            )
-            documents = data_backup_restore._load_live_documents(source, None)
-            schema_seven = self.schema_seven_unit(
-                capture_private_console_unit(source)
-            )
-            raw = data_backup_restore._build_backup(
-                documents,
-                schema_seven,
-                format_version=3,
-            )
-            path = base / data_backup_restore._backup_name(
-                documents,
-                schema_seven,
-                format_version=3,
-            )
-            path.write_bytes(raw)
-            if os.name == "posix":
-                path.chmod(0o600)
-
-            target = self.make_current(base, "target-seven", "target")
-            preview = data_backup_restore.preview_durable_restore(target, path)
-            self.assertEqual(preview.status, "ready")
-            restored = data_backup_restore.restore_durable_backup(
-                target,
-                path,
-                confirmation_token=preview.confirmation_token or "",
-            )
-            self.assertEqual(restored.status, "restored")
-            database = sqlite3.connect(
-                target / "private" / "console" / "mentat.sqlite3"
-            )
-            try:
-                self.assertEqual(
-                    database.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0],
-                    7,
-                )
-            finally:
-                database.close()
-            migration = preview_agent_registry_migration(target)
-            self.assertEqual(migration.status, "ready")
-            confirm_agent_registry_migration(
-                target,
-                migration.confirmation_token or "",
-            )
-            self.assertEqual(
-                [
-                    agent.id
-                    for agent in AgentRegistry(
-                        target,
-                        supported_runtime_types={"hermes"},
-                    ).list_agents()
-                ],
-                ["agent_source"],
-            )
-
-    def test_upgrade_resumes_genuine_protocol_3_schema_seven_restore(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source-p3", "source")
-            AgentRegistry(source, supported_runtime_types={"hermes"}).create_agent(
-                agent_id="agent_source",
-                name="Source Agent",
-                runtime_config_id="runtime_config_source",
-                runtime_type="hermes",
-                runtime_agent_ref="source-profile",
-                capabilities=(),
-            )
-            source_documents = data_backup_restore._load_live_documents(
-                source,
-                None,
-            )
-            source_unit = self.schema_seven_unit(
-                capture_private_console_unit(source)
-            )
-            source_raw = data_backup_restore._build_backup(
-                source_documents,
-                source_unit,
-                format_version=3,
-            )
-            source_path = base / data_backup_restore._backup_name(
-                source_documents,
-                source_unit,
-                format_version=3,
-            )
-            source_path.write_bytes(source_raw)
-            if os.name == "posix":
-                source_path.chmod(0o600)
-
-            target = self.make_current(base, "target-p3", "target")
-            target_unit = self.schema_seven_unit(
-                capture_private_console_unit(target)
-            )
-            stage = private_console_unit.materialize_private_console_unit(
-                target,
-                target_unit,
-                target / "private" / "restore-fixture",
-            )
-            stage.rename(target / "private" / "console")
-            with patch.object(data_backup_restore, "RESTORE_PROTOCOL_VERSION", 3):
-                preview = data_backup_restore.preview_durable_restore(
-                    target,
-                    source_path,
-                )
-                with patch.object(
-                    data_backup_restore,
-                    "_restore_private_console_under_lock",
-                    side_effect=OSError("simulated released interruption"),
-                ):
-                    partial = data_backup_restore.restore_durable_backup(
-                        target,
-                        source_path,
-                        confirmation_token=preview.confirmation_token or "",
-                    )
-            self.assertEqual(partial.status, "partial_failure")
-            state = json.loads(
-                (
-                    target
-                    / "config"
-                    / data_backup_restore.RESTORE_STATE_NAME
-                ).read_text(encoding="utf-8")
-            )
-            self.assertEqual(state["protocol_version"], 3)
-            self.assertTrue(
-                state["source_backup_name"].startswith("mentat-backup-v3-")
-            )
-            self.assertTrue(
-                state["recovery_backup_name"].startswith("mentat-backup-v3-")
-            )
-
-            resume = data_backup_restore.preview_durable_restore(
-                target,
-                source_path,
-            )
-            self.assertEqual(resume.status, "resume_required")
-            completed = data_backup_restore.restore_durable_backup(
-                target,
-                source_path,
-                confirmation_token=resume.confirmation_token or "",
-            )
-            self.assertEqual(completed.status, "resumed")
-            migration = preview_agent_registry_migration(target)
-            self.assertEqual(migration.status, "ready")
-            confirm_agent_registry_migration(
-                target,
-                migration.confirmation_token or "",
-            )
-            self.assertEqual(
-                [
-                    agent.id
-                    for agent in AgentRegistry(
-                        target,
-                        supported_runtime_types={"hermes"},
-                    ).list_agents()
-                ],
-                ["agent_source"],
-            )
-
-    def test_upgrade_resumes_genuine_protocol_2_restore_receipts(self):
-        with TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            source = self.make_current(base, "source", "source")
-            source_documents = data_backup_restore._load_live_documents(source, None)
-            source_unit = self.schema_four_unit(
-                capture_private_console_unit(source)
-            )
-            source_raw = data_backup_restore._build_backup(
-                source_documents,
-                source_unit,
-                format_version=2,
-            )
-            source_name = data_backup_restore._backup_name(
-                source_documents,
-                source_unit,
-                format_version=2,
-            )
-            source_path = base / source_name
-            source_path.write_bytes(source_raw)
-            if os.name == "posix":
-                source_path.chmod(0o600)
-
-            target = self.make_current(base, "target", "target")
-            target_unit = self.schema_four_unit(
-                capture_private_console_unit(target)
-            )
-            stage = private_console_unit.materialize_private_console_unit(
-                target,
-                target_unit,
-                target / "private" / "restore-fixture",
-            )
-            stage.rename(target / "private" / "console")
-            real_build = data_backup_restore._build_backup
-
-            def protocol_2_build(documents, private_unit=None, **kwargs):
-                kwargs.setdefault("format_version", 2)
-                return real_build(documents, private_unit, **kwargs)
-
-            with (
-                patch.object(data_backup_restore, "RESTORE_PROTOCOL_VERSION", 2),
-                patch.object(data_backup_restore, "_build_backup", side_effect=protocol_2_build),
-            ):
-                preview = data_backup_restore.preview_durable_restore(target, source_path)
-                with patch.object(
-                    data_backup_restore,
-                    "_restore_private_console_under_lock",
-                    side_effect=OSError("simulated legacy interruption"),
-                ):
-                    partial = data_backup_restore.restore_durable_backup(
-                        target,
-                        source_path,
-                        confirmation_token=preview.confirmation_token or "",
-                    )
-            self.assertEqual(partial.status, "partial_failure")
-            state = json.loads(
-                (target / "config" / data_backup_restore.RESTORE_STATE_NAME).read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(state["protocol_version"], 2)
-            self.assertTrue(state["source_backup_name"].startswith("mentat-backup-v2-"))
-            self.assertTrue(state["recovery_backup_name"].startswith("mentat-backup-v2-"))
-
-            resume = data_backup_restore.preview_durable_restore(target, source_path)
-            self.assertEqual(
-                resume.status,
-                "resume_required",
-                resume.public_summary(),
-            )
-            completed = data_backup_restore.restore_durable_backup(
-                target,
-                source_path,
-                confirmation_token=resume.confirmation_token or "",
-            )
-            self.assertEqual(completed.status, "resumed")
 
     def test_restore_preview_does_not_create_or_change_live_sqlite_sidecars(self):
         with TemporaryDirectory() as temporary:
@@ -2450,7 +1171,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         source, destination, copy_source=True
                     )
 
-    def test_malformed_v2_manifest_items_fail_closed(self):
+    def test_malformed_current_manifest_items_fail_closed(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
             source = self.make_current(base, "source", "source")
@@ -2471,7 +1192,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "backup_manifest_invalid"):
                 data_backup_restore._contents_from_backup(output.getvalue())
 
-    def test_v2_restore_is_blocked_while_recorded_server_is_active(self):
+    def test_current_restore_is_blocked_while_recorded_server_is_active(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
             source = self.make_current(base, "source", "source")

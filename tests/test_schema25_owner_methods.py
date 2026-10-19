@@ -10,92 +10,7 @@ from unittest.mock import patch
 import mentat_db
 import owner_auth
 from private_console_unit import PrivateConsoleUnit, capture_private_console_unit, sanitize_owner_auth_restore_unit, validate_private_console_unit
-from task_repository import _schema5_private_unit
 from tests import test_owner_auth as legacy
-
-
-def schema24():
-    connection = sqlite3.connect(":memory:")
-    connection.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
-    for version, script in mentat_db.MIGRATIONS:
-        if version > 24:
-            break
-        connection.executescript(script)
-        connection.execute("INSERT INTO schema_migrations VALUES (?, 0)", (version,))
-        connection.commit()
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("UPDATE mentat_owner_auth_state SET state='active', user_handle=?, canonical_origin='https://mentat.example', rp_id='mentat.example', configuration_revision=1", (b"u" * 32,))
-    connection.execute("INSERT INTO mentat_owner_auth_credentials(device_id,credential_lookup_digest,cose_public_key,state,created_at) VALUES (?, ?, ?, 'active', 100)", ("device_fixture_0000000000", b"d" * 32, b"fixture-key"))
-    for index, state in enumerate(("active", "revoked")):
-        connection.execute("INSERT INTO mentat_owner_auth_sessions(session_digest,csrf_digest,device_id,state,created_at,reauthenticated_at,last_seen_at,idle_expires_at,absolute_expires_at,revoked_at) VALUES (?, ?, ?, ?, 100, 0, 100, 200, 300, ?)", (bytes([index + 1]) * 32, bytes([index + 3]) * 32, "device_fixture_0000000000", state, None if state == "active" else 150))
-    connection.execute("INSERT INTO mentat_owner_auth_sse_reservations VALUES (?, ?, 1, 110)", ("sse_fixture_000000000000", b"\x01" * 32))
-    connection.execute("INSERT INTO mentat_owner_auth_ceremonies(ceremony_id,purpose,challenge_digest,configuration_revision,expires_at,state,created_at) VALUES (?, 'authentication', ?, 1, 180, 'pending', 100)", ("ceremony_fixture_00000000", b"c" * 32))
-    connection.commit()
-    return connection
-
-
-class Schema25ForwardTests(unittest.TestCase):
-    def test_released_schema24_private_snapshot_still_validates_and_sanitizes(self):
-        connection = schema24()
-        self.addCleanup(connection.close)
-        connection.execute("INSERT INTO mentat_agent_registry_state(singleton,authority,migration_contract,source_kind,source_sha256,source_agent_count,cutover_at) VALUES(1,'sqlite',?,'fresh',?,0,1)", (mentat_db.AGENT_REGISTRY_AUTHORITY_CONTRACT, mentat_db.EMPTY_AGENT_REGISTRY_SOURCE_SHA256))
-        connection.commit()
-        unit = PrivateConsoleUnit(json.dumps({"schema_version": 3, "runs": []}).encode(), connection.serialize(), None, ())
-        validate_private_console_unit(unit)
-        restored = sanitize_owner_auth_restore_unit(unit)
-        validate_private_console_unit(restored)
-        inspected = sqlite3.connect(":memory:")
-        self.addCleanup(inspected.close)
-        inspected.deserialize(restored.database_raw)
-        self.assertEqual(inspected.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 24)
-        self.assertEqual(inspected.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0], 0)
-
-    def test_populated_migration_preserves_sessions_and_sse_foreign_key_and_trigger(self):
-        connection = schema24()
-        self.addCleanup(connection.close)
-        before_sessions = connection.execute("SELECT * FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall()
-        old_columns = [row[1] for row in connection.execute("PRAGMA table_info(mentat_owner_auth_sessions)")]
-        before_sse = connection.execute("SELECT * FROM mentat_owner_auth_sse_reservations").fetchall()
-        before_ceremony = connection.execute("SELECT * FROM mentat_owner_auth_ceremonies").fetchall()
-        ceremony_columns = [row[1] for row in connection.execute("PRAGMA table_info(mentat_owner_auth_ceremonies)")]
-        owner_auth.validate_owner_auth_connection(connection)  # Historical backup remains readable.
-        mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-        self.assertEqual(connection.execute("SELECT " + ",".join(old_columns) + " FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall(), before_sessions)
-        self.assertEqual(connection.execute("SELECT * FROM mentat_owner_auth_sse_reservations").fetchall(), before_sse)
-        self.assertEqual(connection.execute("SELECT " + ",".join(ceremony_columns) + " FROM mentat_owner_auth_ceremonies").fetchall(), before_ceremony)
-        self.assertEqual(connection.execute("SELECT owner_generation FROM mentat_owner_auth_ceremonies").fetchone()[0], 0)
-        self.assertEqual(connection.execute("SELECT auth_method,owner_generation,principal_digest FROM mentat_owner_auth_sessions").fetchall(), [("passkey", 0, None)] * 2)
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_configuration").fetchone()[0], 0)
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_google_principal").fetchone()[0], 0)
-        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-        self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
-        self.assertEqual(connection.execute("PRAGMA foreign_key_list(mentat_owner_auth_sse_reservations)").fetchone()[2], "mentat_owner_auth_sessions")
-        owner_auth.validate_owner_auth_connection(connection)
-        connection.execute("UPDATE mentat_owner_auth_sessions SET state='revoked',revoked_at=150 WHERE state='active'")
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sse_reservations").fetchone()[0], 0)
-
-    def test_changed_source_and_mid_rewrite_failure_leave_schema24_and_restore_fk_enforcement(self):
-        for corrupt in (False, True):
-            with self.subTest(corrupt=corrupt):
-                connection = schema24()
-                try:
-                    if corrupt:
-                        connection.execute("CREATE INDEX unexpected_owner_index ON mentat_owner_auth_sessions(state)")
-                    before = mentat_db.schema_signature(connection)
-                    original = mentat_db._execute_script_in_active_transaction
-                    def fail_after_rewrite(conn, script):
-                        original(conn, script)
-                        raise RuntimeError("injected failure before receipt")
-                    with patch.object(mentat_db, "_execute_script_in_active_transaction", side_effect=fail_after_rewrite), self.assertRaises((mentat_db.MentatDatabaseError, RuntimeError)):
-                        mentat_db.migrate(connection)
-                    self.assertEqual(mentat_db.schema_signature(connection), before)
-                    self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 24)
-                    self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
-                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sse_reservations").fetchone()[0], 1)
-                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions").fetchone()[0], 2)
-                finally:
-                    connection.close()
 
 
 class OwnerMethodTests(unittest.TestCase):
@@ -177,7 +92,7 @@ class OwnerMethodTests(unittest.TestCase):
                 connection.execute(sql)
             connection.rollback()
 
-    def test_private_backup_restore_and_compatible_export_keep_identity_boundaries(self):
+    def test_current_private_backup_restore_keeps_identity_boundaries(self):
         connection, cookie, csrf = self.google_fixture()
         unit = capture_private_console_unit(self.fixture.root)
         validate_private_console_unit(unit)
@@ -190,16 +105,21 @@ class OwnerMethodTests(unittest.TestCase):
         self.assertEqual(inspected.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0], 0)
         self.assertEqual(inspected.execute("SELECT requires_reconciliation FROM mentat_owner_google_configuration").fetchone()[0], 1)
         self.assertEqual(inspected.execute("SELECT subject FROM mentat_owner_google_principal").fetchone()[0], "private-google-subject")
-        compatible = _schema5_private_unit(unit)
-        compatible_path = self.fixture.root / "compatible-inspection.sqlite3"
-        compatible_path.write_bytes(compatible.database_raw)
-        compatible_connection = sqlite3.connect(compatible_path)
-        self.addCleanup(compatible_connection.close)
-        self.assertEqual(compatible_connection.execute("SELECT name FROM sqlite_master WHERE name LIKE 'mentat_owner_%'").fetchall(), [])
-        self.assertEqual(compatible_connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5)
-        # Export/restore transforms snapshots, not the live source authority.
+        # Restore transforms its snapshot, leaving live source authority intact.
         self.assertEqual(connection.execute("SELECT requires_reconciliation FROM mentat_owner_google_configuration").fetchone()[0], 0)
         self.authority.authenticate_session(cookie, csrf)
+
+    def test_current_session_foreign_key_and_revocation_trigger(self):
+        connection, cookie, csrf = self.google_fixture()
+        self.assertEqual(connection.execute("PRAGMA foreign_key_list(mentat_owner_auth_sse_reservations)").fetchone()[2], "mentat_owner_auth_sessions")
+        self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.authority.reserve_sse(cookie)
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sse_reservations").fetchone()[0], 1)
+        owner_auth.validate_owner_auth_connection(connection)
+        self.authority.sign_out(cookie, csrf)
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sse_reservations").fetchone()[0], 0)
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        owner_auth.validate_owner_auth_connection(connection)
 
     def test_old_generation_cannot_manage_security_even_with_fresh_passkey_reauthentication(self):
         ceremony = self.authority.start_device_reauthentication(self.passkey.cookie_value, self.passkey.csrf_value)

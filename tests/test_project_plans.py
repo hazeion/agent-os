@@ -46,14 +46,14 @@ class ProjectPlanTests(unittest.TestCase):
                    "expected_task_token": read_task_input_editor(self.root, "task_layout")["expected_task_token"]}
         return publish_task_inputs(self.root, payload)
 
-    def test_schema32_exact_upgrade_and_drift_gate(self):
+    def test_current_private_roundtrip_and_exact_drift_gate(self):
         with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "prior.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=32)
+            path = Path(temporary) / "current.sqlite3"
+            private_console_unit._initialize_database(path)
             with closing(sqlite3.connect(path)) as connection:
                 prior = private_console_unit.PrivateConsoleUnit(
                     history_raw=private_console_unit._empty_history(), database_raw=path.read_bytes(),
-                    registry_database_raw=None, blobs=(),
+                    blobs=(),
                 )
                 private_console_unit.validate_private_console_unit(prior)
                 restored = private_console_unit.sanitize_owner_auth_restore_unit(
@@ -72,13 +72,13 @@ class ProjectPlanTests(unittest.TestCase):
                 validate_plan_connection(connection)
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "drift.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=32)
+            private_console_unit._initialize_database(path)
             with closing(sqlite3.connect(path)) as connection:
                 connection.execute("DROP VIEW mentat_retained_attachments")
                 connection.execute("CREATE VIEW mentat_retained_attachments AS SELECT attachment_id FROM run_attachments")
                 with self.assertRaises(mentat_db.MentatDatabaseError):
                     mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 32)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], mentat_db.SCHEMA_VERSION)
 
     def test_owner_plan_is_immutable_unapproved_and_backup_capable(self):
         result = self.publish()
@@ -260,7 +260,7 @@ class ProjectPlanTests(unittest.TestCase):
             publish_owner_plan(self.root, "project_mentat", "One too many", [self.node()],
                                expected_project_revision=1, expected_plan_revision=32)
         with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_plan_versions").fetchone()[0], 32)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_plan_versions").fetchone()[0], mentat_db.SCHEMA_VERSION)
 
     def test_global_version_ceiling_includes_all_project_scopes(self):
         self.publish()

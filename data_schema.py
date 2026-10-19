@@ -32,7 +32,7 @@ from data_layout import (
     _root_issue,
     _same_path,
 )
-from data_migration import (
+from data_documents import (
     _canonical_json,
     _digest,
     _guarded_mutation_directory,

@@ -287,7 +287,7 @@ def private_control_issue(data_root: Path) -> str | None:
 
     root = _absolute_without_following(Path(data_root))
     for path, issue in (
-        (migration_reservation_path(root), "private_migration_incomplete"),
+        (migration_reservation_path(root), "unsupported_legacy_private_storage"),
         (restore_reservation_path(root), "private_restore_incomplete"),
         (root / "config" / GENERAL_RESTORE_STATE_NAME, "private_restore_incomplete"),
     ):
@@ -307,12 +307,29 @@ def private_control_issue(data_root: Path) -> str | None:
                 return "private_control_invalid"
             for entry in os.scandir(private):
                 if entry.name.startswith(".console-migration-"):
-                    return "private_migration_incomplete"
+                    return "unsupported_legacy_private_storage"
                 if entry.name.startswith(".console-restore-"):
                     return "private_restore_incomplete"
     except OSError:
         return "private_control_invalid"
     return None
+
+
+def _require_current_or_fresh_database(data_root: Path) -> None:
+    from mentat_db import (
+        MentatDatabaseError, legacy_agent_registry_artifacts_present,
+        validate_current_database_root,
+    )
+
+    try:
+        current = validate_current_database_root(data_root)
+    except (MentatDatabaseError, OSError) as exc:
+        raise PrivateStateError("unsupported_or_invalid_current_database") from exc
+    if not current and (
+        legacy_private_entries(data_root)
+        or legacy_agent_registry_artifacts_present(data_root)
+    ):
+        raise PrivateStateError("unsupported_legacy_private_storage")
 
 
 @contextmanager
@@ -324,6 +341,7 @@ def private_state_lock(
     """Serialize the complete private Console unit with durable root mutation."""
 
     root = _absolute_without_following(Path(data_root))
+    _require_current_or_fresh_database(root)
     if not _secure_directory(root):
         raise PrivateStateError("Mentat data root is unsafe")
     with _durable_mutation_lock(root) as root_descriptor:
