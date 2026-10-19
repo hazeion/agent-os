@@ -124,6 +124,10 @@ residual QA based on a fixture or an unmerged change alone.
 
 ## Operator inputs and independent work
 
+The [Google setup guidance slice](reviews/2026-09-30-google-setup-guidance.md)
+adds fixed failure-step guidance to the existing CLI ceremony; it grants no
+authentication or remote activation and does not satisfy live acceptance.
+
 Provider route choice is pending. Google OAuth application configuration,
 HTTPS host activation/security acceptance and actual garage goals, floorplan,
 measurements and budget are not supplied or proven by component tests. Do not

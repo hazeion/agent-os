@@ -67,6 +67,12 @@ Cancellation, expired proof and failed confirmation preserve the previous owner.
 An interrupted response after a successful commit may require another host
 recovery ceremony. Setup does not activate ordinary remote serving.
 
+If setup stops, the terminal names the step and suggests checks for the host,
+Google client, browser sign-in or owner confirmation. It does not print private
+provider errors. Follow any cleanup warning before restarting. If confirmation
+succeeded but recovery-code output stopped, the owner is already confirmed;
+retain displayed codes privately or use host recovery if needed.
+
 ## Serve the website
 
 After confirming the owner, start the authenticated website in the foreground
