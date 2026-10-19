@@ -412,19 +412,18 @@ def private_control_issue(data_root: Path) -> str | None:
 
 def _require_current_or_fresh_database(data_root: Path) -> None:
     from mentat_db import (
-        MentatDatabaseError, legacy_agent_registry_artifacts_present,
-        validate_current_database_root,
+        MentatDatabaseError, validate_current_database_root,
     )
 
     try:
         current = validate_current_database_root(data_root)
     except (MentatDatabaseError, OSError) as exc:
         raise PrivateStateError("unsupported_or_invalid_current_database") from exc
-    if not current and (
-        legacy_private_entries(data_root)
-        or legacy_agent_registry_artifacts_present(data_root)
-    ):
-        raise PrivateStateError("unsupported_legacy_private_storage")
+    if not current:
+        issue = fresh_console_storage_issue(data_root)
+        if issue is not None:
+            from mentat_db import MentatDatabaseError
+            raise PrivateStateError(issue) from MentatDatabaseError(issue)
 
 
 @contextmanager

@@ -3078,11 +3078,18 @@ def _current_database_files(
     data_dir: Path,
 ) -> tuple[Path, dict[Path, tuple[int, int] | None]] | None:
     root = Path(data_dir)
+
+    def fresh_only():
+        from private_state import fresh_console_storage_issue
+        issue = fresh_console_storage_issue(root)
+        if issue is not None:
+            raise MentatDatabaseError("Missing current database: " + issue)
+        return None
     for directory in (root, root / "private", private_console_dir(root)):
         try:
             details = directory.lstat()
         except FileNotFoundError:
-            return None
+            return fresh_only()
         if stat.S_ISLNK(details.st_mode) or _is_reparse_point(details) or not stat.S_ISDIR(details.st_mode):
             raise MentatDatabaseError("Mentat private Console directory is unsafe")
     path = private_console_dir(root).resolve(strict=True) / DATABASE_NAME
@@ -3092,7 +3099,7 @@ def _current_database_files(
             raise MentatDatabaseError("Mentat database sidecars have no database")
         if legacy_agent_registry_artifacts_present(root):
             raise MentatDatabaseError("Retired Agent registry storage is unsupported")
-        return None
+        return fresh_only()
     _existing_console_dir(root)
     return path, identities
 
