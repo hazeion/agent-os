@@ -6,13 +6,13 @@ Status: proposed prerequisite contract for issues
 missing runtime boundary; it does not authorize a Hermes upgrade, an upstream
 repository change, a replacement dispatcher or model work.
 
-## Current evidence
+## Audited evidence
 
 The selected candidate remains local original Hermes co-located with the Linux
-Mentat host, as resolved in issue #237. The temporary WSL installation reports
-Hermes v0.19.0 and is a clean checkout of the owner's fork at
+Mentat host, as resolved in issue #237. At the initial host audit, the temporary
+WSL installation reported Hermes v0.19.0 from a clean checkout of the owner's fork at
 `1ce05d8fb1ae16c3d694d1f06003445edb632046`; that is not an official upstream
-commit pin. The inspected source files match that local commit. Its Kanban CLI exposes separate create and
+commit pin. The inspected source files matched that local commit. Its Kanban CLI exposes separate create and
 attach operations, per-task runtime and retry limits. The current Mentat adapter
 passes neither an immutable input set nor per-Task permitted operations or work
 limits to creation. These are unsupported, rather than qualified capabilities.
@@ -33,6 +33,17 @@ a supported Hermes whole-worker API. A terminal-tool sandbox, profile toolset
 or prompt cannot alone qualify the Agent loop and its descendants.
 
 ## Required supported operation
+
+The owner approved the [unchanged-stock controller route](2026-09-29-official-hermes-project-controller.md)
+on September 29. For that route, Mentat owns the fixed versioned worker
+admission transaction and isolated execution scope; Hermes need not itself
+atomically admit the prepared worker. Supported Hermes Kanban mutations retain
+the delegation ledger in a separate fixed root and must reconcile before Task
+execution. The exact inputs, policy, bounded work, shared capacity, broker,
+Stop, provenance and recovery requirements below remain mandatory. This
+amendment authorizes implementation and qualification, not dispatch before
+those gates pass. The following Hermes-owned operation describes the alternative
+upstream admission route, rather than a blocker on the approved controller.
 
 Preserve Hermes Kanban as the durable backend. Before Mentat may approve or
 admit Project execution, Hermes must expose one fixed, versioned operation
@@ -185,5 +196,8 @@ agent instead of developing the fork. Official stable `v2026.9.24` (0.21.5,
 separately. Shipped Subagent Lifecycle, `ctx.llm`, provider-plugin, run-API and
 egress-proxy seams are integration opportunities, so they must not be described
 as absent. Their current scope does not alone qualify the exact Project worker
-contract above. First verify stock compatibility and activate the stable
-upstream agent; reassess those supported seams before proposing any extension.
+contract above. [Stock compatibility and backed-up activation](2026-09-29-official-hermes-compatibility.md)
+are now verified. The [reviewed controller proposal](2026-09-29-official-hermes-project-controller.md)
+maps the supported seams to an unchanged official runtime and identifies the
+specific execution-ownership amendment explicitly approved by the owner. This
+prerequisite remains the safety floor; no production Project dispatch is enabled.
