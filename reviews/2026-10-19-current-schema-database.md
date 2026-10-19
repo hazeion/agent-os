@@ -35,3 +35,11 @@ No Linux or Windows execution, hosted CI, production readiness or runtime activa
 ## Live structural receipt cutoff correction
 
 Retained worker tests exposed an operational distinction between the fixed empty recipe and a live fresh root. Project planning-input validation interprets a zero schema40 receipt timestamp as an empty virtual recipe and refuses retained input rows. The fixed constructor continues to use zero structural timestamps, but real fresh initialization now stamps receipts1..45 with the actual initialization time inside the same transaction before inserting46. This preserves the original live migration cutoff semantics without updating any existing database or weakening row validators. A regression separately checks both recipe-zero and live-positive cutoffs.
+
+## Current read-only receipt admission
+
+The admission copy accepts a legitimate current WAL without source SHM, as can remain after a crash. It does not require or create source SHM and still validates the captured current journal and object graph. Old and future WAL-only roots remain refused without changes. Strict archival `connect_existing_readonly` semantics are unchanged.
+
+`connect_current_readonly(data_dir)` requires existing current SQLite and yields a query-only owned-copy connection with `sqlite3.Row` results. It uses the same append-tolerant admission capture and removes the private copy after the context. It grants no authority to write or treat the snapshot as a backup. A caller that reads a monotonic authority receipt must still recheck its actual transaction. No private-state lock is called by this helper.
+
+The live timestamp correction and current read-only API passed27 focused methods, including one complete current worker-journal reservation/reopen regression, using the existing read-only Python environment with ResourceWarnings as errors in3.915seconds. Raw log: `/private/tmp/mentat-current-schema-database-admission-context.log`. No host package installation was performed.

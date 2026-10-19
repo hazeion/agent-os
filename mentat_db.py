@@ -3073,26 +3073,55 @@ def validate_current_database_root(data_dir: Path) -> bool:
 
 def _admit_current_database_root(data_dir: Path) -> tuple[int, int] | None:
     with DATABASE_OPEN_BARRIER:
-        root = Path(data_dir)
-        for directory in (root, root / "private", private_console_dir(root)):
-            try:
-                details = directory.lstat()
-            except FileNotFoundError:
-                return None
-            if stat.S_ISLNK(details.st_mode) or _is_reparse_point(details) or not stat.S_ISDIR(details.st_mode):
-                raise MentatDatabaseError("Mentat private Console directory is unsafe")
-        path = private_console_dir(root).resolve(strict=True) / DATABASE_NAME
-        identities = _validate_database_set(path, path.parent)
-        if identities[path] is None:
-            if any(identity is not None for identity in identities.values()):
-                raise MentatDatabaseError("Mentat database sidecars have no database")
+        source = _current_database_files(data_dir)
+        if source is None:
             return None
-        _existing_console_dir(root)
+        path, identities = source
         with _current_admission_snapshot(path, identities) as connection:
             _validate_current_database(connection)
         if _validate_database_set(path, path.parent)[path] != identities[path]:
             raise MentatDatabaseError("Mentat database file identity changed while opening")
         return identities[path]
+
+
+def _current_database_files(
+    data_dir: Path,
+) -> tuple[Path, dict[Path, tuple[int, int] | None]] | None:
+    root = Path(data_dir)
+    for directory in (root, root / "private", private_console_dir(root)):
+        try:
+            details = directory.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(details.st_mode) or _is_reparse_point(details) or not stat.S_ISDIR(details.st_mode):
+            raise MentatDatabaseError("Mentat private Console directory is unsafe")
+    path = private_console_dir(root).resolve(strict=True) / DATABASE_NAME
+    identities = _validate_database_set(path, path.parent)
+    if identities[path] is None:
+        if any(identity is not None for identity in identities.values()):
+            raise MentatDatabaseError("Mentat database sidecars have no database")
+        return None
+    _existing_console_dir(root)
+    return path, identities
+
+
+@contextmanager
+def connect_current_readonly(data_dir: Path) -> Iterator[sqlite3.Connection]:
+    """Yield only a validated current owned-copy read snapshot, never source SQL.
+
+    Requires existing SQLite. Later source WAL appends do not alter the yielded
+    snapshot. Consumers of monotonic receipts must recheck their real transaction;
+    this context grants no write authority or archival consistency guarantee.
+    """
+
+    with DATABASE_OPEN_BARRIER:
+        source = _current_database_files(data_dir)
+        if source is None:
+            raise MentatDatabaseError("Mentat database is unavailable")
+        path, identities = source
+        with _current_admission_snapshot(path, identities) as connection:
+            _validate_current_database(connection)
+            yield connection
 
 
 def _read_wal_prefix(path: Path, identity: tuple[int, int]) -> bytes:
@@ -3144,9 +3173,6 @@ def _current_admission_snapshot(
     """
 
     wal = Path(f"{path}-wal")
-    shm = Path(f"{path}-shm")
-    if (identities[wal] is None) != (identities[shm] is None):
-        raise MentatDatabaseError("Mentat database sidecars are unavailable")
     try:
         before = path.stat(follow_symlinks=False)
         raw = _read_existing_database_file(path, identities[path], MAX_READONLY_DATABASE_BYTES)
@@ -3169,6 +3195,7 @@ def _current_admission_snapshot(
                 _chmod(copied_wal, 0o600)
             connection = sqlite3.connect(copied, timeout=5.0, isolation_level=None)
             try:
+                connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA query_only = ON")
                 yield connection
             finally:

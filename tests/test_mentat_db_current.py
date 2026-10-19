@@ -43,6 +43,10 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
         with self.assertRaises(mentat_db.MentatDatabaseError):
             mentat_db.validate_current_database_root(self.root)
         self.assertEqual(self.snapshot(), before)
+        with self.assertRaises(mentat_db.MentatDatabaseError):
+            with mentat_db.connect_current_readonly(self.root):
+                self.fail('unsupported root yielded a current connection')
+        self.assertEqual(self.snapshot(), before)
 
     def test_missing_admission_does_not_create_storage(self):
         missing = self.root / 'missing'
@@ -259,6 +263,38 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
                 self.assertFalse(Path(str(destination) + '-shm').exists())
                 self.refuse_unchanged()
 
+    def test_current_wal_without_shm_recovers_only_in_owned_copy(self):
+        with TemporaryDirectory() as source_root:
+            with closing(mentat_db.connect(Path(source_root))) as connection:
+                connection.execute('UPDATE mentat_deliverable_review_state SET revision=7')
+                source = mentat_db.database_path(Path(source_root))
+                mentat_db.ensure_private_console_dir(self.root)
+                destination = mentat_db.database_path(self.root)
+                for suffix in ('', '-wal'):
+                    target = Path(str(destination) + suffix)
+                    target.write_bytes(Path(str(source) + suffix).read_bytes())
+                    target.chmod(0o600)
+        before = self.snapshot()
+        self.assertTrue(mentat_db.validate_current_database_root(self.root))
+        with mentat_db.connect_current_readonly(self.root) as connection:
+            self.assertIs(connection.row_factory, sqlite3.Row)
+            self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()['revision'], 7)
+            self.assertEqual(connection.execute('PRAGMA query_only').fetchone()[0], 1)
+            copied = Path(connection.execute('PRAGMA database_list').fetchone()[2])
+            self.assertNotEqual(copied, destination)
+            self.assertTrue(copied.exists())
+            with self.assertRaises(sqlite3.OperationalError):
+                connection.execute('UPDATE mentat_deliverable_review_state SET revision=8')
+        self.assertFalse(copied.exists())
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(Path(str(destination) + '-shm').exists())
+
+    def test_current_readonly_requires_existing_storage_without_creating_it(self):
+        with self.assertRaises(mentat_db.MentatDatabaseError):
+            with mentat_db.connect_current_readonly(self.root):
+                self.fail('missing root yielded a connection')
+        self.assertEqual(self.snapshot(), {})
+
     def test_owned_snapshot_storage_is_removed_on_refusal(self):
         self.current()
         path = mentat_db.database_path(self.root)
@@ -297,6 +333,8 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
             self.assertTrue(ready.wait(5))
             self.assertEqual(errors, [])
             for _ in range(5):
+                with mentat_db.connect_current_readonly(self.root) as connection:
+                    self.assertGreater(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 0)
                 with closing(mentat_db.connect(self.root)) as connection:
                     self.assertGreater(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 0)
         finally:
