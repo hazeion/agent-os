@@ -181,6 +181,8 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         locked_guard=guard, locked_prepare=prepare, locked_finalize=finalize,
     )
     if result.status not in {"initialized", "existing", "development_override"}:
+        if "data_root_overlaps_seed_root" in result.issues:
+            return "Mentat cannot use a data directory overlapping packaged seeds (data_root_overlaps_seed_root)."
         if "restore_incomplete_or_invalid" in result.issues:
             return "Mentat found an incomplete restore (restore_incomplete_or_invalid). Existing files were not changed."
         return unsupported if any("schema" in issue or "legacy" in issue or "database" in issue for issue in result.issues) else "Mentat could not initialize its current data root (data_initialization_failed)."

@@ -22,7 +22,6 @@ CONSOLE_DIRECTORY_NAME = "console"
 HISTORY_NAME = "agent-console-runs.json"
 DATABASE_NAME = "mentat.sqlite3"
 BLOB_DIRECTORY_PARTS = ("blobs", "sha256")
-MIGRATION_RECEIPT_NAME = "private-console-migration-v1.json"
 MIGRATION_RESERVATION_NAME = "private-console-migration-v1.reservation.json"
 RESTORE_RESERVATION_NAME = "private-console-restore-v1.reservation.json"
 GENERAL_RESTORE_STATE_NAME = "restore-state-v1.json"
@@ -58,20 +57,12 @@ def blobs_root(data_root: Path) -> Path:
     return path
 
 
-def legacy_history_path(data_root: Path) -> Path:
-    return Path(data_root) / "runtime" / HISTORY_NAME
 
 
-def legacy_database_path(data_root: Path) -> Path:
-    return Path(data_root) / "runtime" / DATABASE_NAME
 
 
-def legacy_blobs_root(data_root: Path) -> Path:
-    return Path(data_root) / "runtime" / "blobs" / "sha256"
 
 
-def migration_receipt_path(data_root: Path) -> Path:
-    return Path(data_root) / "config" / MIGRATION_RECEIPT_NAME
 
 
 def migration_reservation_path(data_root: Path) -> Path:
@@ -455,16 +446,3 @@ def synchronized_private_state(function: Callable[..., R]) -> Callable[..., R]:
             return function(data_root, *args, **kwargs)
 
     return wrapped
-
-
-def legacy_private_entries(data_root: Path) -> tuple[Path, ...]:
-    """Return only recognized legacy durable Console entries that exist."""
-
-    entries = (
-        legacy_history_path(data_root),
-        legacy_database_path(data_root),
-        Path(f"{legacy_database_path(data_root)}-wal"),
-        Path(f"{legacy_database_path(data_root)}-shm"),
-        legacy_blobs_root(data_root),
-    )
-    return tuple(path for path in entries if os.path.lexists(os.fspath(path)))
