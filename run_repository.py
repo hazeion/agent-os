@@ -1435,6 +1435,7 @@ class RunRepository:
                 27,
                 28,
                 29,
+                30,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)

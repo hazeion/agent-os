@@ -19,6 +19,7 @@ import re
 import stat
 import time
 from typing import Any, Callable, Mapping, Sequence, TypeVar
+from uuid import uuid4
 
 from data_layout import MAX_PREFLIGHT_JSON_BYTES
 from json_store import (
@@ -303,7 +304,7 @@ class ProjectRepository:
 
     def _require_schema(self) -> None:
         row = self.connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
-        if int(row[0] or 0) not in {24, 25, 26, 27, 28, DATABASE_SCHEMA_VERSION}:
+        if int(row[0] or 0) not in {24, 25, 26, 27, 28, 29, 30, DATABASE_SCHEMA_VERSION}:
             raise ProjectRepositoryError("project_repository.schema_unsupported")
         names = {str(row[0]) for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if not {"mentat_projects", "mentat_project_store_state", "mentat_tasks"}.issubset(names):
@@ -400,6 +401,9 @@ class ProjectRepository:
     def mutate_collection(self, mutator: Callable[[list[dict[str, Any]]], tuple[Any, R]]) -> R:
         if not callable(mutator):
             raise ProjectRepositoryValidationError("project_repository.mutator_invalid")
+        if not self.connection.in_transaction:
+            with _guarded_transaction(self.connection, None, immediate=True):
+                return self.mutate_collection(mutator)
         self.authority_receipt(required=True)
         current = self._list_projects()
         working = deepcopy(current)
@@ -418,11 +422,40 @@ class ProjectRepository:
             raise ProjectRepositoryConflict("project_repository.membership_immutable")
         previous_by_id = {project["id"]: project for project in current}
         revisions = {str(row["id"]): int(row["revision"]) for row in self.connection.execute("SELECT id, revision FROM mentat_projects")}
-        self.connection.execute("DELETE FROM mentat_projects")
+        # Preserve durable Project incarnation and every historical child
+        # reference. Stage unique sort/name keys so swaps and reorders can be
+        # applied without deleting retained Project rows.
+        occupied_keys = {project["name"].casefold() for project in (*current, *normalized)}
+        while True:
+            nonce = uuid4().hex
+            stage_keys = [f"__mentat_stage_{nonce}_{ordinal}" for ordinal in range(len(current))]
+            if not occupied_keys.intersection(stage_keys):
+                break
+        for ordinal, project in enumerate(current):
+            self.connection.execute(
+                "UPDATE mentat_projects SET sort_order=?,name_key=? WHERE id=?",
+                (MAX_PROJECTS + 1 + ordinal, stage_keys[ordinal], project["id"]),
+            )
         for ordinal, project in enumerate(normalized):
-            previous = next((item for item in current if item["id"] == project["id"]), None)
-            revision = revisions[project["id"]] if previous == project else revisions.get(project["id"], 0) + 1
-            self._insert(project, ordinal, revision)
+            previous = previous_by_id.get(project["id"])
+            if previous is None:
+                self._insert(project, ordinal)
+                continue
+            revision = revisions[project["id"]] if previous == project else revisions[project["id"]] + 1
+            extensions = {
+                key: value for key, value in project.items()
+                if key not in {"id", "name", "type", "status", "description", "obsidian_note", "aliases", "created_at", "updated_at"}
+            }
+            self.connection.execute(
+                "UPDATE mentat_projects SET sort_order=?,revision=?,name=?,name_key=?,type=?,status=?,"
+                "description=?,obsidian_note=?,aliases_json=?,extensions_json=?,created_at=?,updated_at=? "
+                "WHERE id=?",
+                (ordinal, revision, project["name"], project["name"].casefold(), project["type"],
+                 project["status"], project["description"], project["obsidian_note"],
+                 _canonical_json(project["aliases"], code="project.invalid"),
+                 _canonical_json(extensions, code="project.invalid"), project["created_at"],
+                 project["updated_at"], project["id"]),
+            )
         # ``mentat_tasks.project`` is a retained compatibility display field;
         # membership itself is the immutable Project ID. Keep old dashboard
         # readers coherent when the existing narrow Project update route
