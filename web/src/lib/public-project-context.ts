@@ -28,7 +28,7 @@ export async function readOrChangeProjectContext<K extends Exclude<ContextOperat
   try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw new ProjectContextClientError("unavailable"); }
   if (response.status !== 200) {
     const status = payload && typeof payload === "object" && "status" in payload ? String(payload.status) : "unavailable";
-    throw new ProjectContextClientError(["stale", "project_changed", "staging_changed", "revision_conflict", "capacity", "file_unavailable", "granted_version", "current_version"].includes(status) ? status : "unavailable");
+    throw new ProjectContextClientError(["stale", "project_changed", "staging_changed", "revision_conflict", "capacity", "file_unavailable", "granted_version", "current_version", "project_input"].includes(status) ? status : "unavailable");
   }
   return contextResult(operation, payload, contextRequest(operation, input));
 }

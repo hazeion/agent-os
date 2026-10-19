@@ -418,6 +418,14 @@ Project context or grant, deletion/ID reuse, and restore leave the role stale.
 Selecting a lead does not grant access, assign Tasks, start a Run, produce a
 proposal, or approve a plan.
 
+Schema 39 retains bounded immutable owner-prepared Project planning-input
+versions beneath the existing Project incarnation and exact lead/context/grant
+identity. Selected context files remain pinned and their blob metadata frozen.
+An old input remains historical after Project deletion, Agent/grant change or
+restore; future admission must recheck current authority. This storage grants
+no proposal Run, generated-output intake, Task write or owner Apply. Registered
+generated outputs need their own provenance and retention authority first.
+
 Home planning selectors stage locally until explicit Apply or Clear and remain
 blocked by active/finalizing Runs or queue-active Turns. Planning suggestions
 may fill an empty draft but never Send. The right rail shows only a capped safe

@@ -18,6 +18,25 @@ from private_state import history_path
 
 
 class EmptyConsoleTemplateTests(unittest.TestCase):
+    def test_retained_project_schemas_filter_and_validate_complete_empty_units(self):
+        versions = tuple(
+            version for version in (38, 39, 40, 41, 42)
+            if version < mentat_db.SCHEMA_VERSION
+            and version in units.SUPPORTED_DATABASE_SCHEMA_VERSIONS
+        )
+        self.assertTrue(versions)
+        for version in versions:
+            with self.subTest(version=version), TemporaryDirectory() as temporary:
+                database = Path(temporary) / "mentat.sqlite3"
+                units._initialize_database(database, schema_version=version)
+                self.assertEqual(units._validate_and_filter_database(database, ()), ())
+                self.assertEqual(units._database_schema_version(database), version)
+                raw = database.read_bytes()
+                unit = units.PrivateConsoleUnit(units._empty_history(), raw, None, ())
+                self.assertEqual(units.validate_private_console_unit(unit), unit)
+                self.assertEqual(database.read_bytes(), raw)
+
+
     def test_historical_schema_33_filters_and_validates_complete_empty_unit(self):
         with TemporaryDirectory() as temporary:
             database = Path(temporary) / "mentat.sqlite3"
