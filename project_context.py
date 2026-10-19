@@ -46,6 +46,9 @@ LEAD_MAX_METADATA_BYTES = PLAN_MAX_METADATA_BYTES + 256 * 1024
 # and up to eight frozen file records each. Validate prospective writes
 # against this entire shared private-backup graph before committing them.
 PROJECT_INPUT_MAX_METADATA_BYTES = LEAD_MAX_METADATA_BYTES + 6 * 1024 * 1024
+# Schema 40 adds at most one immutable action receipt per retained Project
+# planning-input version for exact lost-response reconciliation.
+PROJECT_INPUT_ACTION_MAX_METADATA_BYTES = PROJECT_INPUT_MAX_METADATA_BYTES + 256 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -180,6 +183,8 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'project_input.capacity':
                 _fail('capacity')
             _fail('project_inputs_invalid')
+    if schema_version >= 40:
+        budget = PROJECT_INPUT_ACTION_MAX_METADATA_BYTES
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

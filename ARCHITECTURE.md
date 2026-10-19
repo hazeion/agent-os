@@ -1110,6 +1110,22 @@ grant is revoked, so retained inputs do not silently become executable.
 There is no public save route or proposal Run source in this slice; generated
 output selection, runtime qualification and owner Apply remain separate gates.
 
+Schema 40 lets the owner publish one reviewed Project planning-input version
+through an exact same-origin, owner-session-gated editor. Publication checks
+the current active Project revision, lead, Agent binding, context and grant,
+verifies each selected file byte stream, then commits the input and one
+immutable action receipt together. A replay of the same action ID and exact
+body returns its retained result before checking current admission; changed
+body conflicts. The browser keeps that action ID and body through uncertain
+delivery and reconciles the receipt before starting a new save. An opaque
+epoch-bound scope token keeps local drafts from crossing Project ID reuse or
+restore while staying stable across ordinary metadata edits. A saved input
+remains preparation, not permission for a proposal Run.
+The exact schema-39 migration seals pre-editor input IDs and backfills legacy
+receipts; only later owner receipts carry action tokens. Private backup
+validation requires one receipt per input and recomputes owner request digests,
+including action ID, from immutable input and file evidence.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

@@ -39,7 +39,7 @@ test("the immutable manifest has one complete, non-duplicated rule per current A
   assert.ok(Object.isFrozen(GATEWAY_ROUTE_MANIFEST));
   const sourceOperations = new Map<string, string>();
   const files = await routeFiles(API_ROOT);
-  assert.equal(files.length, 123);
+  assert.equal(files.length, 126);
   for (const file of files) {
     const source = `web/src/app/api/${relative(API_ROOT, file).split(sep).join("/")}`;
     const path = `/api/${relative(API_ROOT, file).split(sep).join("/").replace(/\/route\.ts$/u, "")}`;
@@ -71,8 +71,8 @@ test("the immutable manifest has one complete, non-duplicated rule per current A
 
   assert.deepEqual([...manifestOperations.keys()].sort(), [...sourceOperations.keys()].sort());
   for (const [key, source] of sourceOperations) assert.equal(manifestOperations.get(key), source, key);
-  assert.equal(sourceOperations.size, 136);
-  assert.equal(GATEWAY_ROUTE_MANIFEST.filter((candidate) => candidate.path.startsWith("/api/")).length, 136);
+  assert.equal(sourceOperations.size, 140);
+  assert.equal(GATEWAY_ROUTE_MANIFEST.filter((candidate) => candidate.path.startsWith("/api/")).length, 140);
 });
 
 test("the static manifest is source-derived, finite, and includes only shipped dashboard surfaces", async () => {

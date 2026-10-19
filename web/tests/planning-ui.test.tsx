@@ -210,6 +210,7 @@ test("compact Project disclosure keeps sequential keyboard order aligned with th
     await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Add" }));
     await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Open context" }));
     await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Open lead" }));
+    await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Prepare planning inputs" }));
     await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Open results" }));
     await user.tab(); assert.equal(document.activeElement, screen.getByRole("button", { name: "Open plan" }));
     await user.tab(); assert.equal(document.activeElement, screen.getByRole("searchbox", { name: "Search Projects and Tasks" }));

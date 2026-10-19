@@ -35,7 +35,7 @@ The old Beta/MDA foundation is merged through
 [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow is a stack of **full, open PRs** starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243) and currently ending
-at [PR #287](https://github.com/hazeion/agent-os/pull/287). The PRs being open
+at [PR #288](https://github.com/hazeion/agent-os/pull/288). The PRs being open
 is not merged-product or issue-close evidence. Hosted CI and ordinary review
 remain gates. [PR #276](https://github.com/hazeion/agent-os/pull/276) is a
 separate Windows CI-shard correction based on the results-review UI branch;
@@ -88,9 +88,10 @@ integrate it deliberately when advancing that part of the stack.
   lead-proposal and exact owner Apply design.
   [PR #287](https://github.com/hazeion/agent-os/pull/287) stores an
   owner-selected Project lead role with context-bound readiness; selection
-  alone cannot produce a proposal or start work. The schema-39 Project
-  planning-input slice retains private context-file selections for a later
-  owner editor; it grants no proposal Run or Apply.
+  alone cannot produce a proposal or start work.
+  [PR #288](https://github.com/hazeion/agent-os/pull/288) retains schema-39
+  private Project planning-input evidence. The next slice adds exact owner
+  publication and lost-response receipts; neither grants a proposal Run or Apply.
 - [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):
   PRs [#275](https://github.com/hazeion/agent-os/pull/275) and
   [#277](https://github.com/hazeion/agent-os/pull/277)–[#281](https://github.com/hazeion/agent-os/pull/281)
