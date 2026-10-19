@@ -171,6 +171,7 @@ class Journey:
         self.browser_checks: dict[str, bool] = {}
         self.browser_diagnostics: dict[str, bool] = {}
         self.browser_observation: dict = {}
+        self.browser_closure_proof: tuple | None = None
         self.cleanup_observations: dict[str, bool] = {}
         self.launch_output = tempfile.TemporaryFile()
         self.opener = build_opener(ProxyHandler({}))
@@ -274,14 +275,31 @@ class Journey:
         return self.browser_cleanup_deadline
 
     def browser_quiescence(self, deadline: float) -> tuple[bool, bool, bool]:
+        proof = self.browser_closure_proof
+        handles_terminal = lambda: all(process is None or process.poll() is not None
+                                       for process in (self.browser, self.browser_helper))
+        if (proof is not None and proof[0] is self.browser and proof[1] is self.browser_helper
+                and proof[2] == self.browser_debug_port and handles_terminal()):
+            return True, True, True
         while True:
-            browser_absent = self.browser is None or process_group_absent(self.browser.pid)
-            helper_absent = self.browser_helper is None or process_group_absent(self.browser_helper.pid)
+            try:
+                browser_absent = self.browser is None or process_group_absent(self.browser.pid)
+            except OSError:
+                browser_absent = False
+            try:
+                helper_absent = self.browser_helper is None or process_group_absent(self.browser_helper.pid)
+            except OSError:
+                helper_absent = False
             remaining = deadline - time.monotonic()
-            debug_closed = self.browser_debug_port is None or (remaining > 0 and listener_closed(self.browser_debug_port, timeout=min(0.2, remaining)))
+            try:
+                debug_closed = self.browser_debug_port is None or (remaining > 0 and listener_closed(self.browser_debug_port, timeout=min(0.2, remaining)))
+            except OSError:
+                debug_closed = False
             if self.browser_debug_port is not None and time.monotonic() > deadline:
                 debug_closed = False
             if browser_absent and helper_absent and debug_closed:
+                if handles_terminal():
+                    self.browser_closure_proof = (self.browser, self.browser_helper, self.browser_debug_port)
                 return browser_absent, helper_absent, debug_closed
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -336,7 +354,7 @@ class Journey:
                 require(set(value) == {"schema_version", "ready", "code", "checks", "diagnostics", "observation"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
                         and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed",
-                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_navigation_failed"},
+                                             "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_navigation_failed", "browser_target_ambiguous"},
                         "browser_output_invalid")
                 final = value
             latest = dict(value["checks"])

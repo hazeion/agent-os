@@ -432,6 +432,80 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
         self.assertEqual(result.returncode, 0, result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace"))
 
+    def test_verified_browser_closure_survives_offline_work_only_for_exact_terminal_handles(self):
+        for replacement in (None, "browser", "helper", "port", "live"):
+            with self.subTest(replacement=replacement), TemporaryDirectory() as directory:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                journey.browser = unittest.mock.Mock(pid=23456)
+                journey.browser_helper = unittest.mock.Mock(pid=34567)
+                journey.browser.poll.return_value = journey.browser_helper.poll.return_value = 0
+                journey.browser_debug_port = 54322
+                journey.browser_cleanup_deadline = 15
+                with patch.object(acceptance.time, "monotonic", return_value=10):
+                    self.assertTrue(all(journey.browser_quiescence(15)))
+                if replacement == "port":
+                    journey.browser_debug_port = 54323
+                elif replacement == "live":
+                    journey.browser.poll.return_value = None
+                elif replacement:
+                    process = unittest.mock.Mock(pid=45678)
+                    process.poll.return_value = 0
+                    setattr(journey, "browser" if replacement == "browser" else "browser_helper", process)
+                # Backup/restore-preview can finish after the already-proven window.
+                with patch.object(acceptance.time, "monotonic", return_value=100):
+                    if replacement is None:
+                        calls = []
+                        def cli(command, *_):
+                            calls.append(command)
+                            if command == "setup":
+                                return {"ok": True}
+                            if command == "backup":
+                                return {"status": "created", "backup_name": "mentat-backup-v5-" + "a" * 24 + ".zip"}
+                            return {"status": "ready", "issues": []}
+                        with patch.object(journey, "start"), patch.object(journey, "stop"), patch.object(
+                            journey, "read_back"
+                        ), patch.object(journey, "render_browser"), patch.object(journey, "cli", side_effect=cli), patch.object(
+                            journey, "request", side_effect=["Projects &amp; Tasks", {"project": {"id": "project_exact"}}, {"task": {"id": "task_exact"}}]
+                        ):
+                            self.assertTrue(journey.run(Path("/chrome"))["ok"])
+                        self.assertEqual(calls, ["setup", "backup", "restore"])
+                        self.assertIn("offline_backup_validated_by_restore_preview", journey.completed)
+                        self.assertTrue(journey.cleanup())
+                        journey.browser.terminate.assert_not_called()
+                        journey.browser_helper.terminate.assert_not_called()
+                        self.assertEqual(journey.browser_cleanup_deadline, 15)
+                    else:
+                        self.assertFalse(all(journey.browser_quiescence(15)))
+
+    def test_browser_probe_error_still_stops_owned_launcher_and_refuses_cleanup(self):
+        with TemporaryDirectory() as directory:
+            journey = acceptance.Journey(Path(directory))
+            self.addCleanup(journey.launch_output.close)
+            journey.browser = unittest.mock.Mock(pid=23456)
+            journey.browser.poll.return_value = 0
+            journey.process = unittest.mock.Mock(pid=34567)
+            journey.process.poll.return_value = None
+            journey.browser_debug_port = 54322
+            journey.browser_cleanup_deadline = 15
+            clock = [14.95]
+            def pause(seconds):
+                clock[0] += seconds
+            def probe(port, **_):
+                if port == journey.browser_debug_port:
+                    raise OSError("private socket details")
+                return True
+            with patch.object(acceptance.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
+                acceptance.time, "sleep", side_effect=pause
+            ), patch.object(acceptance, "listener_closed", side_effect=probe):
+                self.assertFalse(journey.cleanup())
+            journey.process.terminate.assert_called_once()
+            journey.process.wait.assert_called_once_with(timeout=15)
+            journey.browser.terminate.assert_not_called()
+            self.assertFalse(journey.cleanup_observations["browser_debug_listener_closed"])
+            self.assertTrue(journey.cleanup_observations["launcher_terminal"])
+            self.assertEqual(clock[0], 15)
+
     def test_listener_probe_requires_refusal_not_uncertain_connection_failure(self):
         for code, expected in ((0, False), (acceptance.errno.ECONNREFUSED, True),
                                (acceptance.errno.EINPROGRESS, False), (acceptance.errno.ENETUNREACH, False)):
@@ -452,6 +526,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             ) as probe:
                 self.assertTrue(all(journey.browser_quiescence(15)))
                 self.assertLessEqual(probe.call_args.kwargs["timeout"], 0.011)
+            journey.browser_debug_port = 54323  # A different port has no retained proof.
             with patch.object(acceptance.time, "monotonic", return_value=15), patch.object(
                 acceptance, "listener_closed"
             ) as probe:

@@ -43,3 +43,24 @@ diff checks pass. Log:
 
 No actual Chrome/app launch or acceptance success is claimed. Independent root
 and peer source review plus explicit execution authorization remain required.
+
+Independent review follow-up: discovery now refuses multiple blank pages before
+any WebSocket/navigation. The actual /sign-in route is categorized as auth,
+including a query-bearing sign-in page, without returning the URL. The current
+capability paragraph now names the fixed Page/focus/navigation contract.
+
+A successful bounded closure proof is retained by exact Chrome/helper object
+identity, terminal status and debug port. This prevents later backup/preview
+work from incorrectly reopening an expired proof window. Replaced handles,
+a changed port or a live handle cannot reuse it. Group/listener OSError now
+means unverified False and does not escape ahead of owned launcher cleanup.
+No deadline, stop retry or process-control authority changes.
+
+Final focused verification:31 Python methods PASS in5.195s, no local POSIX
+skips, ResourceWarnings as errors, including ten Node cases. Added regressions
+cover unique blank-page refusal, sign-in categorization, bounded closure reuse
+through mocked Journey backup/restore-preview after the original window,
+identity/port/live-handle invalidation, and probe-error launcher cleanup. The
+expired-probe negative initially still expected an already-proven port to lose
+its proof; it now explicitly uses an unproven different port. Compilation,
+Node syntax and diff checks pass. No Chrome/app launch has occurred.

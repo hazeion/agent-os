@@ -70,9 +70,9 @@ one original 15-second cleanup window; final cleanup cannot grant another.
 The runner and `scripts/mentat_acceptance_browser.mjs` are source-checkout tools,
 not installed package commands. Keep the fixed regular helper beside the runner
 when copying a source archive. A missing or linked helper refuses before Chrome
-launch. CDP methods are fixed Runtime enable/read-only evaluation and the fixed
-desktop metric override; no arbitrary evaluation, navigation, response bodies,
-provider or Run control is exposed. Loopback listener ownership uses `lsof` plus
+launch. CDP methods are fixed Runtime/Page enable, focus emulation, desktop metrics,
+one initial local Tasks navigation and read-only evaluation; no arbitrary
+evaluation/navigation, response bodies, provider or Run control is exposed. Loopback listener ownership uses `lsof` plus
 the retained Chrome process group. No raw DOM, URL, debugger token or exception
 payload is included in reports.
 
@@ -107,3 +107,8 @@ It never grants a fresh window, resends a stop, or signals a discovered PID.
 Listener probes use only remaining time and require explicit connection refusal;
 an in-progress or unrelated network error does not prove the listener closed.
 This does not change any prior failed cleanup result.
+A successful bounded closure proof is retained for those exact terminal browser
+and helper handles and debug port, so later offline work does not reopen an
+expired cleanup window. Replacing a handle/port or observing a live handle
+invalidates reuse. Probe errors remain unverified and cannot prevent the owned
+app launcher from receiving its existing cleanup.

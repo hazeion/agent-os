@@ -51,7 +51,7 @@ export function expression(config) {
       task_visible: taskText?.textContent.trim() === 'Disposable acceptance Task' && visible(taskText),
       observation: {
         ready_state: ['loading','interactive','complete'].includes(document.readyState) ? document.readyState : 'other',
-        location_category: location.origin === ${JSON.stringify(config.origin)} && location.pathname === '/tasks' ? 'tasks' : location.href === 'about:blank' ? 'blank' : location.protocol === 'chrome-error:' ? 'browser_error' : location.origin === ${JSON.stringify(config.origin)} && ['/login','/auth','/owner'].includes(location.pathname) ? 'auth' : 'other'
+        location_category: location.origin === ${JSON.stringify(config.origin)} && location.pathname === '/tasks' ? 'tasks' : location.href === 'about:blank' ? 'blank' : location.protocol === 'chrome-error:' ? 'browser_error' : location.origin === ${JSON.stringify(config.origin)} && ['/sign-in','/login','/auth','/owner'].includes(location.pathname) ? 'auth' : 'other'
       },
       diagnostics: {
         project_exists: Boolean(project), project_text_matches: projectText?.textContent.trim() === 'Disposable acceptance Project',
@@ -116,7 +116,9 @@ export async function observe(input, dependencies = {}) {
         }
         const pages = JSON.parse(raw);
         if (!Array.isArray(pages) || pages.length > 16) throw new Error('browser_protocol_failed');
-        for (const page of pages) {
+        const blankPages = pages.filter(page => page.type === 'page' && page.url === 'about:blank');
+        if (blankPages.length > 1) { result.code = 'browser_target_ambiguous'; return result; }
+        for (const page of blankPages) {
           if (page.type !== 'page' || typeof page.url !== 'string' || typeof page.webSocketDebuggerUrl !== 'string') continue;
           if (page.url !== 'about:blank') continue;
           const ws = new URL(page.webSocketDebuggerUrl);

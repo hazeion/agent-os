@@ -21,7 +21,7 @@ function snapshot(changes = {}) {
   const context = { document: { readyState: 'complete', documentElement: root,
     querySelectorAll: selector => selector.includes('button') ? [project] : [task],
     querySelector: selector => selector === '#main-content h1' ? { textContent: changes.wrongHeading ? 'Other page' : 'Projects & Tasks' } : selector.includes('bridge') ? { dataset: { state: changes.bridgeChecking ? 'checking' : 'ready' } } : {} },
-    location: changes.blank ? { origin: 'null', pathname: 'blank', href: 'about:blank', protocol: 'about:' } : { origin: config.origin, pathname: '/tasks' }, innerWidth: changes.wrongViewport ? 800 : 1440, innerHeight: 1000,
+    location: changes.auth ? { origin: config.origin, pathname: '/sign-in', href: config.origin + '/sign-in?return=%2Ftasks', protocol: 'http:' } : changes.blank ? { origin: 'null', pathname: 'blank', href: 'about:blank', protocol: 'about:' } : { origin: config.origin, pathname: '/tasks' }, innerWidth: changes.wrongViewport ? 800 : 1440, innerHeight: 1000,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) };
   return JSON.parse(JSON.stringify(vm.runInNewContext(expression(config), context)));
 }
@@ -44,6 +44,8 @@ test('fixed DOM predicate binds actual identities, visible rows and selected Pro
   assert.equal(snapshot().observation.location_category, 'tasks');
   assert.equal(snapshot({ blank: true }).observation.location_category, 'blank');
   assert.equal(snapshot({ blank: true }).document_complete, false);
+  assert.equal(snapshot({ auth: true }).observation.location_category, 'auth');
+  assert.equal(snapshot({ auth: true }).document_complete, false);
 });
 test('readiness evidence requires exact boolean closure, not strings or extra payload', () => {
   const ready = Object.fromEntries(CHECKS.map(key => [key, true]));
@@ -137,4 +139,14 @@ test('a preexisting Tasks target is refused rather than navigated or reused', as
   const result = await observe({ ...config, remaining_ms: 10 }, { now: () => clock, WebSocket: Socket,
     fetch: async () => { clock = 10; return { ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: config.origin + '/tasks', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }; } });
   assert.equal(connected, false); assert.equal(result.ready, false);
+});
+
+test('ambiguous owned blank pages are refused before websocket or navigation', async () => {
+  let connected = false;
+  class Socket { constructor() { connected = true; } }
+  const pages = ['one','two'].map(id => ({ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/${id}` }));
+  const result = await observe(config, { now: () => 0, WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify(pages))] }) });
+  assert.equal(connected, false); assert.equal(result.ready, false);
+  assert.equal(result.code, 'browser_target_ambiguous');
 });
