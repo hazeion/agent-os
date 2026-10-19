@@ -249,26 +249,28 @@ def _body(stream: BinaryIO, headers: dict[str, list[str]], maximum: int) -> byte
     raise LinkPreviewTransportError("link_preview.invalid_response")
 
 
-def _decode_page(body: bytes, headers: dict[str, list[str]]) -> bytes:
+def _decode_page(body: bytes, headers: dict[str, list[str]], maximum: int = MAXIMUM_PAGE_DECODED_BYTES) -> bytes:
     encoding = (_exact_header(headers, "content-encoding") or "identity").strip().lower()
     if encoding == "identity":
+        if len(body) > maximum:
+            raise LinkPreviewTransportError("link_preview.invalid_response")
         return body
     if encoding != "gzip":
         raise LinkPreviewTransportError("link_preview.invalid_response")
     decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
     try:
-        result = decoder.decompress(body, MAXIMUM_PAGE_DECODED_BYTES + 1)
-        if len(result) > MAXIMUM_PAGE_DECODED_BYTES:
+        result = decoder.decompress(body, maximum + 1)
+        if len(result) > maximum:
             raise LinkPreviewTransportError("link_preview.invalid_response")
-        result += decoder.flush(MAXIMUM_PAGE_DECODED_BYTES + 1 - len(result))
+        result += decoder.flush(maximum + 1 - len(result))
     except zlib.error as exc:
         raise LinkPreviewTransportError("link_preview.invalid_response") from exc
-    if len(result) > MAXIMUM_PAGE_DECODED_BYTES or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+    if len(result) > maximum or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
         raise LinkPreviewTransportError("link_preview.invalid_response")
     return result
 
 
-def fetch_public_resource(
+def _fetch_public_resource(
     initial: NormalizedPreviewURL,
     *,
     kind: str,
@@ -276,12 +278,13 @@ def fetch_public_resource(
     dialer: Dialer = _default_dialer,
     clock: Clock = time.monotonic,
     phase: Phase = lambda _value: None,
+    research: bool = False,
 ) -> FetchedResource:
     """Fetch one page or image through fully revalidated pinned connections."""
 
     if kind not in {"page", "image"}:
         raise LinkPreviewTransportError("link_preview.unavailable")
-    deadline = clock() + OPERATION_TIMEOUT_SECONDS
+    deadline = clock() + (10.0 if research else OPERATION_TIMEOUT_SECONDS)
     current = initial
     visited: set[str] = set()
     for hop in range(MAXIMUM_REDIRECTS + 1):
@@ -322,12 +325,12 @@ def fetch_public_resource(
         try:
             connection.settimeout(min(IDLE_TIMEOUT_SECONDS, _remaining(deadline, clock)))
             authority = urlsplit(current.canonical_url).netloc
-            accept = _PAGE_ACCEPT if kind == "page" else _IMAGE_ACCEPT
+            accept = "text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8" if research else _PAGE_ACCEPT if kind == "page" else _IMAGE_ACCEPT
             encoding = "gzip" if kind == "page" else "identity"
             request = (
                 f"GET {current.request_target} HTTP/1.1\r\n"
                 f"Host: {authority}\r\n"
-                "User-Agent: MentatLinkPreview/1\r\n"
+                f"User-Agent: {'MentatProjectResearch/1' if research else 'MentatLinkPreview/1'}\r\n"
                 f"Accept: {accept}\r\n"
                 f"Accept-Encoding: {encoding}\r\n"
                 "Connection: close\r\n\r\n"
@@ -359,10 +362,10 @@ def fetch_public_resource(
                 encoded_body = _body(
                     stream,
                     headers,
-                    MAXIMUM_PAGE_ENCODED_BYTES if kind == "page" else MAXIMUM_IMAGE_ENCODED_BYTES,
+                    2 * 1024 * 1024 if research else MAXIMUM_PAGE_ENCODED_BYTES if kind == "page" else MAXIMUM_IMAGE_ENCODED_BYTES,
                 )
                 if kind == "page":
-                    decoded = _decode_page(encoded_body, headers)
+                    decoded = _decode_page(encoded_body, headers, 2 * 1024 * 1024 if research else MAXIMUM_PAGE_DECODED_BYTES)
                 else:
                     content_encoding = (_exact_header(headers, "content-encoding") or "identity").strip().lower()
                     if content_encoding != "identity":
@@ -387,8 +390,29 @@ def fetch_public_resource(
     raise LinkPreviewTransportError("link_preview.redirect_limit")
 
 
+def fetch_public_resource(initial: NormalizedPreviewURL, *, kind: str,
+                          resolver: Resolver = _default_resolver, dialer: Dialer = _default_dialer,
+                          clock: Clock = time.monotonic, phase: Phase = lambda _value: None) -> FetchedResource:
+    """Existing fixed preview page/image contract; research cannot select it."""
+    return _fetch_public_resource(initial, kind=kind, resolver=resolver, dialer=dialer, clock=clock, phase=phase)
+
+
+def fetch_public_research_page(initial: NormalizedPreviewURL, *, resolver: Resolver = _default_resolver,
+                               dialer: Dialer = _default_dialer, clock: Clock = time.monotonic,
+                               phase: Phase = lambda _value: None) -> FetchedResource:
+    """Private fixed GET with 10-second and two-MiB encoded/decoded ceilings."""
+    try:
+        if type(initial) is not NormalizedPreviewURL or normalize_preview_url(initial.canonical_url) != initial:
+            raise LinkPreviewTransportError("link_preview.blocked")
+    except (LinkPreviewPolicyError, ValueError, TypeError):
+        raise LinkPreviewTransportError("link_preview.blocked") from None
+    return _fetch_public_resource(initial, kind="page", resolver=resolver, dialer=dialer,
+                                  clock=clock, phase=phase, research=True)
+
+
 __all__ = [
     "FetchedResource",
     "LinkPreviewTransportError",
     "fetch_public_resource",
+    "fetch_public_research_page",
 ]

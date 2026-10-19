@@ -43,12 +43,12 @@ class LinkPreviewMetadata:
     image_alt: str | None
 
 
-def _content_type(value: str) -> tuple[str, str | None]:
+def _content_type(value: str, *, allow_plain: bool = False) -> tuple[str, str | None]:
     if not isinstance(value, str) or not value or "\0" in value:
         raise LinkPreviewMetadataError("metadata content type invalid")
     parts = [part.strip() for part in value.split(";")]
     essence = parts[0].lower()
-    if essence not in {"text/html", "application/xhtml+xml"}:
+    if essence not in {"text/html", "application/xhtml+xml"} and not (allow_plain and essence == "text/plain"):
         raise LinkPreviewMetadataError("metadata content type unsupported")
     charset: str | None = None
     for parameter in parts[1:]:
@@ -66,17 +66,19 @@ def _content_type(value: str) -> tuple[str, str | None]:
     return essence, charset
 
 
-def decode_html(body: bytes, content_type: str) -> str:
+def _decode_text(body: bytes, content_type: str, *, maximum: int, allow_plain: bool = False) -> str:
     """Decode one already transfer-decoded bounded HTML body."""
 
-    if not isinstance(body, bytes) or len(body) > MAXIMUM_DECODED_HTML_BYTES:
+    if not isinstance(body, bytes) or len(body) > maximum:
         raise LinkPreviewMetadataError("metadata body invalid")
-    essence, charset = _content_type(content_type)
+    essence, charset = _content_type(content_type, allow_plain=allow_plain)
     if body.startswith(b"\xef\xbb\xbf"):
         selected = "utf-8-sig"
     elif charset is not None:
         selected = charset
     elif essence == "application/xhtml+xml":
+        selected = "utf-8"
+    elif essence == "text/plain":
         selected = "utf-8"
     else:
         match = _META_CHARSET.search(body[:1024])
@@ -92,6 +94,15 @@ def decode_html(body: bytes, content_type: str) -> str:
         return body.decode(selected, errors=errors)
     except UnicodeDecodeError as exc:
         raise LinkPreviewMetadataError("metadata body invalid") from exc
+
+
+def decode_html(body: bytes, content_type: str) -> str:
+    return _decode_text(body, content_type, maximum=MAXIMUM_DECODED_HTML_BYTES)
+
+
+def decode_research_text(body: bytes, content_type: str) -> str:
+    """Fixed public article/plain-text decoder; preview bounds stay unchanged."""
+    return _decode_text(body, content_type, maximum=2 * 1024 * 1024, allow_plain=True)
 
 
 def _text(value: str | None, maximum: int) -> str | None:

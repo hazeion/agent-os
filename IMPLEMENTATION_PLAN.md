@@ -213,6 +213,11 @@ have clear independent reviews; hosted timing gains remain unverified.
    route and a supported API-key profile are candidates pending owner choice
    and exact qualification, not readiness claims. Do not weaken the policy or
    change credentials automatically.
+   The [public-page reader prerequisite](reviews/2026-09-30-project-public-page-reader.md)
+   adds bounded credential-free HTTPS article/text retrieval without a model,
+   private Project input or browser route. Public search, approved-input/work
+   reservation, Run/scope fencing, qualified tool handoff and provenance remain
+   required before Agent public research can be enabled.
    Next implement supported host credential custody, complete runtime/model
    qualification and durable scope admission, then
    exact Project execution admission and generated-output provenance.

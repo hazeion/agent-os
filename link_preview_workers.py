@@ -61,21 +61,45 @@ class _WorkerSlot:
         *,
         clock: Callable[[], float],
         environment: Mapping[str, str],
+        operation_watchdog_seconds: float | None = None,
+        maximum_line_bytes: int | None = None,
     ):
         self._command = tuple(command)
         self._clock = clock
         self._environment = dict(environment)
+        self._operation_watchdog_seconds = operation_watchdog_seconds
+        self._maximum_line_bytes = maximum_line_bytes
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None
         self._messages: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
         self._reader: threading.Thread | None = None
         self._shutdown = False
+        self._output_failed = threading.Event()
         self._start()
 
     def _start(self) -> None:
+        with self._lifecycle_lock:
+            if self._shutdown:
+                return
+            try:
+                self._spawn()
+            except BaseException as startup_error:
+                self._shutdown = True
+                owned_process = self._process
+                try:
+                    self._terminate()
+                except BaseException:
+                    self._process = owned_process
+                    startup_error._mentat_worker_owner = self
+                    raise startup_error from None
+                raise
+
+    def _spawn(self) -> None:
         if self._shutdown:
             return
         self._messages = queue.Queue(maxsize=16)
+        self._output_failed = threading.Event()
         options: dict[str, object] = {}
         if os.name == "nt":
             options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -104,12 +128,13 @@ class _WorkerSlot:
 
         process = self._process
         messages = self._messages
+        output_failed = self._output_failed
 
         def read_output() -> None:
             if process.stdout is None:
                 return
             while True:
-                line = process.stdout.readline(MAXIMUM_WORKER_LINE_BYTES + 1)
+                line = process.stdout.readline((self._maximum_line_bytes or MAXIMUM_WORKER_LINE_BYTES) + 1)
                 if not line:
                     try:
                         messages.put_nowait(None)
@@ -119,15 +144,25 @@ class _WorkerSlot:
                 try:
                     messages.put(line, timeout=0.1)
                 except queue.Full:
-                    self._terminate()
+                    # Parent owns lifecycle and joining. The output thread
+                    # must not contend with shutdown while its parent joins it.
+                    output_failed.set()
                     return
 
         self._reader = threading.Thread(target=read_output, daemon=True, name="mentat-link-preview-worker-reader")
         self._reader.start()
 
     def _terminate(self) -> None:
+        with self._lifecycle_lock:
+            try:
+                self._terminate_owned()
+            except BaseException as cleanup_error:
+                self._shutdown = True
+                cleanup_error._mentat_worker_owner = self
+                raise
+
+    def _terminate_owned(self) -> None:
         process = self._process
-        self._process = None
         if process is None:
             return
         process_group = getattr(process, "_mentat_process_group", None)
@@ -150,7 +185,11 @@ class _WorkerSlot:
                 try:
                     process.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
-                    pass
+                    self._shutdown = True
+                    raise LinkPreviewWorkerError("link_preview.unavailable") from None
+        if process.poll() is None:
+            self._shutdown = True
+            raise LinkPreviewWorkerError("link_preview.unavailable")
         if os.name != "nt" and type(process_group) is int and process_group > 1:
             try:
                 os.killpg(process_group, signal.SIGKILL)
@@ -162,20 +201,36 @@ class _WorkerSlot:
                     pipe.close()
             except Exception:
                 pass
+        reader = self._reader
+        if reader is threading.current_thread():
+            # The output thread is returning immediately after this call.
+            # Retain ownership until its parent verifies the join.
+            return
+        if reader is not None and reader.ident is not None:
+            reader.join(timeout=0.5)
+            if reader.is_alive():
+                self._shutdown = True
+                raise LinkPreviewWorkerError("link_preview.unavailable")
+        self._reader = None
+        self._process = None
 
     def replace(self) -> None:
-        self._terminate()
-        self._start()
+        with self._lifecycle_lock:
+            self._terminate()
+            self._start()
 
     def abort(self) -> None:
-        self._shutdown = True
-        self._terminate()
+        with self._lifecycle_lock:
+            self._shutdown = True
+            self._terminate()
 
     def close(self) -> None:
         self.abort()
 
     def execute(self, *, kind: str, url: str) -> dict[str, object]:
         with self._lock:
+            if self._shutdown:
+                raise LinkPreviewWorkerError("link_preview.unavailable")
             process = self._process
             if process is None or process.poll() is not None or process.stdin is None:
                 self.replace()
@@ -193,22 +248,26 @@ class _WorkerSlot:
                 self.replace()
                 raise LinkPreviewWorkerError("link_preview.unavailable")
             started = self._clock()
+            watchdog = self._operation_watchdog_seconds or OPERATION_WATCHDOG_SECONDS
             dns_started: float | None = None
             while True:
+                if self._output_failed.is_set():
+                    self.replace()
+                    raise LinkPreviewWorkerError("link_preview.unavailable")
                 elapsed = self._clock() - started
-                if elapsed >= OPERATION_WATCHDOG_SECONDS or dns_started is not None and self._clock() - dns_started >= DNS_WATCHDOG_SECONDS:
+                if elapsed >= watchdog or dns_started is not None and self._clock() - dns_started >= DNS_WATCHDOG_SECONDS:
                     self.replace()
                     raise LinkPreviewWorkerError("link_preview.unavailable")
                 wait = min(
                     0.05,
-                    OPERATION_WATCHDOG_SECONDS - elapsed,
+                    watchdog - elapsed,
                     DNS_WATCHDOG_SECONDS - (self._clock() - dns_started) if dns_started is not None else 0.05,
                 )
                 try:
                     raw = self._messages.get(timeout=max(0.001, wait))
                 except queue.Empty:
                     continue
-                if raw is None or len(raw) > MAXIMUM_WORKER_LINE_BYTES or not raw.endswith(b"\n"):
+                if raw is None or len(raw) > (self._maximum_line_bytes or MAXIMUM_WORKER_LINE_BYTES) or not raw.endswith(b"\n"):
                     self.replace()
                     raise LinkPreviewWorkerError("link_preview.unavailable")
                 try:
@@ -237,7 +296,10 @@ class _WorkerSlot:
                 if message["type"] != "result" or set(message) != {"type", "id", "result"} or not isinstance(message.get("result"), dict):
                     self.replace()
                     raise LinkPreviewWorkerError("link_preview.unavailable")
-                return message["result"]
+                with self._lifecycle_lock:
+                    if self._shutdown or self._process is not process:
+                        raise LinkPreviewWorkerError("link_preview.unavailable")
+                    return message["result"]
 
 
 class LinkPreviewWorkerPool:
@@ -250,15 +312,22 @@ class LinkPreviewWorkerPool:
     ):
         worker_command = tuple(command or default_worker_command())
         environment = minimal_worker_environment(environ)
-        self._slots = tuple(
-            _WorkerSlot(worker_command, clock=clock, environment=environment)
-            for _ in range(WORKER_COUNT)
-        )
+        self._slots = []
         self._available: queue.Queue[_WorkerSlot] = queue.Queue(maxsize=WORKER_COUNT)
-        for slot in self._slots:
-            self._available.put_nowait(slot)
         self._closed = False
         self._guard = threading.Lock()
+        try:
+            for _ in range(WORKER_COUNT):
+                slot = _WorkerSlot(worker_command, clock=clock, environment=environment)
+                self._slots.append(slot)
+                self._available.put_nowait(slot)
+        except BaseException as startup_error:
+            try:
+                self.close()
+            except BaseException:
+                startup_error._mentat_worker_pool = self
+                raise startup_error from None
+            raise
 
     def execute(self, *, kind: str, normalized_url: str) -> dict[str, object]:
         if kind not in {"page", "image"} or not isinstance(normalized_url, str):
@@ -271,7 +340,11 @@ class LinkPreviewWorkerPool:
         except queue.Empty as exc:
             raise LinkPreviewWorkerError("link_preview.capacity_unavailable") from exc
         try:
-            return slot.execute(kind=kind, url=normalized_url)
+            result = slot.execute(kind=kind, url=normalized_url)
+            with self._guard:
+                if self._closed:
+                    raise LinkPreviewWorkerError("link_preview.unavailable")
+                return result
         finally:
             with self._guard:
                 if not self._closed:
@@ -279,11 +352,18 @@ class LinkPreviewWorkerPool:
 
     def close(self) -> None:
         with self._guard:
-            if self._closed:
-                return
             self._closed = True
+        failure = None
         for slot in self._slots:
-            slot.abort()
+            try:
+                slot.abort()
+            except BaseException as error:
+                # Finish every owned slot even for interrupts/unexpected bugs,
+                # then re-raise the original failure; never suppress it.
+                failure = failure or error
+        if failure is not None:
+            failure._mentat_worker_pool = self
+            raise failure
 
 
 __all__ = [
