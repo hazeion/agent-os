@@ -1,6 +1,6 @@
 # Mentat implementation roadmap
 
-Status: active · updated September 30, 2026
+Status: active · updated October 19, 2026
 
 This is the short resume map, not permission to implement an unspecified slice.
 Read [AGENTS.md](AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md),
@@ -56,6 +56,19 @@ and [Fresh-install release readiness: Project, Task, and Agent journey](https://
 remain acceptance work against the appropriate integrated branch. Do not close
 residual QA based on a fixture or an unmerged change alone.
 
+## Current storage decision
+
+The owner chose fresh/current storage only on October 19. Current SQLite
+schema 46, backup format 5 and restore protocol 4 replace the old-root upgrade,
+standalone Agent convergence and older archive support paths. Unsupported data
+is refused unchanged; current authority, row constraints, retention, unknown
+outcomes and validated recovery remain. Plain `task-export` remains current
+SQLite-to-JSON recovery. See [ADR0002](docs/adr/0002-current-only-storage.md).
+Current-only source, fixture and documentation branches require composed QA and
+independent reviews before release; local component passes are not that gate.
+The earlier schema-specific review records remain historical evidence, not
+permission to reconstruct old roots.
+
 ## Next steps and dependencies
 
 1. **Finish CI and integration review.** The dedicated CI workstream repairs
@@ -71,14 +84,19 @@ residual QA based on a fixture or an unmerged change alone.
    The [provider compatibility audit](reviews/2026-09-30-project-provider-compatibility.md)
    establishes that stock Codex OAuth omits the existing output-token limit
    and has an outer retry. A configured provider or working Console is not
-   Project qualification. The owner has been asked whether to evaluate the
-   documented ChatGPT-plan OAuth route first or a supported API-key provider
-   through Hermes. Neither is selected or qualified by this map. Credential
-   custody, exact profile/account/model/token/image behavior, fixed transport
+   Project qualification. The owner selected ChatGPT-plan OAuth in the
+   October 3 decisions in [provider decision #239](https://github.com/hazeion/agent-os/issues/239)
+   and [Wayfinder #234](https://github.com/hazeion/agent-os/issues/234).
+   The protected-session and request-based policy design has two independent
+   clearances. Approval to implement that policy, account consent and exact
+   live provider/model/tool qualification remain pending. This route cannot
+   enforce the existing provider-side output-token ceiling; older token-capped
+   approvals must not be reused or silently weakened. Credential custody,
+   exact profile/account/model/token/image behavior, fixed transport
    and unknown-outcome handling need direct evidence. Do not read Hermes
    credential stores directly, change auth, silently drop a policy field or
    create a fallback. Credential use, live provider submission and production
-   provider enablement require the resolved owner choice and proven authority.
+   provider enablement require separate explicit approvals and proven authority.
    Independent credential-free source and synthetic qualification may continue
    within already approved contracts.
 
@@ -112,7 +130,7 @@ residual QA based on a fixture or an unmerged change alone.
    New scope/call bookkeeping now requires an immutable output hold charged
    across shared retained writers. It reserves storage capacity and future
    bounded receipt representation, not producing-Run or output authority.
-   The coupled schema46 implementation adds explicit synthetic producer
+   The coupled schema 46 implementation adds explicit synthetic producer
    lifecycle, immutable output registration/finalization, durable Stop and
    source-aware active backup/restore. Its complete review and qualification
    must finish together. Synthetic output cannot be promoted to production
@@ -158,9 +176,11 @@ The [Google setup guidance slice](reviews/2026-09-30-google-setup-guidance.md)
 adds fixed failure-step guidance to the existing CLI ceremony; it grants no
 authentication or remote activation and does not satisfy live acceptance.
 
-Provider route choice is pending. Google OAuth application configuration,
-HTTPS host activation/security acceptance and actual garage goals, floorplan,
-measurements and budget are not supplied or proven by component tests. Do not
+ChatGPT-plan OAuth is selected. Approval to implement the request-based policy,
+account consent and live qualification remain pending. Google OAuth application
+configuration, HTTPS host activation/security acceptance and actual garage
+goals, floorplan, measurements and budget are not supplied or proven by
+component tests. Do not
 invent them or request secrets in chat. Continue independent authorized CI,
 source qualification and integration work while those inputs are pending;
 elapsed time never approves credential changes or execution.

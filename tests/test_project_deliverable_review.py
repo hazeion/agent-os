@@ -37,27 +37,6 @@ class DeliverableReviewTests(unittest.TestCase):
             )
         return versions
 
-    def test_exact_schema_31_upgrade_and_drift_gate(self):
-        self.assertEqual(
-            private_console_unit.private_console_unit_digest(private_console_unit.empty_private_console_unit()),
-            private_console_unit.private_console_unit_digest(private_console_unit.empty_private_console_unit()),
-        )
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "source.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=31)
-            with closing(sqlite3.connect(path)) as connection:
-                mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], mentat_db.SCHEMA_VERSION)
-                self.assertEqual(validate_review_connection(connection)[0][2], 0)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drift.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=31)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP VIEW mentat_retained_attachments")
-                connection.execute("CREATE VIEW mentat_retained_attachments AS SELECT attachment_id FROM run_attachments")
-                with self.assertRaises(mentat_db.MentatDatabaseError):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 31)
 
     def test_accept_requires_complete_exact_heads_and_is_idempotent(self):
         self.assertEqual(read_review_status(self.root, "project_mentat")["status"], "incomplete")

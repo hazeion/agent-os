@@ -179,8 +179,9 @@ def _validate_shared_graph(connection: sqlite3.Connection) -> None:
 def _dormant_proposal_ids(connection: sqlite3.Connection, *, exclude_ids=frozenset()) -> frozenset[str]:
     """Exact historical fixture shape, never admitted Run/source authority."""
     version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-    if version < 43:
-        return frozenset()
+    from mentat_db import SCHEMA_VERSION
+    if version != SCHEMA_VERSION:
+        _fail('invalid')
     _validate_shared_graph(connection)
     runs = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_runs WHERE source='project_proposal'")}
     claims = {str(row[0]) for row in connection.execute("SELECT run_id FROM mentat_project_worker_generations")}

@@ -150,54 +150,27 @@ class RestoreSanitizationContextTests(unittest.TestCase):
         for value in (True, -1, 0, float('nan'), float('inf'), 10**1000, 'today'):
             self.assertFalse(restore._valid_sanitization_timestamp(value))
 
-    def test_published_protocol3_owner_sanitization_with_real_clock_resumes_exactly(self):
+
+    def test_old_and_future_restore_protocols_refuse_without_discarding_inflight_evidence(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
+            _, archive, _, _, _ = self.source(base)
             helper = private_tests.PrivateConsoleStateTests()
-            old_migrations = tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 27)
-            with patch.object(mentat_db, 'MIGRATIONS', old_migrations), patch.object(mentat_db, 'SCHEMA_VERSION', 27):
-                source = helper.make_current(base, 'legacy-source', 'source')
-                authority = OwnerAuthAuthority(source, _registration_verifier=auth_tests.OwnerAuthAuthorityTests._fixture_registration)
-                grant = authority.open_bootstrap('https://mentat.example')
-                ceremony = authority.start_bootstrap_registration(grant.code, 'primary')
-                authority.finish_registration(ceremony.ceremony_id, auth_tests.OwnerAuthAuthorityTests.registration())
-                backup = restore.create_durable_backup(source)
-                self.assertEqual(backup.status, 'created')
-                archive = source / 'backups' / backup.backup_name
-                target = helper.make_current(base, 'legacy-target', 'target')
-                mentat_db.connect(target).close()
-                prior_timestamp = time.time()
-                original = restore._restore_private_console_under_lock
-                def interrupt(*args, **kwargs):
-                    original(*args, **kwargs)
-                    raise OSError('published protocol3 interruption')
-                def published_sanitizer(source_unit, _state, **_kwargs):
-                    return private_unit.sanitize_owner_auth_restore_unit(source_unit, now=prior_timestamp)
-                with patch.object(restore, 'RESTORE_PROTOCOL_VERSION', 3):
-                    preview = restore.preview_durable_restore(target, archive)
-                    with patch.object(restore, '_sanitized_restore_source', side_effect=published_sanitizer), patch.object(restore, '_restore_private_console_under_lock', side_effect=interrupt):
-                        partial = restore.restore_durable_backup(target, archive, confirmation_token=preview.confirmation_token)
-                self.assertEqual(partial.status, 'partial_failure', partial.public_summary())
-            state = json.loads((target / 'config' / restore.RESTORE_STATE_NAME).read_text())
-            self.assertEqual(state['protocol_version'], 3)
-            self.assertNotIn('sanitization', state)
-            published = private_unit.capture_private_console_unit(target)
-            source_unit = restore._read_backup_file(archive)[2]
-            witness = private_unit.matching_legacy_owner_restore_unit(source_unit, published)
-            self.assertIsNotNone(witness)
-            # Unrelated valid metadata changes must not pass merely because the
-            # session flags and all sanitization timestamps look correct.
-            mutated_path = base / 'mutated.sqlite3'
-            mutated_path.write_bytes(published.database_raw)
-            with closing(sqlite3.connect(mutated_path)) as connection:
-                connection.execute('UPDATE mentat_owner_auth_credentials SET sign_count=sign_count+1')
-                connection.commit()
-            mutated = private_unit.PrivateConsoleUnit(published.history_raw, mutated_path.read_bytes(), published.registry_database_raw, published.blobs)
-            self.assertIsNone(private_unit.matching_legacy_owner_restore_unit(source_unit, mutated))
-            for _ in range(2):
-                resume = restore.preview_durable_restore(target, archive)
-                self.assertEqual(resume.status, 'resume_required', resume.public_summary())
-            completed = restore.restore_durable_backup(target, archive, confirmation_token=resume.confirmation_token)
-            self.assertEqual(completed.status, 'resumed', completed.public_summary())
-            with closing(sqlite3.connect(mentat_db.database_path(target))) as connection:
-                self.assertEqual(connection.execute('SELECT revoked_at FROM mentat_owner_auth_sessions').fetchone()[0], prior_timestamp)
+            target = helper.make_current(base, 'target', 'target')
+            preview = restore.preview_durable_restore(target, archive)
+            with patch.object(restore, '_restore_private_console_under_lock', side_effect=OSError('owned interruption')):
+                interrupted = restore.restore_durable_backup(target, archive, confirmation_token=preview.confirmation_token)
+            self.assertEqual(interrupted.status, 'partial_failure', interrupted.public_summary())
+            state_path = target / 'config' / restore.RESTORE_STATE_NAME
+            current = json.loads(state_path.read_bytes())
+            self.assertEqual(current['protocol_version'], 4)
+            for protocol in (3, 5):
+                state = dict(current, protocol_version=protocol)
+                state_path.write_bytes(restore._canonical_json(state))
+                before = {str(p.relative_to(target)): p.read_bytes() if p.is_file() else None for p in target.rglob('*')}
+                refused = restore.preview_durable_restore(target, archive)
+                self.assertEqual(refused.status, 'unsafe', refused.public_summary())
+                result = restore.restore_durable_backup(target, archive, confirmation_token=preview.confirmation_token)
+                self.assertEqual(result.status, 'blocked')
+                self.assertEqual(before, {str(p.relative_to(target)): p.read_bytes() if p.is_file() else None for p in target.rglob('*')})
+                self.assertTrue(state_path.exists())

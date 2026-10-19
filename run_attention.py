@@ -47,12 +47,12 @@ def validate_run_attention_connection(connection: sqlite3.Connection, *, archiva
     """Validate every hidden, live, and retired Run-attention row."""
 
     version = int(connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0])
-    if version < 36:
-        return
-    if version >= 41:
-        unknown = connection.execute("SELECT id,source FROM mentat_runs WHERE source NOT IN ('console','task_dispatch')").fetchall()
-        if any(source != "project_proposal" or identifier not in archival_proposals for identifier, source in unknown):
-            _fail()
+    from mentat_db import SCHEMA_VERSION
+    if version != SCHEMA_VERSION:
+        _fail()
+    unknown = connection.execute("SELECT id,source FROM mentat_runs WHERE source NOT IN ('console','task_dispatch')").fetchall()
+    if any(source != "project_proposal" or identifier not in archival_proposals for identifier, source in unknown):
+        _fail()
     rows = connection.execute(
         "SELECT a.run_id,a.incarnation,a.item_id,a.revision,a.created_at,a.updated_at,a.read_at,"
         "a.acknowledged_at,a.resolved_at,a.last_action_digest,a.last_expected_revision,a.retired_at,"

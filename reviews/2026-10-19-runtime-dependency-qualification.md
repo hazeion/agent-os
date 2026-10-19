@@ -163,3 +163,17 @@ implementation approval, account consent, live provider/model qualification,
 canonical admission and garage acceptance remain separate. Two independent
 reviews precede publication. No push, PR, provider factory, credential read or
 production execution is part of this checkpoint.
+
+## Current-storage publication preparation
+
+The updated local dependency branch normally merges pure current-storage
+cleanup302468c, preserving the original dependency feature history. Its runtime
+modules, fixed candidate manifest and test bytes remain identical to frozen
+QA1c33. The18 previously reviewed public candidate fingerprints from packaging
+31188a8 now belong to this dependency branch: all217 pure-cleanup baseline
+entries and non-results metadata remain exact, yielding235 entries. No detector,
+threshold or exclusion changes were made. The packaging resource inventory
+remains a separate dependent change; this branch does not claim an installed
+candidate resource is available before that packaging change. Gates are deferred
+while the second complete integration run uses frozen1c33. No publication or
+release-readiness claim is made by this local history preparation.
