@@ -388,15 +388,35 @@ def run_doctor(args: argparse.Namespace) -> int:
 
     _module, config = _load_config(args)
     data_status = runtime_config.schema_preflight_status(config.data_dir)
+    from mentat_db import MentatDatabaseError, validate_current_database_root
+    database_status = "unsupported"
+    try:
+        current_database = validate_current_database_root(config.data_dir)
+        database_status = "current" if current_database else "missing"
+    except (MentatDatabaseError, OSError):
+        current_database = False
+    development = (
+        runtime_config._absolute_without_following(config.data_dir)
+        == runtime_config._absolute_without_following(runtime_config.PACKAGED_SEED_DIR)
+    )
+    unversioned_operator_data = data_status == "legacy" and not development and any(
+        os.path.lexists(config.data_dir / name) for name in runtime_config.SEED_FILE_NAMES
+    )
+    supported = (
+        data_status in {"current", "fresh_incomplete", "legacy"}
+        and database_status != "unsupported"
+        and not unversioned_operator_data
+        and (data_status != "current" or current_database)
+    )
     hermes_available = shutil.which("hermes") is not None
     google_calendar_available = importlib.util.find_spec("googleapiclient") is not None
     payload = {
-        "ok": data_status not in {"invalid", "newer"},
+        "ok": supported,
         "version": __version__,
         "python": platform.python_version(),
         "platform": platform.system().lower(),
         "network": "loopback-only",
-        "data": {"status": data_status},
+        "data": {"status": data_status, "database": database_status},
         "optional_integrations": {
             "hermes": "available" if hermes_available else "not detected",
             "google_calendar": "available" if google_calendar_available else "not installed",

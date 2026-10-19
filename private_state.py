@@ -187,7 +187,8 @@ def fresh_console_storage_issue(data_root: Path) -> str | None:
             lexical = history_stat()
             if not history_safe(lexical):
                 return "private_history_invalid"
-            history_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            history_flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
             history_descriptor = (os.open(HISTORY_NAME, history_flags, dir_fd=descriptor)
                                   if descriptor is not None else os.open(source / HISTORY_NAME, history_flags))
             try:
@@ -218,7 +219,7 @@ def fresh_console_storage_issue(data_root: Path) -> str | None:
                         raise ValueError("duplicate history key")
                     result[key] = value
                 return result
-            document = json.loads(raw, object_pairs_hook=unique_pairs)
+            document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
             if (not isinstance(document, dict) or set(document) != {"schema_version", "runs"}
                     or type(document["schema_version"]) is not int or document["schema_version"] != 3
                     or document["runs"] != []):

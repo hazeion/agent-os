@@ -761,10 +761,6 @@ def main(argv: list[str] | None = None) -> int:
     # effective config and exits before its bind-host validation.
     if (
         server_cli_args.print_config
-        or server_cli_args.preview_legacy_migration
-        or server_cli_args.confirm_legacy_migration
-        or server_cli_args.preview_schema_migration
-        or server_cli_args.confirm_schema_migration
         or server_cli_args.create_backup
         or server_cli_args.preview_restore
         or server_cli_args.confirm_restore
