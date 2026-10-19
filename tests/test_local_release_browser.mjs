@@ -59,6 +59,7 @@ test('a connecting websocket timeout closes the owned transport and refuses read
   const result = await observe({ ...config, remaining_ms: 10 }, { WebSocket: Socket, now: () => 0,
     fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
   assert.equal(result.ready, false); assert.equal(closed, true);
+  assert.equal(result.code, 'browser_protocol_timeout'); assert.equal(result.stage, 'connect');
   assert.equal(Object.values(result.checks).some(Boolean), false);
 });
 test('fixed protocol reaches readiness and closes without navigating or closing Chrome', async () => {
@@ -82,6 +83,7 @@ test('fixed protocol reaches readiness and closes without navigating or closing 
   assert.equal(messages.filter(item => item.method === 'Page.navigate').length, 1);
   assert.equal(result.observation.location_category, 'tasks');
   assert.equal(result.observation.snapshots, 1);
+  assert.equal(result.stage, 'ready');
 });
 test('a foreign debugger endpoint is never connected', async () => {
   let clock = 0, connected = false;
@@ -149,4 +151,27 @@ test('ambiguous owned blank pages are refused before websocket or navigation', a
     fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify(pages))] }) });
   assert.equal(connected, false); assert.equal(result.ready, false);
   assert.equal(result.code, 'browser_target_ambiguous');
+});
+
+test('existing navigation call timer is distinct from protocol rejection at the same fixed stage', async () => {
+  for (const rejection of [false, true]) {
+    const progress = [];
+    class Socket {
+      constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+      send(raw) {
+        const message = JSON.parse(raw);
+        if (message.method === 'Page.navigate' && !rejection) return;
+        queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, ...(message.method === 'Page.navigate' ? { error: { message: 'private error and URL' } } : { result: {} }) }) }));
+      }
+      close() { this.readyState = 3; }
+    }
+    const result = await observe(config, { now: () => 0, WebSocket: Socket, onProgress: value => progress.push(value),
+      fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+    assert.equal(result.ready, false);
+    assert.equal(result.code, rejection ? 'browser_protocol_failed' : 'browser_protocol_timeout');
+    assert.equal(result.stage, 'navigation');
+    assert.equal(progress.at(-1).stage, 'navigation');
+    assert.deepEqual(progress.map(value => value.stage), ['discovery','connect','runtime','page','focus','viewport','navigation']);
+    assert.equal(JSON.stringify(result).includes('private'), false);
+  }
 });

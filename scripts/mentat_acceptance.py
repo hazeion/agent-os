@@ -142,6 +142,9 @@ def wait_for_reusable_port(port: int, timeout: float = 75) -> None:
     raise AcceptanceFailure("restart_port_not_reusable")
 
 
+BROWSER_STAGES = frozenset({"discovery", "connect", "runtime", "page", "focus", "viewport", "navigation", "evaluation", "ready"})
+
+
 BROWSER_DIAGNOSTICS = frozenset({"project_exists", "project_text_matches", "project_renderable", "project_intersects_viewport",
                                  "task_exists", "task_text_matches", "task_renderable", "task_intersects_viewport"})
 
@@ -171,6 +174,8 @@ class Journey:
         self.browser_checks: dict[str, bool] = {}
         self.browser_diagnostics: dict[str, bool] = {}
         self.browser_observation: dict = {}
+        self.browser_stage: str | None = None
+        self.browser_helper_code: str | None = None
         self.browser_closure_proof: tuple | None = None
         self.cleanup_observations: dict[str, bool] = {}
         self.launch_output = tempfile.TemporaryFile()
@@ -326,6 +331,7 @@ class Journey:
         latest = None
         diagnostics = None
         observation = None
+        stage = None
         for line in lines:
             try:
                 value = json.loads(line, object_pairs_hook=unique_members)
@@ -337,6 +343,7 @@ class Journey:
                     and all(type(check) is bool for check in value["checks"].values())
                     and isinstance(value.get("diagnostics"), dict) and set(value["diagnostics"]) == BROWSER_DIAGNOSTICS
                     and all(type(item) is bool for item in value["diagnostics"].values()), "browser_output_invalid")
+            require(isinstance(value.get("stage"), str) and value["stage"] in BROWSER_STAGES, "browser_output_invalid")
             observed = value.get("observation")
             require(isinstance(observed, dict) and set(observed) == {"ready_state", "location_category", "snapshots", "observer_elapsed_ms"}
                     and isinstance(observed["ready_state"], str) and observed["ready_state"] in {"unknown", "loading", "interactive", "complete", "other"}
@@ -347,24 +354,28 @@ class Journey:
                 progress_count += 1
                 progress_bytes += len(line) + 1
                 require(progress_count <= 16 and progress_bytes <= 12288, "browser_output_limit")
-                require(set(value) == {"schema_version", "event", "checks", "diagnostics", "observation"}
+                require(set(value) == {"schema_version", "event", "stage", "checks", "diagnostics", "observation"}
                         and value["event"] == "progress", "browser_output_invalid")
             else:
                 require(len(line) + 1 <= 4096, "browser_output_limit")
-                require(set(value) == {"schema_version", "ready", "code", "checks", "diagnostics", "observation"}
+                require(set(value) == {"schema_version", "ready", "code", "stage", "checks", "diagnostics", "observation"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
-                        and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed",
+                        and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed", "browser_protocol_timeout",
                                              "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_navigation_failed", "browser_target_ambiguous"},
                         "browser_output_invalid")
                 final = value
             latest = dict(value["checks"])
             diagnostics = dict(value["diagnostics"])
             observation = dict(observed)
+            stage = value["stage"]
         require(not require_final or final is not None, "browser_final_evidence_missing")
         if latest is not None:
             self.browser_checks = latest
             self.browser_diagnostics = diagnostics
             self.browser_observation = observation
+            self.browser_stage = stage
+            if final is not None:
+                self.browser_helper_code = final["code"]
         return final
 
     def render_browser(self, chrome: Path, project_id: str, task_id: str) -> None:
@@ -413,7 +424,7 @@ class Journey:
             require(process_group_absent(self.browser_helper.pid), "browser_helper_child_remains")
             result = self.capture_browser_evidence(output, require_final=True)
             require(time.monotonic() <= deadline, "browser_readiness_timeout")
-        require(result["ready"] is True and result["code"] == "ready"
+        require(result["ready"] is True and result["code"] == "ready" and result["stage"] == "ready"
                 and all(self.browser_checks.values()) and self.browser_helper.returncode == 0,
                 "browser_readiness_failed")
         require(self.browser.poll() is None, "browser_exited_before_owned_stop")
@@ -548,6 +559,9 @@ def main(argv: list[str] | None = None) -> int:
             report["browser_checks"] = journey.browser_checks
             report["browser_diagnostics"] = journey.browser_diagnostics
             report["browser_observation"] = journey.browser_observation
+            report["browser_stage"] = journey.browser_stage
+            if journey.browser_helper_code is not None:
+                report["browser_helper_code"] = journey.browser_helper_code
         if not cleaned:
             primary_phase = report.get("phase", "complete")
             primary_code = report.get("code", "none")

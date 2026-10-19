@@ -112,3 +112,10 @@ and helper handles and debug port, so later offline work does not reopen an
 expired cleanup window. Replacing a handle/port or observing a live handle
 invalidates reuse. Probe errors remain unverified and cannot prevent the owned
 app launcher from receiving its existing cleanup.
+
+Reports retain a validated helper failure code and a fixed CDP-stage category.
+Stage changes use the same bounded progress envelope and survive a parent
+readiness timeout. Existing connect/call timer expiry is reported separately
+from protocol rejection, without exposing methods or errors. The timers remain
+unchanged. Success additionally requires the final stage to be `ready`, never
+an earlier stage or a progress record.

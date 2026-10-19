@@ -305,7 +305,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 helper = unittest.mock.Mock(pid=34567, returncode=0)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 checks["task_visible"] = invalid
-                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION)}
+                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION), "stage": "ready"}
                 output = unittest.mock.MagicMock()
                 output.__enter__.return_value = output
                 output.read.return_value = (json.dumps(result) + "\n").encode()
@@ -331,7 +331,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             checks = {name: True for name in acceptance.BROWSER_CHECKS}
             output = unittest.mock.MagicMock()
             output.__enter__.return_value = output
-            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION)}) + "\n").encode()
+            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION), "stage": "ready"}) + "\n").encode()
             with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                 acceptance, "browser_listener_owned", return_value=True
             ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
@@ -346,11 +346,59 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             browser.terminate.assert_called_once()
             self.assertEqual([call.kwargs["timeout"] for call in browser.wait.call_args_list], [15, 0])
 
+    @unittest.skipUnless(acceptance.os.name == "posix", "POSIX-only main lifecycle boundary")
+    def test_nonready_helper_fixed_code_and_stage_survive_actual_parent_report(self):
+        checks = {name: False for name in acceptance.BROWSER_CHECKS}
+        diagnostics = {name: False for name in acceptance.BROWSER_DIAGNOSTICS}
+        for code, stage in (("browser_protocol_timeout", "navigation"), ("browser_protocol_failed", "focus"),
+                            ("browser_navigation_failed", "navigation")):
+            with self.subTest(code=code, stage=stage):
+                raw = (json.dumps({"schema_version": 1, "ready": False, "code": code, "stage": stage,
+                                   "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}) + "\n").encode()
+                browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
+                helper = unittest.mock.Mock(pid=34567, returncode=1); helper.poll.return_value = 1
+                def run(journey, *_args, **_kwargs):
+                    journey.phase = "browser"
+                    return journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+                with patch.object(acceptance.Journey, "run", run), patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
+                    acceptance, "browser_listener_owned", return_value=True
+                ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
+                    acceptance.os, "pread", return_value=raw, create=True
+                ), patch("builtins.print") as output:
+                    self.assertEqual(acceptance.main([]), 1)
+                report = json.loads(output.call_args.args[0])
+                self.assertEqual(report["code"], "browser_readiness_failed")
+                self.assertEqual(report["browser_helper_code"], code)
+                self.assertEqual(report["browser_stage"], stage)
+                self.assertTrue(report["owned_state_removed"])
+
+    def test_known_but_inconsistent_final_stage_cannot_claim_readiness(self):
+        for ready, code, stage in ((True, "ready", "navigation"), (True, "browser_protocol_failed", "ready"),
+                                   (False, "ready", "ready")):
+            with self.subTest(ready=ready, code=code, stage=stage), TemporaryDirectory() as directory:
+                journey = acceptance.Journey(Path(directory))
+                self.addCleanup(journey.launch_output.close)
+                checks = {name: True for name in acceptance.BROWSER_CHECKS}
+                diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
+                raw = (json.dumps({"schema_version": 1, "ready": ready, "code": code, "stage": stage,
+                                   "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}) + "\n").encode()
+                browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
+                helper = unittest.mock.Mock(pid=34567, returncode=0)
+                with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
+                    acceptance, "browser_listener_owned", return_value=True
+                ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
+                    acceptance.os, "pread", return_value=raw, create=True
+                ):
+                    with self.assertRaisesRegex(acceptance.AcceptanceFailure, "browser_readiness_failed"):
+                        journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
+                browser.terminate.assert_not_called()
+                self.assertNotIn("isolated_browser_render", journey.completed)
+
     @unittest.skipUnless(hasattr(acceptance.os, "pread"), "Native positional descriptor reads require POSIX")
     def test_progress_capture_is_bounded_positional_and_never_final_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "evaluation"}
         with TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
             journey = acceptance.Journey(Path(directory))
             self.addCleanup(journey.launch_output.close)
@@ -371,9 +419,9 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
     def test_invalid_framing_diagnostics_and_duplicate_final_refuse_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
+        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "ready"}
         line = (json.dumps(final) + "\n").encode()
-        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "evaluation"}
         progress_line = (json.dumps(progress) + "\n").encode()
         for raw in (line + line, line + b"unframed", b"x" * 16385,
                     progress_line * 17,
@@ -382,6 +430,8 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                     line.replace(b'"ready": true', b'"ready": false, "ready": true'),
                     progress_line.replace(b'"event": "progress"', b'"event": "other", "event": "progress"') + line,
                     line.replace(b'"task_exists": true', b'"task_exists": false, "task_exists": true'),
+                    (json.dumps({**final, "stage": "Page.navigate private"}) + "\n").encode(),
+                    (json.dumps({**final, "stage": []}) + "\n").encode(),
                     (json.dumps({**final, "observation": {**OBSERVATION, "location_category": "http://private.invalid"}}) + "\n").encode(),
                     (json.dumps({**final, "observation": {**OBSERVATION, "ready_state": []}}) + "\n").encode(),
                     (json.dumps({**final, "observation": {**OBSERVATION, "snapshots": True}}) + "\n").encode(),
@@ -402,8 +452,8 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 self.addCleanup(journey.launch_output.close)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}
-                record.update({"ready": True, "code": "ready"} if late else {"event": "progress"})
+                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "evaluation"}
+                record.update({"ready": True, "code": "ready", "stage": "ready"} if late else {"event": "progress"})
                 raw = (json.dumps(record) + "\n").encode()
                 browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
                 helper = unittest.mock.Mock(pid=34567, returncode=0)
@@ -422,6 +472,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                         journey.render_browser(Path("/chrome"), "project_exact", "task_exact")
                 self.assertEqual(journey.browser_checks, {} if capture_fault else checks)
                 self.assertEqual(journey.browser_diagnostics, {} if capture_fault else diagnostics)
+                self.assertEqual(journey.browser_stage, None if capture_fault else ("ready" if late else "evaluation"))
                 self.assertNotIn("isolated_browser_render", journey.completed)
                 browser.terminate.assert_not_called()
 

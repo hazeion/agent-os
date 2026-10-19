@@ -3,6 +3,7 @@ import { writeSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const CHECKS = Object.freeze(['document_complete','shell_hydrated','shell_runtime_ready','bridge_ready','workspace_exists','heading_correct','viewport_correct','project_selected','project_visible','task_visible','no_js_exceptions']);
+class ProtocolTimeout extends Error {}
 export const DIAGNOSTICS = Object.freeze(['project_exists','project_text_matches','project_renderable','project_intersects_viewport','task_exists','task_text_matches','task_renderable','task_intersects_viewport']);
 export function configuration(value) {
   if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'debug_port,elapsed_offset_ms,origin,project_id,remaining_ms,task_id') throw new Error('browser_configuration_invalid');
@@ -81,11 +82,11 @@ export async function observe(input, dependencies = {}) {
   const pending = new Map();
   const diagnostics = Object.fromEntries(DIAGNOSTICS.map(key => [key, false]));
   const observation = { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 };
-  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', checks, diagnostics, observation };
+  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', stage: 'discovery', checks, diagnostics, observation };
   let progressCount = 0, progressBytes = 0, lastProgress;
   const publish = () => {
-    const progress = { schema_version: 1, event: 'progress', checks: { ...checks }, diagnostics: { ...diagnostics }, observation: { ...observation } };
-    const fingerprint = JSON.stringify({ checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
+    const progress = { schema_version: 1, event: 'progress', stage: result.stage, checks: { ...checks }, diagnostics: { ...diagnostics }, observation: { ...observation } };
+    const fingerprint = JSON.stringify({ stage: result.stage, checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
     const encoded = JSON.stringify(progress);
     const bytes = Buffer.byteLength(encoded) + 1;
     // Reserve 4KiB for the fixed final record within the parent's 16KiB cap.
@@ -95,11 +96,12 @@ export async function observe(input, dependencies = {}) {
     }
   };
   publish();
+  const stage = value => { result.stage = value; publish(); };
   function call(method, params) {
     if (!['Runtime.enable','Page.enable','Emulation.setFocusEmulationEnabled','Runtime.evaluate','Emulation.setDeviceMetricsOverride','Page.navigate'].includes(method)) throw new Error('browser_protocol_failed');
     const id = sequence++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('browser_readiness_timeout')); }, Math.max(1, Math.min(500, remaining())));
+      const timer = setTimeout(() => { pending.delete(id); reject(new ProtocolTimeout()); }, Math.max(1, Math.min(500, remaining())));
       pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, method, params }));
     });
@@ -129,9 +131,10 @@ export async function observe(input, dependencies = {}) {
       if (!endpoint) await pause();
     }
     if (!endpoint) return result;
+    stage('connect');
     socket = new Socket(endpoint);
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('browser_readiness_timeout')), Math.max(1, Math.min(500, remaining())));
+      const timer = setTimeout(() => reject(new ProtocolTimeout()), Math.max(1, Math.min(500, remaining())));
       socket.onopen = () => { clearTimeout(timer); resolve(); };
       socket.onerror = () => { clearTimeout(timer); reject(new Error('browser_protocol_failed')); };
     });
@@ -144,12 +147,18 @@ export async function observe(input, dependencies = {}) {
         if (message.error) item.reject(new Error('browser_protocol_failed')); else item.resolve(message.result || {});
       } else if (message.method === 'Runtime.exceptionThrown') exceptions++;
     };
+    stage('runtime');
     await call('Runtime.enable', {});
+    stage('page');
     await call('Page.enable', {});
+    stage('focus');
     await call('Emulation.setFocusEmulationEnabled', { enabled: true });
+    stage('viewport');
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    stage('navigation');
     const navigation = await call('Page.navigate', { url: config.origin + '/tasks' });
     if (navigation.errorText) { result.code = 'browser_navigation_failed'; return result; }
+    stage('evaluation');
     while (remaining() > 0 && socket.readyState === 1) {
       const snapshot = await call('Runtime.evaluate', { expression: expression(config), returnByValue: true, awaitPromise: false, timeout: 250 });
       const { diagnostics: observedDiagnostics, observation: observedObservation, ...observedChecks } = snapshot.result?.value || {};
@@ -159,11 +168,11 @@ export async function observe(input, dependencies = {}) {
       Object.assign(diagnostics, observedDiagnostics);
       Object.assign(observation, observedObservation, { snapshots: observation.snapshots + 1, observer_elapsed_ms: Math.max(0, Math.min(40000, Math.floor(config.remaining_ms - remaining()))) });
       publish();
-      if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; return result; }
+      if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; stage('ready'); return result; }
       if (exceptions) { result.code = 'browser_js_exception'; return result; }
       await pause();
     }
-  } catch { result.code = 'browser_protocol_failed'; }
+  } catch (error) { result.code = error instanceof ProtocolTimeout ? 'browser_protocol_timeout' : 'browser_protocol_failed'; }
   finally {
     for (const item of pending.values()) clearTimeout(item.timer);
     if (socket && [0,1].includes(socket.readyState)) { try { socket.close(); } catch {} }
@@ -181,7 +190,7 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let result;
   try { result = await main(); }
-  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])), observation: { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 } }; }
+  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', stage: 'discovery', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])), observation: { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 } }; }
   // Never wait for a CDP close handshake to release the exact owned helper.
   writeSync(1, JSON.stringify(result) + '\n');
   process.exit(result.ready ? 0 : 1);
