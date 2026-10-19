@@ -536,6 +536,13 @@ def build_stage(artifacts: Path, destination: Path):
     if sys.platform != "linux" or not hasattr(os, "O_NOFOLLOW"):
         _fail("unsupported")
     lock, lock_digest = load_lock()
+    return _build_stage(artifacts, destination, lock, lock_digest, validate_wheel_authority)
+
+
+def _build_stage(artifacts, destination, lock, lock_digest, validate_authority):
+    """Shared inert extraction boundary; callers own fixed artifact policy."""
+    if sys.platform != "linux" or not hasattr(os, "O_NOFOLLOW"):
+        _fail("unsupported")
     artifacts_fd = _open_directory(artifacts)
     parent = None
     child = None
@@ -558,7 +565,7 @@ def build_stage(artifacts: Path, destination: Path):
         for kind in ("source", "python"):
             for member in tar_members(_artifact(artifacts_fd, lock[kind]), kind):
                 stage.add(member)
-        validate_wheel_authority(lock, _read_stage_lock(stage))
+        validate_authority(lock, _read_stage_lock(stage))
         for item in lock["wheels"]:
             for member in wheel_members(_artifact(artifacts_fd, item), item):
                 stage.add(member)
