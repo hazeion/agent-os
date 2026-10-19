@@ -112,6 +112,10 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return "unsupported_or_invalid_current_database"
         return None
 
+    # A recognized or invalid restore state can temporarily lack canonical
+    # members. Report that recovery boundary before judging normal startup.
+    if restore_startup_status(config.data_dir) != "clear":
+        return "Mentat found an incomplete restore (restore_incomplete_or_invalid). Preview the selected current-format backup before startup."
     if database_issue(config.data_dir) is not None:
         return unsupported
     schema_preflight = schema_preflight_status(config.data_dir)
@@ -127,12 +131,12 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return unsupported
     except (MentatDatabaseError, OSError):
         return unsupported
-    if restore_startup_status(config.data_dir) != "clear":
-        return "Mentat found an incomplete restore (restore_incomplete_or_invalid). Preview the selected current-format backup before startup."
     if private_control_issue(config.data_dir) is not None:
         return "Mentat found incomplete private state (private_console_state_invalid). Existing files were not changed."
 
     def guard(target: Path, descriptor: int | None) -> str | None:
+        if restore_status_under_lock(target, descriptor) != "clear":
+            return "restore_incomplete_or_invalid"
         issue = database_issue(target)
         if issue is not None:
             return issue
@@ -142,8 +146,6 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return "invalid_data_schema"
         if schema == "current" and not validate_current_database_root(target):
             return "current_database_missing"
-        if restore_status_under_lock(target, descriptor) != "clear":
-            return "restore_incomplete_or_invalid"
         return private_control_issue(target)
 
     def prepare(target: Path, descriptor: int | None, plan) -> str | None:
