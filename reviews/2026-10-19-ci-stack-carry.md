@@ -42,6 +42,7 @@ passing ancestor as current-head acceptance.
 | 286 | `6869f80` | `b58ca82` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 8 targeted tests discovered; 8 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 287 | `b720fca` | `eb899d4` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 16 targeted tests discovered; 16 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 288 | `f1146b5` | `2856a63` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 13 targeted tests discovered; 13 pass; no skips. Hosted and integrated acceptance remain pending. |
+| 288 follow-up | `62137f2` | existing PR repair | Add only retained schema 38 to the six validators beneath current schema 39. Two independent reviews clear. All 24 final Node/planning-input/template tests pass without skips, including complete historical backup filtering and unchanged versions/bytes. See the retained Project-schema record. Hosted current-head acceptance must rerun. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret
