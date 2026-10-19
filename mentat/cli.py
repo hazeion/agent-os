@@ -18,6 +18,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from .version import DISPLAY_VERSION, __version__
+from .native_startup_diagnostics import mark_native_startup_phase
 
 
 def _runtime_arguments(parser: argparse.ArgumentParser) -> None:
@@ -379,7 +380,9 @@ def run_start(args: argparse.Namespace) -> int:
     if getattr(args, "legacy_ui", False):
         return _legacy_start(args)
 
+    mark_native_startup_phase("preflight")
     preflight = run_lifecycle("preflight", args)
+    mark_native_startup_phase("preflight-done")
     if preflight != 0:
         return preflight
     from .web_runtime import WebRuntimeError, run_gateway
