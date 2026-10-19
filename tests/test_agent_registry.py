@@ -25,7 +25,7 @@ from agent_registry import (
     connect_registry,
     public_agent_record,
 )
-from mentat_db import SCHEMA_VERSION, connect, database_path
+from mentat_db import SCHEMA_VERSION, database_path
 from private_console_unit import (
     PrivateConsoleUnitError,
     capture_private_console_unit,

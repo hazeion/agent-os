@@ -79,3 +79,31 @@ unchanged refusal of current-nonempty and old-empty JSON, and stale hostile JSON
 ignored after SQL authority exists. No owner data or Hermes files are read.
 Current cache tests still require the coordinated three-field private-unit
 implementation before their final result can be recorded.
+
+## Fixture composition
+
+The Run module retains64 test/helper methods. Its shared `prepare_dispatch_root`
+and `run_fixture` interfaces remain structurally unchanged. Current unknown,
+capacity, expiry, dispatch, rollback, timestamp and event-security methods remain.
+Retired JSON import positives are replaced with canonical SQLite setup, preserving
+current event-type, retained suffix, media binding and cursor assertions. Three
+persistent tests cover current-empty bootstrap, no-write old/nonempty refusal and
+authoritative SQL ignoring hostile stale JSON. The event-ID boundary now tests
+atomic current SQL rejection rather than obsolete import acceptance.
+
+Task tests remove only obsolete schema4/5 positive-upgrade and sibling-export
+paths. Plain export size, exact bytes, confirmation, stale source, source path,
+interrupted restore, publication and partial failure checks remain. After
+normalizing the renamed symbols, the preview, confirmation, destination validator,
+confirmation-token function, private-state lock wrapper and preview dataclass ASTs
+are identical to the preserved8c baseline. The Agent suite removes only the
+retired standalone-file identity helper test and retains current core sidecar,
+concurrency, private binding, capability and HTTP tests.
+
+The actual database dependency is now normally merged at
+`e25ca335cf813283cf8333a9d8842e79af529ffe`. The13-method expected-schema suite passes
+from the real composed checkout, with ResourceWarnings treated as errors and no
+skips, in3.049seconds. Run receipt preflight uses its append-tolerant
+`connect_current_readonly` owned-copy context, keeping strict archival snapshot
+validation out of live receipt checks. Final cache and domain module results await
+the coordinated private-unit and CLI dependency integration.

@@ -11,32 +11,17 @@ import stat
 from tempfile import TemporaryDirectory
 from threading import Barrier, Thread
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import server
-import data_backup_restore
-import private_console_unit
-import remote_hermes
 import task_repository
-from agent_registry import AgentRegistry
-from agent_console_attachments import bind_run_attachment, create_attachment
 from mentat.cli import main as mentat_cli_main
-from mentat_db import (
-    MIGRATIONS,
-    SCHEMA_VERSION,
-    MentatDatabaseError,
-    connect,
-    database_path,
-    transaction,
-)
+from mentat_db import SCHEMA_VERSION, MentatDatabaseError, connect, database_path, transaction
 from private_console_unit import (
     PrivateConsoleUnitError,
     capture_private_console_unit,
     materialize_private_console_unit,
 )
-from private_state import history_path
-from run_repository import save_authoritative_run_summaries
-from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from task_repository import (
     TaskRepository,
     TaskRepositoryConflict,
@@ -53,13 +38,6 @@ from task_repository import (
     preview_task_sqlite_migration,
     read_authoritative_tasks,
     mutate_authoritative_tasks,
-)
-from vercel_connections import (
-    confirm_configure_vercel,
-    confirm_create_vercel_agent,
-    load_vercel_connection,
-    preview_configure_vercel,
-    preview_create_vercel_agent,
 )
 
 
