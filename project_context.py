@@ -39,6 +39,9 @@ DELIVERABLE_MAX_METADATA_BYTES = RUN_INPUT_MAX_METADATA_BYTES + 2 * 1024 * 1024
 DELIVERABLE_REVIEW_MAX_METADATA_BYTES = DELIVERABLE_MAX_METADATA_BYTES + 1024 * 1024
 # Schema 33 reserves immutable bounded plan versions and protected input refs.
 PLAN_MAX_METADATA_BYTES = DELIVERABLE_REVIEW_MAX_METADATA_BYTES + 8 * 1024 * 1024
+# Schema 38 retains bounded owner-selected lead-role history separately from
+# Project context and plan authority.
+LEAD_MAX_METADATA_BYTES = PLAN_MAX_METADATA_BYTES + 256 * 1024
 _SCOPE = re.compile(r"project_scope_[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"project_context_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"attachment_[0-9a-f]{32}\Z")
@@ -153,6 +156,15 @@ def validate_project_context_connection(connection: sqlite3.Connection, *, requi
             if str(exc) == 'project_plan.capacity':
                 _fail('capacity')
             _fail('plans_invalid')
+    if schema_version >= 38:
+        budget = LEAD_MAX_METADATA_BYTES
+        from project_leads import ProjectLeadError, validate_lead_connection
+        try:
+            metadata.extend(validate_lead_connection(connection))
+        except ProjectLeadError as exc:
+            if str(exc) == 'project_lead.capacity':
+                _fail('capacity')
+            _fail('project_leads_invalid')
     if len(_encoded(metadata)) > budget:
         _fail("capacity")
     projects = {str(row[0]) for row in connection.execute("SELECT id FROM mentat_projects")}

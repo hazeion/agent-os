@@ -46,13 +46,14 @@ class PlanPolicyMigrationTests(unittest.TestCase):
         with closing(sqlite3.connect(mentat_db.database_path(fixture.root))) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE mentat_project_lead_versions")
             connection.execute("DROP TRIGGER mentat_plan_version_immutable")
             connection.execute("DROP TRIGGER mentat_plan_version_no_delete")
             connection.execute("DROP TABLE mentat_plan_versions")
             for statement in source_sql:
                 connection.execute(statement)
             connection.executemany("INSERT INTO mentat_plan_versions VALUES(?,?,?,?,?,?,?,?,?)", old_rows)
-            connection.execute("DELETE FROM schema_migrations WHERE version=37")
+            connection.execute("DELETE FROM schema_migrations WHERE version>=37")
             connection.commit()
             self.assertEqual(mentat_db.schema_signature_state(connection, 36), "expected")
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -60,7 +61,7 @@ class PlanPolicyMigrationTests(unittest.TestCase):
         private_console_unit.validate_private_console_unit(prior_unit)
 
         with closing(mentat_db.connect(fixture.root)) as connection:
-            self.assertEqual(mentat_db.schema_signature_state(connection, 37), "expected")
+            self.assertEqual(mentat_db.schema_signature_state(connection, 38), "expected")
             self.assertEqual(connection.execute("SELECT * FROM mentat_plan_versions ORDER BY id").fetchall(), old_rows)
             self.assertEqual(connection.execute("SELECT * FROM mentat_plan_input_refs ORDER BY version_id,input_id").fetchall(), old_refs)
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -78,7 +79,7 @@ class PlanPolicyMigrationTests(unittest.TestCase):
                 destination, restored, destination / "private" / "console"
             )
             with closing(mentat_db.connect(destination)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, 37), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 38), "expected")
                 self.assertEqual(connection.execute("SELECT * FROM mentat_plan_versions ORDER BY id").fetchall(), old_rows)
 
     def test_schema36_drift_rolls_back_without_upgrade_receipt(self):
