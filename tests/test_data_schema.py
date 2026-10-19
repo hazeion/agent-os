@@ -73,7 +73,7 @@ class DataSchemaTests(unittest.TestCase):
         documents = [(name, (root / name).read_bytes()) for name in data_layout.SEED_FILE_NAMES]
         record = {'format_version': 1, 'kind': 'mentat-data-schema-backup',
                   'token_sha256': token, 'from_version': 0, 'to_version': 1,
-                  'items': [{'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+                  "items": [{'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
                             for name, raw in documents]}
         backup = root / 'backups' / name
         with zipfile.ZipFile(backup, 'w', compression=zipfile.ZIP_STORED) as archive:
@@ -84,7 +84,7 @@ class DataSchemaTests(unittest.TestCase):
         manifest_path = root / 'config' / data_schema.SCHEMA_MANIFEST_NAME
         manifest = json.loads(manifest_path.read_bytes())
         manifest.update(origin='schema_migration', applied_steps=[{
-            'id': 'durable-json-v0-to-v1', 'from_version': 0, 'to_version': 1}],
+            "id": 'durable-json-v0-to-v1', 'from_version': 0, 'to_version': 1}],
             backup={'name': name, 'sha256': hashlib.sha256(backup.read_bytes()).hexdigest()})
         manifest_path.write_bytes(data_schema._canonical_json(manifest))
         manifest_path.chmod(0o600)
@@ -473,7 +473,23 @@ class DataSchemaTests(unittest.TestCase):
             )
             selected = target / "tasks.json"
             selected.write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             if os.name == "posix":
@@ -604,7 +620,23 @@ class DataSchemaTests(unittest.TestCase):
                 self.assertIsNone(runtime_config.prepare_data_root_for_startup(self.config(target)))
             approved = data_layout._absolute_without_following(target)
             (target / "tasks.json").write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             if os.name == "posix":
@@ -658,7 +690,23 @@ class DataSchemaTests(unittest.TestCase):
             outside.write_text('[]\n', encoding="utf-8")
             selected = target / "tasks.json"
             selected.write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             task_repository.ensure_task_sqlite_authority(target)
@@ -1567,7 +1615,23 @@ class DataSchemaTests(unittest.TestCase):
             self.write_current_inventory(approved)
             self.write_current_inventory(changed)
             (changed / "tasks.json").write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             if os.name == "posix":

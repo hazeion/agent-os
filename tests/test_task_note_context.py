@@ -15,7 +15,23 @@ class TaskNoteContextTests(unittest.TestCase):
             vault = root / "vault"
             vault.mkdir()
             (vault / "Plan.md").write_text("Safe context", encoding="utf-8")
-            (root / "tasks.json").write_text(json.dumps([{"id": "task-1", "title": "Task", "project": "Mentat"}]), encoding="utf-8")
+            (root / "tasks.json").write_text(json.dumps([{
+                "id": "task-1",
+                "title": "Task",
+                "description": "",
+                "project": "Mentat",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+            }]), encoding="utf-8")
             ensure_task_sqlite_authority(root, required_source_mode=None)
             (root / "projects.json").write_text(json.dumps([{"id": "project-1", "name": "Mentat"}]), encoding="utf-8")
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "OBSIDIAN_VAULT", vault):
