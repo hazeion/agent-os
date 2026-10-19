@@ -345,3 +345,221 @@ verified here. Existing full QA belongs to other exact heads, not this unimpleme
 No tests of this slice have run. No source module, public package, test,
 credential or operator state changed; no runtime/archive artifact was downloaded.
 Only official public documentation was read over the network.
+
+
+## Proposed amendment A: observed glibc PLT metadata and missing xxhash
+
+Status: awaiting root and independent contract review. The implementation still
+rejects this drift. No parser policy, package pin, input count or source has been
+extended by writing this amendment. If approved, this section supersedes only
+the original ten-package/eighteen-input counts and the library-specific handling
+specified here; every other boundary, deadline and exclusion remains unchanged.
+
+### One bounded preparatory research batch
+
+All ten public debs matched the original exact size/SHA256 pins after download.
+One bounded compatibility batch inspected their already pinned data-tar bytes
+with the existing local zstd decoder; it installed/extracted no filesystem tree,
+loaded/executed no ELF and verified no signature. This is raw compatibility
+research, not trusted Linux gpgv/dpkg-worker or provenance qualification.
+
+Existing strict host ELF rejects three processor tags in the exact libc6 libc
+and libm members. The other nine selected regular objects have no unknown tags
+or duplicate singleton tags, but lz4 declares libxxhash.so.0 outside the original
+closed list. Therefore the original full closure remains incomplete/refused.
+This amendment addresses both findings rather than substituting a hash-only
+success for the real closure check. The untagged loader remains an ordinary
+strict-policy positive case.
+
+Evidence retained privately:
+
+- elf-contract-drift.json and libc6.tar under the task-owned preparatory root;
+  raw tar SHA256 e1986a088b3154457aa9780a86abc10436f149ba910e7c6e97487a0c60045299,
+ 5652480 bytes. It came from the unchanged a613b457... libc6 archive above.
+- remaining-nine-compatibility.json records exact public regular/alias paths,
+  bytes/hashes, declared dependencies and mappings for the nine-object batch.
+- The preparatory root is /private/tmp/mentat-library-provenance-preparatory-20261019.
+  No local path is an authority input or a product lookup default.
+
+Selected regular-member observations below are public facts from those exact
+archives, not invented expected hashes or proof of signed origin. Their common
+prefix is /usr/lib/x86_64-linux-gnu/.
+
+| Package | Regular member basename | Bytes | SHA256 |
+|---|---|---:|---|
+| libcap2 | libcap.so.2.75 | 51616 | c5b463a8136dabb152bad8b04e89bf67bd2049ef49777ed0b96bdbc6cb5b9565 |
+| libfuse3-4 | libfuse3.so.3.18.2 | 276784 | 2ab67cc34f294e2e9958889bb224ff72f507816c860726c89469ce488a3a610b |
+| liblz4-1 | liblz4.so.1.10.0 | 166224 | 45729d07db6c43e524c2e69d0c4aef81148a66e272c4f4e0e64b787e17fe1731 |
+| liblzma5 | liblzma.so.5.8.3 | 215448 | 64550dc7a4dc9159d32c00d9e78ce86e0951d02b7b24827df97f090dae101a19 |
+| liblzo2-2 | liblzo2.so.2.0.0 | 149656 | 1728af970f1689da66c2314c328aef8fd21a7c42332469177914367f5082c086 |
+| libpcre2-8-0 | libpcre2-8.so.0.14.0 | 699056 | 4a6b6b2078685b074869d75cb068664d7da6b3036df7bca0442b1bbbd4ac7e65 |
+| libselinux1 | libselinux.so.1 | 199120 | 7538ee77765a27966563c0d22437a3080dcdb346ff76cc16d71a3ce3379a716a |
+| libzstd1 | libzstd.so.1.5.7 | 796824 | 060eeb79531d435306665fd78329d8a9dd579f95876c5960bb67937825362a80 |
+| zlib1g | libz.so.1.3.1 | 121272 | 47b61967895b30e8c0c6818dd633ffeb87711cf637c688f981896f0dd84ce23b |
+
+### Explicit additional package/input proposal
+
+liblz4.so.1.10.0 (166224 bytes,
+SHA25645729d07db6c43e524c2e69d0c4aef81148a66e272c4f4e0e64b787e17fe1731)
+declares libxxhash.so.0. The existing resolute/main raw amd64 index contains one
+candidate tuple below; no archive has been fetched and its signature/member
+contents have not been checked here. Approval would add only this exact package
+and canonical SONAME root /usr/lib/x86_64-linux-gnu/libxxhash.so.0. Unknown
+transitive dependencies still refuse and require review; no automatic resolver
+or pocket/version fallback is introduced.
+
+```json
+{
+  "package": "libxxhash0",
+  "version": "0.8.3-2build1",
+  "suite": "resolute",
+  "component": "main",
+  "architecture": "amd64",
+  "filename": "pool/main/x/xxhash/libxxhash0_0.8.3-2build1_amd64.deb",
+  "size": 25802,
+  "sha256": "4fff119ba9018fbe2eddfa7759bb4c7b6132ed38dcfa7fc58750c586d1d155a1"
+}
+```
+
+The amended inventory is exactly eleven packages and nineteen regular inputs:
+two releases, two indices, eleven archives and four fixed helper ELF inputs.
+Archive bytes become3243904; metadata plus archives15025893; adding the existing
+547152 helper bytes gives15573045 captured bytes. Existing80MiB aggregate,
+4MiB-per-archive,32MiB-selected-byte,64-member,320MiB-cumulative-tar, worker and
+30-second acceptance/cleanup limits remain unchanged. The full authenticated
+raw-index identities, frozen dates, key, historical replay semantics and
+freshness_qualified=false remain unchanged. Do not fetch the new archive before
+this explicit inventory amendment is approved.
+
+### Processor-tag source and exact-member restriction
+
+The primary [x86-64 psABI MR50 diff](https://gitlab.com/x86-psABIs/x86-64-ABI/-/merge_requests/50.diff)
+defines DT_X86_64_PLT (DT_LOPROC+0), DT_X86_64_PLTSZ (+1) and
+DT_X86_64_PLTENT (+3) as PLT address, total bytes and uniform entry bytes. It
+relates each JUMP_SLOT addend to its indirect-branch address and requires a
+uniform aligned entry layout. [MR52](https://gitlab.com/x86-psABIs/x86-64-ABI/-/merge_requests/52.diff)
+adds the power-of-two entry-size requirement. These declarations are not a new
+object search or dependency mechanism; that does not make them inert.
+
+GNU [ld mark-plt documentation](https://sourceware.org/binutils/docs/ld/Options.html)
+records compatibility requirements for loaders interpreting relocation addends.
+Upstream glibc [848746e88ec2aa22e8dea25f2110e2b2c59c712e](https://sourceware.org/pipermail/glibc-cvs/2024q1/083835.html)
+implements conditional PLT rewriting after relocation, including writable code
+pages restored to executable protection. The code depends on loader binding,
+tunable and CPU/CET/APX conditions. No environment or GLIBC_TUNABLES change,
+rewrite, IFUNC execution, mprotect, loader test or assertion of default runtime
+behavior is authorized here. Actual code-rewrite/loader qualification remains
+an explicit unresolved requirement even after this static profile passes.
+
+An additional library-only profile may apply ONLY after authenticated extraction
+of these two exact regular members from the original pinned libc6 archive:
+
+| Member | Bytes | SHA256 | PLT address A | PLT bytes S | Entry bytes E | N |
+|---|---:|---|---|---:|---:|---:|
+| usr/lib/x86_64-linux-gnu/libc.so.6 | 2190608 | 85e64f97e348786a8fb4d9f3d52fec289e2fb86bba20f0731dfe61990525e0f7 | 0x283f0 | 960 | 16 | 60 |
+| usr/lib/x86_64-linux-gnu/libm.so.6 | 1198376 | 1c488db6f4fe8cecb72456bc018de000b7a9b539c2994864b0416b5e8371b3d8 | 0x12320 | 736 | 16 | 46 |
+
+No global dynamic-tag whitelist changes. Ordinary host-helper validation and
+all other objects retain their current unknown-tag refusal. Do not strip tags,
+rewrite bytes, pass a caller allowlist/hook, silently choose a different member
+or let this exception apply merely because an object calls itself libc/libm.
+The public package, exact member path, size and digest all select the context;
+raw bytes remain unchanged. The existing loader member is254864 bytes,
+SHA256bda779ea9e9ad234f60315477d7cfd0bdde861cd8ddd9df8cdaf62f18c4cec14,
+and must pass the unmodified policy with no tag triple.
+
+### Closed bounded PLT/relocation checks
+
+All three new tags must be absent together under the old policy or present
+exactly once each in this exact library context. Partial/duplicate triples,
+other processor-specific tags, zero values and every other existing forbidden
+flag/tag/search declaration refuse. For the tagged two objects require the
+exact table values above, E=16 (also a power of two), A aligned to E,
+S divisible by E and S/E=N. All address additions/multiplications must stay in
+unsigned64-bit range before reading a bounded file slice.
+
+The entire PLT range must have one unambiguous contiguous file-backed PT_LOAD
+mapping with PF_R|PF_X and no PF_W. No BSS-only bytes, hole, alias or interior
+conflicting mapping is accepted. Each16-byte entry must be exactly:
+
+```text
+F3 0F 1E FA FF 25 <signed little-endian disp32> 66 0F 1F 44 00 00
+```
+
+Interpret only that fixed byte template; do not disassemble or simulate code.
+Derive its GOT address as entry_address+10+signed_disp32 with checked arithmetic.
+The slot must be unique,8-byte aligned and wholly inside one readable/writable,
+non-executable file-backed mapping. No actual memory, GOT write or indirect
+branch is performed.
+
+Require DT_PLTREL=7 (RELA), DT_RELAENT=24, and a uniquely readable, file-backed
+DT_JMPREL array with DT_PLTRELSZ=24*N. Every entry has exactly one corresponding
+unique GOT/r_offset relocation and vice versa. Only R_X86_64_JUMP_SLOT (7) and
+R_X86_64_IRELATIVE (37) are represented in this fixed table: libc requires15/45
+and libm11/35 respectively. Reject missing, extra, duplicate, unsupported or
+misaligned records and unmapped table/slot intervals.
+
+For JUMP_SLOT require r_addend=entry_address+4 (the indirect branch), symbol
+index>0 within the validated dynamic symbol count, and a bounded referenced
+symbol/name/version. For IRELATIVE require symbol index0 and a nonzero resolver
+addend in a unique nonwritable executable file-backed range. Its addend is a
+resolver address, NOT a PLT entry/branch address. Do not invoke it or claim the
+resolver's behavior is qualified; checking an address is not checking code.
+
+### Symbol/version bounds and ABI marker
+
+Require the observed SysV DT_HASH and GNU_HASH tables, each fully file-backed
+and readable, with bounded validated header/count/index/chain structure and
+consistent dynamic-symbol bounds. Do not infer an unbounded symbol table from
+a relocation index alone. Proposed hard caps are65536 dynamic symbols/hash
+buckets/chains,8192 GNU bloom words,1MiB dynamic strings and4096 total linked
+version records/auxiliary records. These caps only bound metadata processing;
+all existing ELF/header/dynamic/string and selected-object byte ceilings stay.
+Reject zero/overflowing counts, out-of-range or cyclic chains and inconsistent
+table bounds; if the tables cannot prove the symbol count, retain refusal.
+
+DT_SYMENT must be24; every referenced symbol record and VERSYM entry must fit
+inside uniquely mapped readable file data. Its string offset must lie within
+the bounded DT_STRTAB/DT_STRSZ and terminate there without crossing the table.
+Bound referenced symbol/version/provider strings to255 printable ASCII bytes.
+Version indices0/1 remain reserved; every other referenced index must resolve
+unambiguously through validated VERDEF/VERNEED records. Bound all list and aux
+counts, offsets, alignment, termination and visited ranges; reject cycles,
+overflow, overlaps, duplicate identities and contradictory indices/providers.
+Never follow an unchecked offset or allocate from a declared count.
+
+Require libc VERDEF to define exactly the compatibility marker
+GLIBC_ABI_DT_X86_64_PLT, and libm VERNEED to require it specifically from
+libc.so.6. Validate associated record/index/string/hash relations rather than
+searching for marker text anywhere in the file. The upstream marker is recorded
+in [glibc399384e0c8193e31aea014220ccfa24300ae5938](https://sourceware.org/git/gitweb.cgi?p=glibc.git;h=399384e0c8193e31aea014220ccfa24300ae5938)
+and [backport269e89bd8d25a0659c6c963a509e152faefd6ba2](https://inbox.sourceware.org/glibc-cvs/20250815212354.698B23858CDA%40sourceware.org/T/).
+It is compatibility metadata, not proof of an installed loader's behavior,
+immutable execution trust or permission to rewrite code. No provider/version-
+name substitution satisfies this check.
+
+### Amendment adversarial strategy and hold
+
+Add meaningful low-level metadata fixtures that reach each validation rule;
+mutating bytes and failing only the outer exact-hash guard is insufficient
+coverage. Fixture-only internal pin patches cannot be a production override.
+Test missing/duplicate/partial triples, wrong E/alignment/S/count/overflow,
+W|X/BSS/hole/overlapping mappings, changed opcodes/NOP/branch displacement,
+aligned-but-wrong/duplicate/unmapped GOT, RELA size/type/count/target drift,
+wrong JUMP addend, nonzero IRELATIVE symbol or invalid executable resolver,
+invalid symbol/hash/chain/string/version bounds and a forged/missing/wrong-
+provider ABI marker. Keep both exact public members and the untagged loader as
+positive static cases once permitted; all other processor tags/layouts refuse.
+Test that the ordinary host-helper API still refuses the tagged libraries.
+
+Add the explicit eleventh package/nineteenth input only after this amendment is
+cleared; require unchanged signed-index selection and fail before decoder on
+missing/changed/extra input, wrong tuple or archive bytes. Decode its selected
+SONAME/member graph only after that approved fetch, record actual member
+hashes, and refuse any additional dependency/tag/path/layout drift for review.
+No package safety/freshness, provider, loader, sealed14-image, FUSE, witness,
+Run or production gate is cleared. No mock is labeled actual Linux signature
+verification. Preserve30-second cleanup/deadline and every original ownership
+and byte bound; no tests/build/decoding resume while root holds the browser CPU
+window. Implementation remains paused until root and independent review of this
+complete amendment, with code-source reviews and unchanged gates afterward.
