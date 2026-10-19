@@ -1,6 +1,6 @@
 # Observe one fixed Chrome startup navigation
 
-Basef5db7ee2927d76c4760ac297dd3a6986395e615a and all failed reports remain
+Base f5db7ee2927d76c4760ac297dd3a6986395e615a and all failed reports remain
 preserved. The final static control completed four setup responses but timed out
 with navigation pending and no Tasks request at the owned server. All cleanup
 proofs passed. A source audit found no concrete request serialization, pending
@@ -27,9 +27,9 @@ There is no reload, second navigation, retry, scroll or new protocol authority.
 Fixed setup now follows initial navigation. All eleven checks remain unchanged,
 including actual live document origin/path, exact selected canonical Project,
 visible ID/text-bound rows, hydration, bridge and actual viewport. Metadata
-alone grants no readiness. The Python40second Chrome-spawn deadline, shared
-remaining CDP budget, evaluationCPU250, bounded metadata sampling and persistent
-15second owned cleanup are unchanged.
+alone grants no readiness. The 40-second Python deadline from Chrome spawn, shared
+remaining CDP budget, 250 ms evaluation CPU limit, bounded metadata sampling and persistent
+15-second owned cleanup are unchanged.
 
 The Runtime handler exists before enable. A targeted mock delivers a retained
 startup exception before that enable ACK, then supplies an otherwise-ready
@@ -42,16 +42,16 @@ browser's retention behavior.
 [V8 enable replay](https://raw.githubusercontent.com/v8/v8/main/src/inspector/v8-runtime-agent-impl.cc)
 [V8 stored exception presentation](https://raw.githubusercontent.com/v8/v8/main/src/inspector/v8-console-message.cc)
 
-Verification:33 Python methods PASS in7.727s, no local POSIX skips,
-ResourceWarnings as errors, including21 Node cases through the existing15second
+Verification: 33 Python methods PASS in 7.727 s, no local POSIX skips,
+ResourceWarnings as errors, including 21 Node cases through the existing 15-second
 wrapper. Coverage includes direct CLI URL, sole blank transition and deadline,
 mixed-page ambiguity, auth/error/foreign/nonexact URL and debugger rejection,
-live redirects, startup exception replay, unchanged650ms Runtime/connect
+live redirects, startup exception replay, unchanged 650 ms Runtime/connect
 acknowledgements, transport failure/races and all existing cleanup boundaries.
 Three obsolete Page.navigate-only cases were retired: navigation errorText,
 preexisting Tasks-target refusal, and delayed Page.navigate acknowledgement.
 Timer/late-response cases now exercise the retained fixed Runtime capability.
-An initial selector fixture's30ms real clock expired during the mock; the
+An initial selector fixture's 30 ms real clock expired during the mock; the
 selector-only negative now uses a fixed injected clock. Production deadlines
 were not changed. Compilation, Node syntax and diff checks pass. Log:
 /private/tmp/mentat-acceptance-direct-url-tests.log.
