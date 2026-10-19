@@ -194,6 +194,23 @@ class DataBackupRestoreTests(unittest.TestCase):
                 self.assertEqual(self.snapshot(target), before)
                 self.assertEqual(selected.read_bytes(), archive_before)
 
+    def test_fresh_empty_archive_restores_a_usable_embedded_registry(self):
+        from agent_registry import AgentRegistry
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source, archive, _created = self.create_source_backup(base)
+            self.assertFalse((source / "private" / "console" / "mentat.sqlite3").exists())
+            _seeds, target = self.make_current(base, "target", "target")
+            preview = backup_restore.preview_durable_restore(target, archive)
+            restored = backup_restore.restore_durable_backup(target, archive, confirmation_token=preview.confirmation_token or "")
+            self.assertEqual(restored.status, "restored", restored.public_summary())
+            registry = AgentRegistry(target, supported_runtime_types=("hermes",))
+            self.assertEqual(registry.list_agents(), ())
+            agent = registry.create_agent(agent_id="agent_fresh_restore", name="Fresh restored Agent",
+                runtime_config_id="runtime_fresh_restore", runtime_type="hermes", runtime_agent_ref="fixture", capabilities=())
+            self.assertEqual([item.id for item in registry.list_agents()], [agent.id])
+            self.assertFalse((target / "private" / "console" / "agent-registry.sqlite3").exists())
+
     def test_backup_snapshot_serializes_with_ordinary_json_mutation(self):
         with TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

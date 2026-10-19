@@ -115,9 +115,9 @@ Four existing owner-auth/epoch restore methods pass. A new refusal test's first
 assertion used the wrong public partial status; it now requires the existing
 `partial_failure`, and its corrected run passes without production changes.
 
-The initial current plan-drift port expects strict current core admission and
-fails against the old base core; it must run against B's actual current-only
-core before qualification. A's repository/cache changes and root's fresh-only
+The initial current plan-drift port failed against the old base core. After
+normal composition with B's actual current-only core, its fixture uses an
+owner-only Console directory; current roundtrip and exact drift refusal pass. A's repository/cache changes and root's fresh-only
 CLI/document initialization must compose with this branch. This checkpoint is
 not independently shippable and does not claim final whole-suite acceptance.
 All historical provider/owner feature tests outside explicitly retired
@@ -127,6 +127,36 @@ Outside callers retired elsewhere: task_repository standalone/schema5 export
 helpers and cache constructors (A); agent_registry_migration and global CLI/
 private migration modules (root); global forward fixtures (B/root). The removed
 MAX_REGISTRY_DATABASE_BYTES reference in test_run_identities needs root cleanup.
-Shared pure document I/O currently imports data_migration._publish_raw_missing;
-root will move it to data_documents. Current restore protocol4 and its exact
+Shared pure document I/O now imports data_documents._publish_raw_missing from
+root's actual checkpoint6c6c589; no retired migration module is needed. Current restore protocol4 and its exact
 inflight state, including unknown/partial outcomes, remain authoritative.
+
+
+## Fresh storage composition checkpoint
+
+B's actual current core and root6c6c589 are normal merge ancestors. Seven focused
+checks passed in15.829s, including current plan roundtrip and a fresh empty
+archive restored to a usable embedded Agent registry (list/create); backing up
+the fresh source does not create its SQLite authority or a standalone registry.
+
+At root's request, private_state gains only the shared read-only
+fresh_console_storage_issue helper. Missing-database admission permits absent
+or empty Console storage, or one exact duplicate-free current schema3/runs[]
+history document. Unknown Console inventory, retained blob files, old/future or
+nonempty history, retired registry files and old runtime main/sidecar evidence
+refuse. Reads are bounded/no-follow, identity checked and owner-private; nothing
+is hardened or rewritten. Existing current SQLite authority still ignores
+stale old JSON/registry files. An explicit restore stage lacking its current DB
+refuses rather than using the canonical fresh-root template. Capture rechecks
+fresh admission after template construction so newly appearing authority is not
+silently replaced with empty state.
+
+Eight focused current/refusal methods pass in4.630s, including ambiguous JSON,
+unknown files, runtime sidecars and authority appearing during template
+construction. The initial helper iteration caught and corrected a temporary
+root lexical/canonical alias comparison; no validator was weakened. The broad
+129-method run began before this factoring and remains separate evidence. It
+currently exposes an existing startup error projection failure after waiting
+on the shared lock; root owns that implementation, and the original refusal,
+thread termination and unchanged-tree assertions remain. Final composed suite
+qualification and two independent reviews remain pending.

@@ -10,7 +10,7 @@ from unittest.mock import patch
 import data_backup_restore as backups
 import mentat_db
 import private_console_unit as units
-from private_state import ensure_console_root
+from private_state import ensure_console_root, fresh_console_storage_issue
 from tests import test_data_backup_restore as backup_tests
 
 
@@ -81,6 +81,82 @@ class CurrentProjectSchemaBackupTests(unittest.TestCase):
                 empty.assert_not_called()
             self.assertEqual(history.read_bytes(), before)
             self.assertFalse((root / "private").exists())
+
+    def test_only_current_empty_history_is_a_fresh_source(self):
+        for payload, allowed in ((b'{"schema_version":3,"runs":[]}', True),
+                                 (b'{"schema_version":2,"runs":[]}', False),
+                                 (b'{"schema_version":3,"runs":[{"id":"run_existing"}]}', False)):
+            with self.subTest(payload=payload), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                console = ensure_console_root(root)
+                history = console / "agent-console-runs.json"
+                history.write_bytes(payload)
+                history.chmod(0o600)
+                if allowed:
+                    unit = units.capture_private_console_unit(root)
+                    self.assertEqual(unit.run_count, 0)
+                else:
+                    with self.assertRaises(units.PrivateConsoleUnitError):
+                        units.capture_private_console_unit(root)
+                self.assertEqual(history.read_bytes(), payload)
+                self.assertFalse((console / "mentat.sqlite3").exists())
+
+    def test_fresh_admission_refuses_ambiguous_history_and_unknown_storage_readonly(self):
+        histories = (
+            b'{"schema_version":3,"schema_version":3,"runs":[]}',
+            b'{"schema_version":true,"runs":[]}',
+            b'{"schema_version":3,"runs":[],"extra":0}',
+            b'{"schema_version":4,"runs":[]}',
+        )
+        for raw in histories:
+            with self.subTest(raw=raw), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                console = ensure_console_root(root)
+                history = console / "agent-console-runs.json"
+                history.write_bytes(raw)
+                history.chmod(0o600)
+                before = history.stat()
+                self.assertIsNotNone(fresh_console_storage_issue(root))
+                self.assertEqual(history.read_bytes(), raw)
+                self.assertEqual((history.stat().st_mode, history.stat().st_mtime_ns),
+                                 (before.st_mode, before.st_mtime_ns))
+                self.assertFalse((console / "mentat.sqlite3").exists())
+        for name in ("agent-registry.sqlite3", "agent-registry.sqlite3-wal", "unknown", "blobs"):
+            with self.subTest(name=name), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                console = ensure_console_root(root)
+                evidence = console / name
+                evidence.write_bytes(b"retained evidence")
+                self.assertIsNotNone(fresh_console_storage_issue(root))
+                self.assertEqual(evidence.read_bytes(), b"retained evidence")
+                self.assertFalse((console / "mentat.sqlite3").exists())
+
+    def test_fresh_admission_refuses_runtime_sidecar_evidence_without_hardening(self):
+        for name in ("mentat.sqlite3-wal", "agent-registry.sqlite3-shm", "agent-console-runs.json"):
+            with self.subTest(name=name), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                runtime = root / "runtime"
+                runtime.mkdir(mode=0o755)
+                evidence = runtime / name
+                evidence.write_bytes(b"retained evidence")
+                before = (runtime.stat().st_mode, evidence.stat().st_mode, evidence.stat().st_mtime_ns)
+                self.assertEqual(fresh_console_storage_issue(root), "private_database_unsupported")
+                self.assertEqual(evidence.read_bytes(), b"retained evidence")
+                self.assertEqual((runtime.stat().st_mode, evidence.stat().st_mode, evidence.stat().st_mtime_ns), before)
+                self.assertFalse((root / "private").exists())
+
+    def test_fresh_capture_rechecks_storage_after_empty_template_construction(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            console = ensure_console_root(root)
+            unit = units.empty_private_console_unit()
+            def appeared():
+                (console / "mentat.sqlite3").write_bytes(b"appearing authority")
+                return unit
+            with patch.object(units, "empty_private_console_unit", side_effect=appeared):
+                with self.assertRaisesRegex(units.PrivateConsoleUnitError, "private_console_changed"):
+                    units.capture_private_console_unit(root)
+            self.assertEqual((console / "mentat.sqlite3").read_bytes(), b"appearing authority")
 
     def test_current_version_does_not_bypass_exact_schema_validation(self):
         with TemporaryDirectory() as temporary:

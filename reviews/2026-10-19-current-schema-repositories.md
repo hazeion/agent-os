@@ -1,6 +1,6 @@
 # Current-schema repository boundary
 
-Status: implementation in progress under the owner's current-only decision.
+Status: implemented; all161 owned focused methods pass on the composed current-only graph. Final independent review and combined release QA remain required.
 
 The owner explicitly chose fresh/current databases and retired older SQLite
 upgrades and backup formats. This replaces the earlier historical compatibility
@@ -126,3 +126,31 @@ valid concurrent Agent creation. The unchanged Agent limit test caught this.
 The core owner is repairing that boundary with dedicated snapshot lifetime
 regressions; the Agent concurrency assertions are not relaxed. A final complete
 owned-module rerun remains required after that dependency lands.
+
+## Final focused verification
+
+Normally merged core `3edf63d3777c3b91876a4dc1771adba2e0381d77` fixes the actual
+sidecar-turnover race while preserving captured-prefix/main stability and primary
+inode checks. The original Agent concurrent near-limit test passes unchanged in
+6.760seconds and again within the full run. No capacity assertion, deadline or
+source-validation rule was relaxed.
+
+The final actual-checkout command passed all161 methods with no skips and
+ResourceWarnings treated as errors in82.409seconds:
+
+```sh
+/private/tmp/mentat-ci-recovery-venv/bin/python -W error::ResourceWarning -m unittest tests.test_empty_console_template tests.test_agent_registry_expected_schema tests.test_agent_registry tests.test_run_repository tests.test_task_repository -v
+```
+
+Raw final log: `/private/tmp/mentat-current-repositories-focused-final.log`.
+This comprises12 current cache methods,13 expected-schema/admission methods,28
+Agent methods,62 Run methods and46 Task methods. It covers all current cache
+mutation/privacy/restore invariants, SQL authority and stale-source isolation,
+retained event/media bounds, unknown/restart/capacity protection, maximum-size Task
+export and exact offline confirmation/error handling. The old-format positive
+paths are retired; old/future refusal and current-row integrity remain.
+
+No disposable module overlays or legacy stubs participate in this final run. All
+peer source dependencies are ordinary merges. The shared environment was used
+read-only. No full Python suite, hosted CI, Linux/Windows qualification, runtime
+activation or release readiness is claimed by this focused result.
