@@ -11,6 +11,25 @@ import agent_registry
 
 
 class ExpectedEmbeddedAgentSchemaTests(unittest.TestCase):
+    def test_retained_schema_33_registry_validation_preserves_exact_database(self):
+        from private_console_unit import _initialize_database
+
+        with TemporaryDirectory() as temporary:
+            database = Path(temporary) / "mentat.sqlite3"
+            _initialize_database(database, schema_version=33)
+            before = database.read_bytes()
+            connection = sqlite3.connect(database)
+            connection.row_factory = sqlite3.Row
+            try:
+                self.assertEqual(agent_registry.validate_registry_connection(connection), ())
+                self.assertEqual(
+                    connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+                    33,
+                )
+            finally:
+                connection.close()
+            self.assertEqual(database.read_bytes(), before)
+
     def setUp(self):
         agent_registry._cached_expected_embedded_schema_signature.cache_clear()
         self.addCleanup(agent_registry._cached_expected_embedded_schema_signature.cache_clear)
@@ -154,6 +173,85 @@ class ExpectedEmbeddedAgentSchemaTests(unittest.TestCase):
                         agent_registry.validate_registry_connection(connection)
                 finally:
                     connection.close()
+
+    @staticmethod
+    def file_backed_signature(version, migrations, normalizer):
+        # Exact former construction protocol, retained only as an independent
+        # equivalence oracle. It reads no operator database or configuration.
+        with TemporaryDirectory() as temporary:
+            connection = sqlite3.connect(Path(temporary) / "expected.sqlite3")
+            try:
+                connection.execute(
+                    "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+                )
+                for item_version, script in migrations:
+                    if item_version > version:
+                        break
+                    connection.executescript(script)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                        (item_version,),
+                    )
+                return normalizer(connection)
+            finally:
+                connection.close()
+
+    def test_memory_matches_file_signature_at_every_embedded_version(self):
+        # This includes every version admitted by validate_registry_connection,
+        # plus intervening migration versions, under the exact current recipe.
+        for version in range(8, agent_registry.DATABASE_SCHEMA_VERSION + 1):
+            with self.subTest(version=version):
+                expected = self.file_backed_signature(
+                    version, agent_registry.MIGRATIONS, agent_registry._embedded_schema_signature
+                )
+                self.assertEqual(agent_registry._expected_embedded_schema_signature(version), expected)
+
+    def test_memory_matches_changed_recipe_and_normalizer(self):
+        migrations = tuple(agent_registry.MIGRATIONS)
+        changed = tuple(
+            (version, script + "\nALTER TABLE mentat_agents ADD COLUMN recipe_revision INTEGER;"
+             if version == 8 else script)
+            for version, script in migrations
+        )
+        original = agent_registry._embedded_schema_signature
+        def revised(connection):
+            return tuple((kind, name, table, sql.lower()) for kind, name, table, sql in original(connection))
+        for recipe in (migrations, changed):
+            for normalizer in (original, revised):
+                with self.subTest(changed=recipe == changed, revised=normalizer is revised), \
+                     patch.object(agent_registry, "MIGRATIONS", recipe), \
+                     patch.object(agent_registry, "_embedded_schema_signature", normalizer):
+                    expected = self.file_backed_signature(8, recipe, normalizer)
+                    self.assertEqual(agent_registry._expected_embedded_schema_signature(8), expected)
+
+    def test_cold_expected_signature_uses_only_memory_and_closes_connection(self):
+        actual_connect, connections = sqlite3.connect, []
+        def capture(*args, **kwargs):
+            connection = actual_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+        with patch.object(agent_registry, "TemporaryDirectory", side_effect=AssertionError("filesystem construction")), \
+             patch.object(agent_registry.sqlite3, "connect", side_effect=capture) as connect:
+            self.assertTrue(agent_registry._expected_embedded_schema_signature(agent_registry.DATABASE_SCHEMA_VERSION))
+            connect.assert_called_once_with(":memory:")
+        self.assertEqual(len(connections), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connections[0].execute("SELECT 1")
+
+    def test_memory_constructor_failure_closes_connection_and_is_uncached(self):
+        actual_connect, connections = sqlite3.connect, []
+        def capture(*args, **kwargs):
+            connection = actual_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+        with patch.object(agent_registry.sqlite3, "connect", side_effect=capture), \
+             patch.object(agent_registry, "_embedded_schema_signature", side_effect=RuntimeError("injected normalizer failure")):
+            with self.assertRaisesRegex(RuntimeError, "injected normalizer failure"):
+                agent_registry._expected_embedded_schema_signature(agent_registry.DATABASE_SCHEMA_VERSION)
+        self.assertEqual(agent_registry._cached_expected_embedded_schema_signature.cache_info().currsize, 0)
+        self.assertEqual(len(connections), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connections[0].execute("SELECT 1")
 
 
 if __name__ == "__main__":

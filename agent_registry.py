@@ -688,26 +688,28 @@ def _cached_expected_embedded_schema_signature(
     recipe: tuple,
 ) -> tuple[tuple[str, str, str, str], ...]:
     schema_version, migrations, normalizer = recipe[:3]
-    with TemporaryDirectory(prefix="mentat-embedded-agent-schema-") as temporary:
-        connection = sqlite3.connect(Path(temporary) / "mentat.sqlite3")
-        try:
+    # This database exists only to derive code-owned SQL definitions. No
+    # operator bytes, rows or paths are loaded, and no database bytes escape.
+    # Memory avoids filesystem/fsync latency even on the first cache miss.
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+        )
+        for version, script in migrations:
+            if version > schema_version:
+                break
+            connection.executescript(script)
             connection.execute(
-                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                (version,),
             )
-            for version, script in migrations:
-                if version > schema_version:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
-                    (version,),
-                )
-            signature = normalizer(connection)
-            if recipe != _embedded_schema_recipe(schema_version):
-                raise AgentRegistryError("agent_registry.schema_invalid")
-            return signature
-        finally:
-            connection.close()
+        signature = normalizer(connection)
+        if recipe != _embedded_schema_recipe(schema_version):
+            raise AgentRegistryError("agent_registry.schema_invalid")
+        return signature
+    finally:
+        connection.close()
 
 
 def _expected_embedded_schema_signature(
@@ -819,7 +821,7 @@ def validate_registry_connection(
                 )
             except (sqlite3.Error, TypeError, ValueError) as exc:
                 raise AgentRegistryError("agent_registry.corrupt") from exc
-            if schema_version not in {8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, DATABASE_SCHEMA_VERSION}:
+            if schema_version not in {8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, DATABASE_SCHEMA_VERSION}:
                 raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)
