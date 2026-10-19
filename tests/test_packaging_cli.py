@@ -1173,6 +1173,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["network"], "loopback-only")
         self.assertNotIn(str(private_root), output.getvalue())
 
+    def test_doctor_refuses_old_database_without_writing_or_disclosing_paths(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            console = root / "private" / "console"
+            console.mkdir(parents=True)
+            database = console / "mentat.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+            connection.execute("INSERT INTO schema_migrations VALUES(1,1)")
+            connection.commit()
+            connection.close()
+            if os.name == "posix":
+                console.chmod(0o700)
+                console.parent.chmod(0o700)
+                database.chmod(0o600)
+            before = {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None) for p in root.rglob("*")}
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(cli.main(["doctor", "--data-dir", str(root)]), 2)
+            payload = json.loads(output.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["data"]["database"], "unsupported")
+            self.assertNotIn(str(root), output.getvalue())
+            self.assertEqual(before, {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None) for p in root.rglob("*")})
+
     def test_setup_reports_an_exact_launch_command_and_planner_only_path(self):
         args = cli.build_parser().parse_args(["setup"])
         output = io.StringIO()

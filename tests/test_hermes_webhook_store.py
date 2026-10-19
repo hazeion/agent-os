@@ -14,7 +14,6 @@ import mentat_db
 from hermes_webhook_store import WebhookDeliveryStore
 from hermes_webhooks import ALLOWED_EVENTS, VerifiedHermesEvent
 from mentat_db import (
-    MIGRATIONS,
     SCHEMA_VERSION,
     connect,
     database_path,
@@ -89,95 +88,7 @@ class HermesWebhookStoreTests(unittest.TestCase):
             self.store.claim_and_admit(unsupported, lambda: True)
         self.assertEqual(self.rows(), [])
 
-    def test_v3_replay_rows_are_preserved_by_native_event_migration(self):
-        legacy_root = Path(self.temporary.name) / "legacy-data"
-        private = ensure_private_console_dir(legacy_root)
-        path = database_path(legacy_root)
-        connection = sqlite3.connect(path)
-        try:
-            for version, script in MIGRATIONS[:3]:
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (version, float(version)),
-                )
-            connection.execute(
-                """
-                INSERT INTO hermes_webhook_deliveries (
-                    binding_id, delivery_digest, event_name,
-                    received_at, expires_at, outcome
-                ) VALUES ('local-default', ?, 'on_session_end', 1, 9999999999, 'accepted')
-                """,
-                ("a" * 64,),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        if os.name != "nt":
-            path.chmod(0o600)
 
-        migrated = connect(legacy_root)
-        try:
-            row = migrated.execute(
-                "SELECT event_name FROM hermes_webhook_deliveries"
-            ).fetchone()
-        finally:
-            migrated.close()
-        self.assertEqual(schema_version(legacy_root), SCHEMA_VERSION)
-        self.assertEqual(row[0], "on_session_end")
-
-    def test_failed_v4_rebuild_rolls_back_and_reopens_cleanly(self):
-        legacy_root = Path(self.temporary.name) / "interrupted-data"
-        ensure_private_console_dir(legacy_root)
-        path = database_path(legacy_root)
-        connection = sqlite3.connect(path, isolation_level=None)
-        try:
-            for version, script in MIGRATIONS[:3]:
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (version, float(version)),
-                )
-            connection.execute(
-                """
-                INSERT INTO hermes_webhook_deliveries (
-                    binding_id, delivery_digest, event_name,
-                    received_at, expires_at, outcome
-                ) VALUES ('local-default', ?, 'on_session_end', 1, 9999999999, 'accepted')
-                """,
-                ("b" * 64,),
-            )
-            failing_migrations = MIGRATIONS[:3] + (
-                (4, MIGRATIONS[3][1] + "\nSELECT * FROM injected_missing_table;"),
-            )
-            with patch.object(mentat_db, "MIGRATIONS", failing_migrations):
-                with self.assertRaises(sqlite3.OperationalError):
-                    mentat_db.migrate(connection)
-            self.assertEqual(
-                connection.execute(
-                    "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0],
-                3,
-            )
-            self.assertEqual(
-                connection.execute(
-                    "SELECT event_name FROM hermes_webhook_deliveries"
-                ).fetchone()[0],
-                "on_session_end",
-            )
-            self.assertIsNone(
-                connection.execute(
-                    "SELECT name FROM sqlite_master WHERE name = 'hermes_webhook_deliveries_v3'"
-                ).fetchone()
-            )
-        finally:
-            connection.close()
-        if os.name != "nt":
-            path.chmod(0o600)
-
-        reopened = connect(legacy_root)
-        reopened.close()
-        self.assertEqual(schema_version(legacy_root), SCHEMA_VERSION)
 
     def test_two_simultaneous_claims_accept_exactly_once(self):
         delivery = event("b" * 64)
