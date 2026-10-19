@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -258,6 +259,70 @@ class DependencyQualificationTests(unittest.TestCase):
                         self.assertFalse(report["production_qualified"])
                 self.assertEqual(len(processes), 1)
                 self.assertIsNotNone(processes[0].poll())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "WNOWAIT"), "non-reaping owned-group cleanup")
+    def test_leader_exit_cannot_leave_a_descendant_on_success_or_timeout(self):
+        actual_spawn = subprocess.Popen
+        for inherited_stdout in (True, False):
+            with self.subTest(inherited_stdout=inherited_stdout), candidate_fixture():
+                candidate, *_rest = dependencies.load_candidate()
+                raw = json.dumps({"dependencies": [{"name": item["name"], "version": item["version"], "vulns": []}
+                                                   for item in candidate["wheels"]], "fixes": []}).encode()
+                processes, roots = [], []
+                def spawn(_command, **options):
+                    roots.append(options["cwd"])
+                    code = ("import subprocess,sys; "
+                            # A finite child cannot leak if the host denies
+                            # group signaling. Closure must still be observed.
+                            "subprocess.Popen([sys.executable,'-I','-c','import time;time.sleep(0.6)'],"
+                            "stdin=subprocess.DEVNULL,stdout="
+                            + ("None" if inherited_stdout else "subprocess.DEVNULL")
+                            + ",stderr=subprocess.DEVNULL,close_fds=True);"
+                            "sys.stdout.buffer.write(" + repr(raw) + ");sys.stdout.flush()")
+                    process = actual_spawn([sys.executable, "-I", "-c", code], **options)
+                    processes.append(process)
+                    return process
+                with patch.object(dependencies.subprocess, "Popen", side_effect=spawn), \
+                        patch.object(dependencies, "AUDIT_SECONDS", 0.2 if inherited_stdout else 2.0):
+                    if inherited_stdout:
+                        with self.assertRaisesRegex(dependencies.DependencyQualificationError, "audit_timeout"):
+                            dependencies.run_audit()
+                    else:
+                        self.assertTrue(dependencies.run_audit()["scanner_execution_verified"])
+                self.assertEqual(len(processes), 1)
+                self.assertIsNotNone(processes[0].returncode)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(processes[0].pid, 0)
+                self.assertFalse(roots[0].exists())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "WNOWAIT"), "non-reaping owned-group cleanup")
+    def test_unverified_group_closure_refuses_success_and_retains_owned_directory(self):
+        actual_spawn = subprocess.Popen
+        close = dependencies._close_audit_group
+        with candidate_fixture():
+            candidate, *_rest = dependencies.load_candidate()
+            raw = json.dumps({"dependencies": [{"name": item["name"], "version": item["version"], "vulns": []}
+                                               for item in candidate["wheels"]], "fixes": []}).encode()
+            roots, processes = [], []
+            def spawn(_command, **options):
+                roots.append(options["cwd"])
+                process = actual_spawn([sys.executable, "-I", "-c", "import sys;sys.stdout.buffer.write(" + repr(raw) + ")"], **options)
+                processes.append(process)
+                return process
+            def unverified(process):
+                self.assertTrue(close(process))
+                return False
+            try:
+                with patch.object(dependencies.subprocess, "Popen", side_effect=spawn), \
+                        patch.object(dependencies, "_close_audit_group", side_effect=unverified), \
+                        self.assertRaisesRegex(dependencies.DependencyQualificationError, "audit_cleanup_unverified"):
+                    dependencies.run_audit()
+                self.assertTrue(roots[0].exists())
+                self.assertIsNotNone(processes[0].returncode)
+            finally:
+                # The injected result follows actual verified closure above.
+                for root in roots:
+                    shutil.rmtree(root)
 
     def test_baseline_build_has_no_candidate_policy_or_side_effect(self):
         baseline, digest = origin.load_lock()

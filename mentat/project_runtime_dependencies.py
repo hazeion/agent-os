@@ -8,6 +8,7 @@ trusted readiness receipt or a claim that a scanner was actually executed.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from copy import deepcopy
 from email.parser import BytesParser
 import hashlib
@@ -17,9 +18,10 @@ import os
 from pathlib import Path
 import selectors
 import signal
+import shutil
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import mkdtemp
 import time
 import tomllib
 import zipfile
@@ -40,6 +42,7 @@ MAX_REPORT_BYTES = 4 * 1024 * 1024
 MAX_REQUIREMENTS = 512
 AUDIT_SECONDS = 300
 AUDITOR_VERSION = "2.10.1"
+AUDIT_CLEANUP_SECONDS = 5
 TARGET = {
     "implementation_name": "cpython", "implementation_version": "3.13.14",
     "os_name": "posix", "platform_machine": "x86_64", "platform_release": "",
@@ -239,10 +242,71 @@ def validate_audit_report(raw: bytes):
             "scanner_execution_verified": False, "production_qualified": False}
 
 
+@contextmanager
+def _audit_directory():
+    root = Path(mkdtemp(prefix="mentat-dependency-audit-")).resolve()
+    ownership = {"safe_to_remove": True}
+    try:
+        yield root, ownership
+    finally:
+        # An unverified descendant may still use this owned root. Keep that
+        # disposable public-only directory rather than delete beneath it.
+        if ownership["safe_to_remove"]:
+            shutil.rmtree(root)
+
+
+def _wait_audit_exit(process, deadline):
+    # WNOWAIT retains the exact spawned PID even after exit. Its group ID
+    # therefore cannot be reused before the owned-group termination below.
+    while time.monotonic() < deadline:
+        result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+        if result is not None and result.si_pid == process.pid:
+            return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
+        time.sleep(0.02)
+    _fail("audit_timeout")
+
+
+def _close_audit_group(process):
+    deadline = time.monotonic() + AUDIT_CLEANUP_SECONDS
+    try:
+        # A waitable child, live or terminal, still pins the original identity.
+        # No poll()/wait() may reap it before signaling this exact group.
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+        # start_new_session=True established this exact group at creation.
+        # Darwin may no longer answer getpgid/getsid for a terminal child;
+        # WNOWAIT still reserves its PID, so the original group cannot be reused.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            # Best-effort termination of the exact still-pinned leader cannot
+            # substitute for group closure. The independent probe below must
+            # still prove absence before success or directory removal.
+            try:
+                os.kill(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        # After reaping, probe only. Never send another signal to a potentially
+        # reused numeric ID. Any surviving/ambiguous group refuses success.
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                # Permission denial is never absence evidence. A finite owned
+                # descendant may exit while we wait; accept only later ESRCH.
+                pass
+            time.sleep(0.02)
+    except (OSError, ChildProcessError, subprocess.TimeoutExpired):
+        return False
+    return False
+
+
 def run_audit():
     """Run the fixed auditor in this disposable tool environment, never install."""
     from importlib.metadata import PackageNotFoundError, version
-    if os.name != "posix":
+    if os.name != "posix" or any(not hasattr(os, name) for name in ("waitid", "WNOWAIT", "WEXITED", "WNOHANG", "P_PID", "CLD_EXITED")):
         _fail("audit_platform")
     try:
         if version("pip-audit") != AUDITOR_VERSION:
@@ -250,8 +314,7 @@ def run_audit():
     except PackageNotFoundError:
         _fail("auditor_unavailable")
     candidate, _baseline, candidate_digest = load_candidate()
-    with TemporaryDirectory(prefix="mentat-dependency-audit-") as temporary:
-        root = Path(temporary).resolve()
+    with _audit_directory() as (root, ownership):
         requirements = root / "requirements.txt"
         requirements.write_bytes(audit_requirements(candidate))
         requirements.chmod(0o600)
@@ -265,6 +328,7 @@ def run_audit():
         process = subprocess.Popen(command, cwd=root, env=environment, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                    start_new_session=True, close_fds=True)
+        ownership["safe_to_remove"] = False
         data = bytearray()
         try:
             with selectors.DefaultSelector() as selector:
@@ -284,10 +348,7 @@ def run_audit():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _fail("audit_timeout")
-            try:
-                code = process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                _fail("audit_timeout")
+            code = _wait_audit_exit(process, deadline)
             if time.monotonic() >= deadline:
                 _fail("audit_timeout")
             report = validate_audit_report(bytes(data))
@@ -298,13 +359,14 @@ def run_audit():
             return dict(report, scanner_execution_verified=True, auditor="pip-audit",
                         auditor_version=AUDITOR_VERSION, vulnerability_service="pypi")
         finally:
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait(timeout=5)
-            process.stdout.close()
+            try:
+                ownership["safe_to_remove"] = _close_audit_group(process)
+            finally:
+                process.stdout.close()
+            if not ownership["safe_to_remove"]:
+                _fail("audit_cleanup_unverified")
+            if time.monotonic() >= deadline:
+                _fail("audit_timeout")
 
 
 def build_candidate_stage(artifacts: Path, destination: Path):

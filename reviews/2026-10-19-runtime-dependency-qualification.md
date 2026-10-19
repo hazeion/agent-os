@@ -73,8 +73,8 @@ records local scanner execution, unresolved review and `production_qualified=fal
 `--audit-report` can check supplied JSON but explicitly cannot verify execution.
 Neither interface issues a trusted readiness receipt or production capability.
 
-Final local Python 3.13 validation on macOS: 32 combined dependency/origin methods,
-28 pass and four existing Linux-only origin methods skip. New tests exercise
+Final local Python 3.13 validation on macOS: 34 combined dependency/origin methods,
+30 pass and four existing Linux-only origin methods skip. New tests exercise
 positive synthetic seven-replacement POSIX staging, exact unchanged upstream
 bytes, fixed twelve-change manifest, existing destination refusal, metadata and
 source conflicts, extras, unresolved advisory refusal, strict audit inventory,
@@ -82,6 +82,21 @@ actual owned inert audit-child success/timeout/output/exit cleanup, and isolated
 environment. Synthetic stage tests control the platform flag and execute no
 staged code; they do not claim actual Linux qualification. One sandboxed run
 could not signal its owned test group; the final host run verifies cleanup.
+
+Independent review found that the initial audit cleanup incorrectly treated a
+terminal leader as sufficient closure. A descendant could hold stdout after
+leader exit or outlive successful report parsing. The correction observes the
+exact spawned leader with non-reaping WNOWAIT, preserving its PID until the
+original new-session group is signaled. It then reaps that leader and requires
+observed group absence within a separate bounded cleanup interval. No signal
+is sent after reaping; later numeric-group probes are read-only. Permission
+denial is never absence evidence. Unverified closure refuses success and keeps
+the owned public temporary root; verified closure precedes root removal and
+the final unchanged audit-deadline check. New finite inert descendant cases
+cover both inherited and closed stdout, plus a false-closure result proving
+that a successful report cannot bypass retention. No discovered PID is used
+for control. Earlier intermediate cleanup tests failed on terminal-Darwin
+leader queries; those failures are not passing evidence.
 
 The ordinary fixed-comparison `--audit` command completes against all 111
 packages with zero reported findings and the unresolved advisory still shown.
