@@ -40,8 +40,10 @@ and that contains messages and one or more Runs.
 _Avoid_: Runtime session, runtime thread, chat session
 
 **Run**:
-One bounded execution attempt within a Conversation, with its own lifecycle and
-normalized events.
+One bounded execution attempt for Mentat-owned work, with its own lifecycle and
+normalized events. Its canonical source determines whether it belongs to a
+Conversation or Task. Guarded Project proposal evidence is a separate source;
+it is not yet available for normal execution.
 _Avoid_: Conversation, session, thread
 
 **Runtime session**:

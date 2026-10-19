@@ -64,6 +64,7 @@ passing ancestor as current-head acceptance.
 | 307 | `4f61c44` | `aa2d1ad` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 58 targeted tests discovered; 40 pass; 18 platform/build skips. Hosted and integrated acceptance remain pending. |
 | 308 | `389b0e5` | `1e659a2` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 25 targeted tests discovered; 25 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 310 | `36ede11` | `9febd43` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 21 targeted tests discovered; 10 pass; 11 platform/build skips. Hosted and integrated acceptance remain pending. |
+| 311 | `1cc6196` | `b435818` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 3 targeted tests discovered; 3 pass; no skips. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

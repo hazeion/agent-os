@@ -1,257 +1,146 @@
 # Mentat implementation roadmap
 
-Status: active · updated September 29, 2026
+Status: active · updated September 30, 2026
 
-This is the short resume map. It records sequence and evidence, not authority to
-implement a provisional slice. Use [AGENTS.md](AGENTS.md) and
-[ARCHITECTURE.md](ARCHITECTURE.md) for implemented contracts and safety
-boundaries, [CONTEXT.md](CONTEXT.md) for language, and
-[MENTAT_WEB_DESIGN.md](MENTAT_WEB_DESIGN.md) for website work. Read the active
-GitHub issue and its narrow review record before changing architecture.
-Historical detail belongs in issues, reviews, and pull requests.
+This is the short resume map, not permission to implement an unspecified slice.
+Read [AGENTS.md](AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md),
+[CONTEXT.md](CONTEXT.md), the active GitHub issue and its narrow review record.
+For website work also read [MENTAT_WEB_DESIGN.md](MENTAT_WEB_DESIGN.md).
+Detailed contracts, test counts and historical fixes belong in those records.
 
 ## Destination
 
-The [approved Wayfinder map](https://github.com/hazeion/agent-os/issues/234)
-targets one owner on an always-on Linux Mentat host, authenticated from ordinary
-browsers. Guided CLI setup attaches the owner's Google OIDC application and
-providers. The owner creates Projects and Tasks, assigns Agents manually or
-reviews a lead Agent's plan, approves bounded work between checkpoints, and
-reviews versioned results in one durable Inbox. The garage acceptance journey
-uses owner-supplied goals and floorplan measurements to produce a dimensioned
-layout, linked editable shopping document, and implementation order. It must
-ask for missing dimensions rather than invent them.
+The [Wayfinder map: secure owner access and coordinated Project delivery](https://github.com/hazeion/agent-os/issues/234)
+targets one owner on an always-on Linux Mentat host, signing in from ordinary
+desktop/mobile browsers. Guided CLI onboarding connects Google owner login and
+Agent providers separately. The owner creates Projects and Tasks, assigns
+Agents manually or reviews a lead's proposed plan, approves bounded work
+between checkpoints, and reviews versioned results in one durable Inbox.
 
-Python owns Tasks, Runs, context, files, credentials, and adapter authority.
-The browser reaches only fixed, owner-authenticated Node capabilities. Existing
-local operation remains available; browser access never grants provider consent.
-No task, plan, Inbox item, or model prose silently approves execution, grants
-context, retries uncertainty, purchases anything, or sends an external message.
+The garage journey uses the owner's actual goals, floorplan and measurements
+to produce a dimensioned layout, an editable shopping document with product
+links, and an implementation order. Missing measurements become questions;
+revisions retain prior evidence and final results require owner acceptance.
+
+Python owns Tasks, Runs, context, files, credentials and runtime authority.
+Browser access grants no provider consent. Saving a plan or choosing a lead
+never starts work. Unknown external outcomes never retry automatically.
 
 ## Current position
 
-The old Beta/MDA foundation is merged through
-[PR #231](https://github.com/hazeion/agent-os/pull/231) and
-[PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
-workflow is a stack of **full, open PRs** starting at
-[PR #243](https://github.com/hazeion/agent-os/pull/243), including official
-Hermes compatibility in [PR #296](https://github.com/hazeion/agent-os/pull/296).
-The PRs being open
-is not merged-product or issue-close evidence. Hosted CI and ordinary review
-remain gates. The reviewed Windows CI-shard correction in
-[PR #276](https://github.com/hazeion/agent-os/pull/276) is integrated into
-the later product branches; hosted reruns remain the timeout acceptance gate.
-[PR #293](https://github.com/hazeion/agent-os/pull/293) merged bounded overlap
-of audited Windows tests into the #276 CI branch, with 19.6–25.1% local subset
-wall-time savings and a passing 193-test group. #276 also contains the reviewed
-Undici 8.10.2 security correction; its new exact-head hosted checks are pending.
-[PR #294](https://github.com/hazeion/agent-os/pull/294) removes 30 accidental
-duplicate executions while retaining all 2,359 unique current tests. Both
-have clear independent reviews; hosted timing gains remain unverified.
+The older foundation is merged through [PR #231](https://github.com/hazeion/agent-os/pull/231)
+and [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
+workflow remains a stack of full, open PRs starting at
+[PR #243](https://github.com/hazeion/agent-os/pull/243), most recently
+[PR #310](https://github.com/hazeion/agent-os/pull/310). Open PRs, passing local
+checks and clean mergeability are not merged-product or issue-close evidence.
+Hosted CI, normal review and integrated acceptance remain gates. No blanket
+GitHub PR merge authorization is recorded.
 
-- [Baseline and fresh-install readiness](https://github.com/hazeion/agent-os/issues/235):
-  PRs [#243](https://github.com/hazeion/agent-os/pull/243)–[#245](https://github.com/hazeion/agent-os/pull/245)
-  address readable next-Run objectives, Task/Run completion, navigation, and
-  responsive/transcript findings. The older
-  [fresh-install audit](https://github.com/hazeion/agent-os/issues/223) and
-  residual QA tickets remain open until current-main acceptance proves them.
-- [Google owner access](https://github.com/hazeion/agent-os/issues/241):
-  the [OIDC contract](https://github.com/hazeion/agent-os/issues/236) is
-  resolved. Full PRs [#247](https://github.com/hazeion/agent-os/pull/247),
-  [#249](https://github.com/hazeion/agent-os/pull/249),
-  [#252](https://github.com/hazeion/agent-os/pull/252),
-  [#254](https://github.com/hazeion/agent-os/pull/254),
-  [#255](https://github.com/hazeion/agent-os/pull/255),
-  [#258](https://github.com/hazeion/agent-os/pull/258), and
-  [#259](https://github.com/hazeion/agent-os/pull/259) contain the verifier,
-  one-use login, owner-session, host-admin setup, and
-  website sign-in slices. Operator-owned Google configuration, live
-  cross-device login, Linux/Caddy activation, recovery, and revocation need
-  real-host acceptance. The independent
-  [non-loopback security gate](https://github.com/hazeion/agent-os/issues/10)
-  also requires a human security review before activation. Do not claim
-  remote readiness from fixture tests.
-- [Project context and deliverables](https://github.com/hazeion/agent-os/issues/238):
-  PRs [#264](https://github.com/hazeion/agent-os/pull/264)–[#272](https://github.com/hazeion/agent-os/pull/272)
-  cover owner context grants, exact Task inputs, retained Run-input evidence,
-  editable garage results, and exact three-result owner review. Trusted
-  generated-output promotion and qualified Project execution remain missing.
-  Child [input admission](https://github.com/hazeion/agent-os/issues/262)
-  and [generated deliverables](https://github.com/hazeion/agent-os/issues/263)
-  are not complete.
-- [Approved plans and handoffs](https://github.com/hazeion/agent-os/issues/239):
-  [PR #273](https://github.com/hazeion/agent-os/pull/273) stores owner-edited
-  immutable plan versions and [PR #274](https://github.com/hazeion/agent-os/pull/274)
-  provides the initial owner editor. The [reviewed policy design](https://github.com/hazeion/agent-os/pull/283),
-  [schema-37 storage](https://github.com/hazeion/agent-os/pull/284), and
-  [format-2 owner editor](https://github.com/hazeion/agent-os/pull/285)
-  add immutable requested operations, output slots, scoped planned handoffs,
-  and retry ceilings. Version-1 plans remain ineligible for execution approval;
-  saving format 2 is still preparation only. Agent-authored proposals,
-  qualified adapter enforcement, exact approval, budget debit, checkpoint
-  admission, and verified transfer receipts are still absent. The
-  [runtime candidate research](https://github.com/hazeion/agent-os/issues/237)
-  is resolved; real Linux runtime qualification is not.
-  [PR #286](https://github.com/hazeion/agent-os/pull/286) records the reviewed
-  lead-proposal and exact owner Apply design.
-  [PR #287](https://github.com/hazeion/agent-os/pull/287) stores an
-  owner-selected Project lead role with context-bound readiness; selection
-  alone cannot produce a proposal or start work.
-  [PR #288](https://github.com/hazeion/agent-os/pull/288) retains schema-39
-  private Project planning-input evidence.
-  [PR #289](https://github.com/hazeion/agent-os/pull/289) adds exact owner
-  publication and lost-response receipts; neither grants a proposal Run or
-  Apply. [PR #290](https://github.com/hazeion/agent-os/pull/290) reserves a
-  distinct proposal Run source behind a no-dispatch database guard.
-  [PR #291](https://github.com/hazeion/agent-os/pull/291) adds the guarded
-  schema-42 Project proposal Run-input receipt and file-evidence graph.
-  Generated-output provenance, atomic admission and a qualified Linux adapter
-  still gate actual lead proposal execution. The schema-41 no-dispatch guard
-  remains.
-  [PR #292](https://github.com/hazeion/agent-os/pull/292) adds the pure bounded
-  proposal artifact parser. It validates new-Task suggestions and blocking
-  questions but grants no producing-Run provenance or owner Apply authority.
-- [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):
-  PRs [#275](https://github.com/hazeion/agent-os/pull/275) and
-  [#277](https://github.com/hazeion/agent-os/pull/277)–[#281](https://github.com/hazeion/agent-os/pull/281)
-  retain exact Project review items and Run outcomes, then show them in a
-  unified owner Inbox and Home attention card. Run notices cannot retry work.
-  Trusted plan-approval requests, Agent questions, checkpoint decisions, and
-  coordinated revision routing still need canonical sources and exact guards.
-  See the [Run Inbox review](reviews/2026-09-24-run-attention-contract.md).
-- [Complete garage journey](https://github.com/hazeion/agent-os/issues/242):
-  built synthetic desktop/mobile paths prove preparation and owner review
-  surfaces, but not approved Agent execution, real provider qualification,
-  operator-supplied garage inputs, or integrated cross-device acceptance.
+| Required outcome | Evidence on the open stack | Acceptance still missing |
+| --- | --- | --- |
+| Secure owner access from any device | Google OIDC, enrollment, sessions, recovery, authenticated gateway and website sign-in slices | Operator Google client/HTTPS setup, human non-loopback security review, actual desktop/mobile login, rejection, revocation and recovery |
+| Easy CLI onboarding | Named owner/provider setup and protected lifecycle operations; backed-up official Hermes host activation recorded | Clean-host end-to-end setup, qualified Project-provider connection and host replacement/update/recovery |
+| Projects, Tasks and Agent access | Canonical storage, explicit context grants, immutable selected Task inputs, lead selection and owner-edited format-2 plans | Atomic qualified Run admission and exact input/capacity/work/Stop enforcement through production execution |
+| Lead plans and manual assignment | Lead/planning-input preparation, guarded proposal receipt, bounded artifact parser, isolated worker and synthetic broker evidence | Trusted producing Run, proposal intake/owner Apply, exact plan approval, budget debit, checkpoints and verified handoffs |
+| Garage research and results | Private public-page reader, retained editable result versions and exact three-slot owner review | Public search/tool/work admission, generated-output provenance, real research/synthesis and coordinated revisions using actual owner inputs |
+| Durable communication and recovery | Owner Inbox for exact Project-review and Run sources, retained unknown outcomes and tested backup graphs | Canonical plan requests/questions/checkpoint sources, integrated restart/disconnection behavior and whole journey acceptance |
 
-## Next frontier
+[Reconcile merged QA fixes and verify the current baseline](https://github.com/hazeion/agent-os/issues/235)
+and [Fresh-install release readiness: Project, Task, and Agent journey](https://github.com/hazeion/agent-os/issues/223)
+remain acceptance work against the appropriate integrated branch. Do not close
+residual QA based on a fixture or an unmerged change alone.
 
-1. Clear the open PR stack's CI/review findings, preserve the full PRs, and
-   advance merge decisions through the normal repository review flow. Recheck
-   the old QA tickets against merged main; close only a finding with direct
-   current-main or integrated-browser evidence.
-2. For Project execution, first record the policy-bearing immutable plan
-   format, exact owner approval, budget/checkpoint receipts, and a real
-   capability-qualified runtime operation. Prove prepared-file containment,
-   allowed tools, time/work ceilings, interruption, and no-follow cleanup on
-   the actual Linux host before advertising dispatch. Agent proposals must
-   come from a trusted producing Run, never arbitrary model prose. Preserve
-   manual assignment.
-   The [worker admission prerequisite](reviews/2026-09-29-project-worker-admission.md)
-   records verified gaps in the installed Hermes fork and pinned current
-   upstream. Whole-worker isolation, atomic prepared-input/policy admission,
-   broker-owned credentials/call reconciliation and verified Stop are still
-   missing. The owner selected the updated official Hermes release over the
-   fork; stock compatibility and backed-up host activation are verified.
-   Shipped lifecycle/inference/provider/egress seams must be reassessed before
-   proposing an extension. Keep Project execution guarded pending qualification.
-   [Official-release compatibility](reviews/2026-09-29-official-hermes-compatibility.md)
-   verifies stable 0.21.5, the stock model-writer owner and local control
-   startup/session/shutdown with no model submission. The owner requested no
-   old-writer fallback. Exact quiescence, validated private backups, supported
-   service replacement and live PID/socket readback verified host activation.
-   Dashboard HTTP acceptance passed. A reviewed POSIX inventory fix combines
-   partial tool observations while preserving exact recorded-generation Stop;
-   all 50 Linux lifecycle tests and actual host status readback pass. Live
-   model execution and Project qualification remain
-   separate acceptance work.
-   A [reviewed stock-Hermes controller proposal](reviews/2026-09-29-official-hermes-project-controller.md)
-   offers isolated Mentat-owned execution with a separate fixed Hermes Kanban
-   delegation ledger. The owner approved that dispatcher-ownership amendment
-   on September 29. Implement and qualify the fixed worker scope and broker
-   transport first; existing Project dispatch guards remain in force until
-   complete admission, provenance and host qualification pass.
-   The [implemented local-scope component](reviews/2026-09-30-project-worker-scope.md)
-   provides a fixed inert bootstrap, kernel-verified limits, owned-generation
-   local Stop and an independent watchdog. All 13 actual Linux tests and
-   wheel/sdist/install checks pass after two clear reviews. It grants no Run
-   or production handoff. The [durable controller journal](reviews/2026-09-30-project-worker-journal.md)
-   adds schema-43 immutable generation evidence, one irrevocable inference
-   reservation, token-bound unknown/known outcome accounting and validated
-   private archival backup/restore. Both independent reviews are clear;
-   current migration/attention/journal checks pass. It grants no provider
-   submission or producing-Run authority. The [fixed namespace handoff](reviews/2026-09-30-project-worker-namespace.md)
-   now runs unchanged official Hermes through a credential-free frontend,
-   sealed inputs and isolated bounded writable roots. All 32 actual Linux tests
-   pass, including native image-byte equality through a fake broker, detached
-   Stop and post-exit export readback; both independent reviews are clear.
-   These component tests grant no live provider or Run authority. The
-   [durable inference core](reviews/2026-09-30-project-inference-broker.md)
-   now derives exact accepted inputs, constructs a host-owned bounded request,
-   commits unknown before one synthetic response, and fences duplicates, faults,
-   Stop, invalid authority and changed policy/deadlines. The combined 78-test
-   Linux group includes the unchanged stock CLI and accepted image through the
-   durable journal; both independent reviews are clear. Its only backend is an
-   explicit fake responder. The [runtime-image lease](reviews/2026-09-30-project-runtime-image.md)
-   now makes selected source/venv/Python bytes kernel-immutable, with bounded
-   FUSE probes, worker-held references and exact owned cleanup. All 15 final
-   Linux image tests pass, including unchanged official Hermes from the sealed
-   public candidate through canonical image inputs and the durable fake broker.
-   This proves byte/lifecycle containment only; installed dependency origin,
-   system-library closure and helper/model qualification remain unproved.
-   The [sealed library projection](reviews/2026-09-30-project-runtime-libraries.md)
-   extends image-backed qualification to all five runtime/library roots with no
-   raw host library opens. The final 110-test actual Linux group passes, including
-   unchanged stock/PIL/canonical image and durable fake-broker flow. Fixed native
-   synthetic setup removes repeated CLI startups without widening the wall.
-   Both independent final reviews are clear after recursive library-path,
-   overlapping ELF mapping and noncanonical alias refusals. Static ELF closure
-   and negative loader-path checks do not prove package origin
-   or complete dynamic-loading behavior. The
-   [public-origin qualification](reviews/2026-09-30-project-runtime-origin.md)
-   rebuilds a fresh candidate from the pinned official Git/Python archives and
-   111 verified public wheels, checks the exact upstream versus supplemental
-   provenance relation, and exercises the same fixed isolated operation.
-   It excludes local generated metadata and modified Python sysconfig bytes.
-   This is selected artifact-origin evidence only; complete loader behavior,
-   system/helper provenance and provider/model readiness remain separate.
+## Next steps and dependencies
+
+1. **Finish CI and integration review.** The dedicated CI workstream repairs
+   exact failed heads, preserves full PRs and existing test/deadline coverage,
+   and resolves proven stack conflicts. [PR #276](https://github.com/hazeion/agent-os/pull/276),
+   [PR #293](https://github.com/hazeion/agent-os/pull/293),
+   [PR #294](https://github.com/hazeion/agent-os/pull/294) and
+   [PR #309](https://github.com/hazeion/agent-os/pull/309) carry reviewed
+   efficiency work. Report local timing as local evidence, not hosted speed.
+   Revalidate current heads; queued or unavailable checks are not passes.
+
+2. **Qualify the real Project provider before dispatch or execution approval.**
    The [provider compatibility audit](reviews/2026-09-30-project-provider-compatibility.md)
-   verifies that the stock Codex OAuth route omits the current output-token
-   limit and retains an outer retry; read-only credential resolution also does
-   not prove exact profile scope or zero auth-store writes. It is not a
-   qualified replacement for the synthetic broker. A documented public OAuth
-   route and a supported API-key profile are candidates pending owner choice
-   and exact qualification, not readiness claims. Do not weaken the policy or
-   change credentials automatically.
-   The [public-page reader prerequisite](reviews/2026-09-30-project-public-page-reader.md)
-   adds bounded credential-free HTTPS article/text retrieval without a model,
-   private Project input or browser route. Public search, approved-input/work
-   reservation, Run/scope fencing, qualified tool handoff and provenance remain
-   required before Agent public research can be enabled.
-   Next implement supported host credential custody, complete runtime/model
-   qualification and durable scope admission, then
-   exact Project execution admission and generated-output provenance.
-3. Extend the canonical Project/Run sources for generated deliverable
-   promotion, missing-dimension questions, checkpoint approvals, and
-   coordinated change requests. The Inbox may index only those exact source
-   generations. Keep unknown external outcomes visible and unretried.
-4. Qualify operator-configured Google sign-in, recovery, session revocation,
-   CLI onboarding, and the disabled-until-proven Linux/Caddy profile from
-   ordinary desktop/mobile browsers. Do not invent domains, credentials,
-   garage measurements, or provider readiness.
-5. Repeat the complete garage journey on an integrated supported host, record
-   actual fixtures/devices/provider evidence, then reconcile child issues and
-   the [current Wayfinder map](https://github.com/hazeion/agent-os/issues/234).
-   The [older access map](https://github.com/hazeion/agent-os/issues/171) is
-   closed as superseded tracking, not proof that remote access shipped. Issue closure
-   requires evidence, not a published PR.
+   establishes that stock Codex OAuth omits the existing output-token limit
+   and has an outer retry. A configured provider or working Console is not
+   Project qualification. The owner has been asked whether to evaluate the
+   documented ChatGPT-plan OAuth route first or a supported API-key provider
+   through Hermes. Neither is selected or qualified by this map. Credential
+   custody, exact profile/account/model/token/image behavior, fixed transport
+   and unknown-outcome handling need direct evidence. Do not read Hermes
+   credential stores directly, change auth, silently drop a policy field or
+   create a fallback. Credential use, live provider submission and production
+   provider enablement require the resolved owner choice and proven authority.
+   Independent credential-free source and synthetic qualification may continue
+   within already approved contracts.
+
+3. **Connect the already implemented prerequisites to canonical work.**
+   The owner approved the [unchanged-stock Mentat controller direction](reviews/2026-09-29-official-hermes-project-controller.md):
+   Mentat owns isolated workers; supported Hermes Kanban is a separate fixed
+   delegation ledger, not its dispatcher. [Official release compatibility](reviews/2026-09-29-official-hermes-compatibility.md),
+   [worker scope](reviews/2026-09-30-project-worker-scope.md),
+   [namespace handoff](reviews/2026-09-30-project-worker-namespace.md),
+   [durable journal](reviews/2026-09-30-project-worker-journal.md),
+   [synthetic inference broker](reviews/2026-09-30-project-inference-broker.md),
+   [immutable image](reviews/2026-09-30-project-runtime-image.md),
+   [sealed libraries](reviews/2026-09-30-project-runtime-libraries.md),
+   [public artifact origin](reviews/2026-09-30-project-runtime-origin.md) and
+   [public-page reader](reviews/2026-09-30-project-public-page-reader.md)
+   have component evidence. Complete loader/system/helper/model qualification
+   is still separate. Implement reviewed atomic admission with shared
+   cross-source capacity, exact inputs and durable scope/work receipts; then
+   registered proposal output and owner Apply. The schema-41 no-dispatch guard
+   and default live proposal validation remain closed until their complete
+   admission/provenance/Inbox/backup requirements pass.
+
+4. **Finish approved Task execution and review.** Under
+   [Define and implement approved lead-agent plans and scoped Task handoffs](https://github.com/hazeion/agent-os/issues/239),
+   bind exact format-2 plan approval to current immutable inputs and qualified
+   runtime. Reserve finite attempts/work, reconcile the isolated Kanban ledger
+   before Task execution, and implement exact checkpoint/handoff receipts.
+   Verify dependency readiness, failure propagation, cancellation, reassignment
+   and crash recovery without granting new scope or repeating uncertain work.
+   Public research receives only the approved public brief; private synthesis
+   has selected files and no public-web capability. Under
+   [Retain and edit versioned Project deliverables](https://github.com/hazeion/agent-os/issues/263)
+   and [Implement Project review, coordinated revisions, and the owner inbox](https://github.com/hazeion/agent-os/issues/240),
+   register outputs from exact verified producer Runs and expose questions,
+   approvals and revisions only through canonical sources. A parser, owner edit,
+   successful Run or Inbox acknowledgment cannot substitute for those proofs.
+
+5. **Activate and accept the real host and garage journey.** Under
+   [Implement Google owner login and qualify explicit Linux remote activation](https://github.com/hazeion/agent-os/issues/241)
+   and [Secure all Mentat APIs before supporting non-loopback access](https://github.com/hazeion/agent-os/issues/10),
+   use actual operator Google/HTTPS configuration and the required human
+   security review before remote activation. Under
+   [Verify fresh onboarding and the complete garage Project journey](https://github.com/hazeion/agent-os/issues/242),
+   test ordinary physical desktop/mobile devices, real provider/tool work,
+   missing-dimension questions, all three deliverables, owner changes,
+   restart/disconnection and host recovery. Record fixtures versus live
+   integrations explicitly, then reconcile child issues and the Wayfinder map.
+
+## Operator inputs and independent work
+
+Provider route choice is pending. Google OAuth application configuration,
+HTTPS host activation/security acceptance and actual garage goals, floorplan,
+measurements and budget are not supplied or proven by component tests. Do not
+invent them or request secrets in chat. Continue independent authorized CI,
+source qualification and integration work while those inputs are pending;
+elapsed time never approves credential changes or execution.
 
 ## Working rules
 
-- Work from a focused `codex/` branch. Keep Python authoritative and Node
-  capabilities named and bounded.
-- Keep runtime identities private beneath canonical Mentat Agent and Run IDs;
-  never turn Conversation Turns into a Task scheduler or bypass Hermes Kanban
-  confirmation.
-- For each nontrivial slice, write its scope and test strategy in a narrow
-  review record, run proportionate tests and built acceptance, obtain two
-  independent read-only reviews, fix findings, then push a full PR.
-- Preserve unrelated local state and the explicit legacy UI rollback path.
-  Leave a blocked capability visibly unavailable instead of substituting an
-  unverified execution path.
-- [Hermes cron queueing](https://github.com/hazeion/agent-os/issues/14)
-  remains an upstream-dependent, read-only capability. Do not approximate its
-  missing atomic operation with a direct store write or trigger sequence.
-- On slice close-out, update the relevant GitHub child and this resume point.
-  Close a ticket only after its accepted behavior is verified on the required
-  branch/host.
+- Work on a focused codex/ branch and keep Python authoritative with named,
+  bounded Node capabilities. Runtime identities remain private beneath Agents.
+- Record each nontrivial contract/test strategy, test proportionately, obtain
+  two independent reviews, fix/re-review to clear, then push a full PR.
+- Preserve unrelated state, the explicit legacy UI rollback and truthful
+  unknown outcomes. Conversation Turns remain outside the Task scheduler.
+- [Add an atomic Hermes cron queue capability for Mentat](https://github.com/hazeion/agent-os/issues/14)
+  remains an upstream blocker, not a trigger/direct-store workaround.
+- [Historical access map](https://github.com/hazeion/agent-os/issues/171) is
+  superseded tracking, not proof that remote access shipped. Update the relevant
+  issue and this resume point on slice close-out; close only with scoped evidence.
