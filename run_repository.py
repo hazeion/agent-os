@@ -8061,6 +8061,10 @@ def ensure_run_sqlite_authority(data_dir: Path, history_path: Path) -> RunAuthor
             finally:
                 if connection is not None:
                     connection.close()
+    except PrivateStateError as exc:
+        if isinstance(exc.__cause__, (MentatDatabaseError, OSError)):
+            raise RunRepositoryUnavailable("run_repository.unavailable") from exc
+        raise
     except (MentatDatabaseError, sqlite3.Error) as exc:
         raise RunRepositoryUnavailable("run_repository.unavailable") from exc
 
