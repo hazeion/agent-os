@@ -20,6 +20,7 @@ from agent_registry import (
     CanonicalAgentRecord,
 )
 from mentat_db import (
+    MentatDatabaseError,
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
     connect as connect_database,
 )
@@ -1464,6 +1465,10 @@ class ConversationRepository:
             if connection is not None:
                 connection.close()
             raise
+        except MentatDatabaseError as exc:
+            if connection is not None:
+                connection.close()
+            raise ConversationRepositoryUnavailable("conversation.schema_unsupported") from exc
         except (OSError, sqlite3.Error) as exc:
             if connection is not None:
                 connection.close()

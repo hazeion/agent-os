@@ -2959,12 +2959,14 @@ def _connect_with_identity_locked(
         try:
             return _connect_with_identity_once(data_dir)
         except _TransientDatabaseSidecarRace as exc:
-            if attempt + 1 == DATABASE_OPEN_ATTEMPTS:
-                raise MentatDatabaseError(
-                    "Mentat database sidecar changed during validation"
-                ) from exc
-            time.sleep(DATABASE_OPEN_RETRY_SECONDS)
+            _pause_or_raise_sidecar_race(attempt, exc)
     raise AssertionError("database open retry loop exhausted")
+
+
+def _pause_or_raise_sidecar_race(attempt: int, error: _TransientDatabaseSidecarRace) -> None:
+    if attempt + 1 == DATABASE_OPEN_ATTEMPTS:
+        raise MentatDatabaseError("Mentat database sidecar changed during validation") from error
+    time.sleep(DATABASE_OPEN_RETRY_SECONDS)
 
 
 def _connect_with_identity_once(
@@ -3058,7 +3060,12 @@ def validate_current_database_root(data_dir: Path) -> bool:
     startup initialization, locking or permission changes to the source root.
     """
 
-    return _admit_current_database_root(data_dir) is not None
+    for attempt in range(DATABASE_OPEN_ATTEMPTS):
+        try:
+            return _admit_current_database_root(data_dir) is not None
+        except _TransientDatabaseSidecarRace as exc:
+            _pause_or_raise_sidecar_race(attempt, exc)
+    raise AssertionError("database admission retry loop exhausted")
 
 
 def _admit_current_database_root(data_dir: Path) -> tuple[int, int] | None:
@@ -3114,13 +3121,22 @@ def connect_current_readonly(data_dir: Path) -> Iterator[sqlite3.Connection]:
     """
 
     with DATABASE_OPEN_BARRIER:
-        source = _current_database_files(data_dir)
-        if source is None:
-            raise MentatDatabaseError("Mentat database is unavailable")
-        path, identities = source
-        with _current_admission_snapshot(path, identities) as connection:
-            _validate_current_database(connection)
-            yield connection
+        yielded = False
+        for attempt in range(DATABASE_OPEN_ATTEMPTS):
+            try:
+                source = _current_database_files(data_dir)
+                if source is None:
+                    raise MentatDatabaseError("Mentat database is unavailable")
+                path, identities = source
+                with _current_admission_snapshot(path, identities) as connection:
+                    _validate_current_database(connection)
+                    yielded = True
+                    yield connection
+                return
+            except _TransientDatabaseSidecarRace as exc:
+                if yielded:
+                    raise
+                _pause_or_raise_sidecar_race(attempt, exc)
 
 
 def _read_wal_prefix(path: Path, identity: tuple[int, int]) -> bytes:
@@ -3128,16 +3144,34 @@ def _read_wal_prefix(path: Path, identity: tuple[int, int]) -> bytes:
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
-    descriptor = os.open(path, flags)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise _TransientDatabaseSidecarRace(
+            "Mentat database sidecar changed during validation"
+        ) from exc
     try:
         before = os.fstat(descriptor)
-        if (
-            (int(before.st_dev), int(before.st_ino)) != identity
-            or not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
-            or before.st_size > MAX_READONLY_WAL_BYTES
-        ):
-            raise MentatDatabaseError("Mentat database WAL is unavailable")
+
+        def validate_descriptor(details: os.stat_result) -> None:
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or _is_reparse_point(details)
+                or details.st_nlink > 1
+                or details.st_size > MAX_READONLY_WAL_BYTES
+                or (
+                    os.name == "posix"
+                    and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) != 0o600)
+                )
+            ):
+                raise MentatDatabaseError("Mentat database WAL is unavailable")
+
+        validate_descriptor(before)
+        if before.st_nlink == 0 or (int(before.st_dev), int(before.st_ino)) != identity:
+            raise _TransientDatabaseSidecarRace(
+                "Mentat database sidecar changed during validation"
+            )
 
         def read_prefix() -> bytes:
             os.lseek(descriptor, 0, os.SEEK_SET)
@@ -3152,7 +3186,14 @@ def _read_wal_prefix(path: Path, identity: tuple[int, int]) -> bytes:
             return b"".join(chunks)
 
         raw = read_prefix()
-        if read_prefix() != raw or os.fstat(descriptor).st_size < before.st_size:
+        repeated = read_prefix()
+        after = os.fstat(descriptor)
+        validate_descriptor(after)
+        if after.st_nlink == 0:
+            raise _TransientDatabaseSidecarRace(
+                "Mentat database sidecar changed during validation"
+            )
+        if repeated != raw or after.st_size < before.st_size:
             raise MentatDatabaseError("Mentat database WAL changed while reading")
         return raw
     finally:
