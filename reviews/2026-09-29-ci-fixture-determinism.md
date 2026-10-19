@@ -1,12 +1,39 @@
 # Deterministic rate-window and discovery-worker fixtures
 
+## Historical PR 277 compatibility note
+
 PR #277 compatibility replay starts at `d33f52d`. The affected auth methods and
 discovery fixture code match the reviewed PR #276 fix; preserve this branch's
 schema-34 expectation. This record's PR #276 scope is historical source evidence.
 
-Scope: test-only corrections on PR #276. Preserve production authentication,
+
+Scope: reviewed test corrections originally on PR #276, with compatible fixture
+and dev-transitive security backports on PR #244. Preserve authentication,
 private locking, discovery order, verifier counts and every test assertion.
 No workflow watchdog, adapter capability or runtime behavior changes.
+
+Compatibility backport for PR #244 (base `7c06ed47`): copy only this reviewed
+test correction and add the two diagnostic standard-library imports absent
+from the older fixture. Its schema version, production modules and workflow
+remain unchanged. PR #245 receives the same compatible correction through its
+existing stacked parent, with its own exact-head verification.
+Fresh audit of the older PR #244 lock reproduces the known Undici 8.10.0 high
+severity failure, so the same three-field reviewed 8.10.2 correction is also
+backported before publishing; no other dependency or package constraints change.
+The same fresh audit also reports the newly reviewed brace-expansion recursion
+advisories [GHSA-qhr7-859c-m2p7](https://github.com/advisories/GHSA-qhr7-859c-m2p7)
+and [GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p).
+Update only its two existing dev-transitive lock entries from 1.1.18 to 1.1.21
+and 5.0.9 to 5.0.12, using their registry tarball identities/integrities; their
+parent minimatch ranges and Node requirements remain satisfied. The existing
+dependency graph, production package constraints and audit threshold remain.
+PR #244 compatibility checks: five directly affected unittest methods and seven
+existing CI contracts pass (12 methods; the injected-failure method contains
+four control-flow subcases). Frozen install, explicit audit and dependency-tree
+validation pass with zero vulnerabilities. PR #244/#245's pre-backport Python
+authentication/orchestration files are byte-identical.
+PR #244 web lint, typecheck and all 377 web tests also pass against the patched
+frozen dependency tree.
 
 ## Diagnosis
 
@@ -53,7 +80,7 @@ owned threads stopped, and verifies that the original injected assertion is
 the sole failure. The regression itself drains only its captured fixture
 workers if the old bug returns, so it does not leak threads while detecting it.
 
-Targeted validation: both recovery cases, both discovery cases, the four
+Original PR #276 validation: both recovery cases, both discovery cases, the four
 injected failure paths, and all CI contracts pass (16 discovered tests).
 Full related modules also pass: 27 owner-auth tests and 107 orchestration tests.
 Two independent read-only reviews found no actionable concerns. Each reviewer
