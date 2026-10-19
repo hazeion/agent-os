@@ -190,6 +190,9 @@ This section proposes the previously unresolved handoff. It is design only and
 requires root and independent approval before any custody code. It selects
 worker verification into sealed objects followed by descriptor transfer;
 it does not select an immutable loader namespace or authorize execution.
+The trust-class distinction below qualifies every earlier reference to custody
+of authenticated members: only library/loader archive membership is freshly
+authenticated here; helper bytes are bound to the existing compiled pins.
 
 ### Fixed operation and ownership
 
@@ -241,7 +244,7 @@ not a reusable message or execution framework.
    and transfer the exact captured helper bytes that passed those pins. The
    separate helper-origin gate remains independent and unresolved here.
    No parent recapture, source reopen or caller report supplies member bytes.
-3. For each selected regular member, copy directly from those authenticated
+3. For each selected regular member, copy directly from those verified
    immutable Python bytes into one fresh memfd, apply F_SEAL_WRITE,
    F_SEAL_GROW, F_SEAL_SHRINK and F_SEAL_SEAL, then use bounded pread on that
    descriptor to recompute size/hash and parse the exact sealed bytes. Bind
@@ -255,8 +258,8 @@ not a reusable message or execution framework.
    signed-library-archive for the13 library/loader objects and compiled-helper-
    pin for the four fixed helpers. Class selection is internal by fixed member
    identity; callers cannot supply or override it. This is no global
-   authenticated/provenance flag and does not clear either qualification gate. Order is lexical virtual path order, not local FD
-   number. Aliases remain bounded authenticated metadata; do not materialize
+   authenticated/provenance flag and does not clear either qualification gate.
+   Order is lexical virtual path order, not local FD number. Aliases remain bounded authenticated metadata; do not materialize
    filesystem links or attach an FD for them.
 5. Transfer one MEMBER packet per regular row, in that exact order, with exactly
    one SCM_RIGHTS descriptor, one credentials record and nonce/sequence/index.
