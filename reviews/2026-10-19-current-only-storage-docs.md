@@ -49,3 +49,9 @@ focused stale-contract scan found no live promise of old archive acceptance,
 standalone Agent convergence, old migration commands or schema5 export. Remaining
 format1/2 plan rows and row-level legacy provenance describe valid current data.
 No hosted CI, full integration suite or release readiness is claimed here.
+
+Independent review found two residual compatible-export exclusion clauses and
+an ambiguous incomplete-reservation sentence. The obsolete clauses are removed.
+The archive boundary now explicitly distinguishes unsupported/malformed states
+from exact recognized current protocol4 interruption recovery, which remains
+supported. These are documentation corrections only.
