@@ -681,6 +681,9 @@ with TemporaryDirectory(prefix="mentat-webhook-lock-order-") as temporary:
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=Path(server.__file__).resolve().parent,
+            # The lock probe must not discover the developer's installed Hermes
+            # home during server import. Use its owned temporary root instead.
+            env={**os.environ, "HERMES_HOME": str(Path(self.temporary.name) / "hermes")},
             capture_output=True,
             text=True,
             timeout=10,
