@@ -17,8 +17,12 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+from mentat.native_startup_diagnostics import mark_native_startup_phase
+
+mark_native_startup_phase("lifecycle-import")
 import server
 from mentat.process_identity import IS_LINUX, linux_process_start_ticks
+mark_native_startup_phase("lifecycle-import-done")
 
 BASE_DIR = Path(__file__).resolve().parent
 MENTAT_COMMAND_PATHS = {
@@ -761,12 +765,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    mark_native_startup_phase("data-preflight")
     startup_error = server.prepare_data_root_for_startup(config)
+    mark_native_startup_phase("data-preflight-done")
     if startup_error is not None:
         print_report({"ok": False, "error": startup_error})
         return 2
 
+    mark_native_startup_phase("listener-preflight")
     report = cleanup_mentat_listeners(config, stop_only=False)
+    mark_native_startup_phase("listener-preflight-done")
     print_report(report)
     return 0 if report.get("ok", False) else 1
 
