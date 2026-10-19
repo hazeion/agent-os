@@ -123,7 +123,7 @@ class DataRootInitializerTests(unittest.TestCase):
                 home=root / "home",
             )
             self.assertEqual(migration.status, "blocked")
-            self.assertIn("migration_required", migration.issues)
+            self.assertIn("unsupported_legacy_storage", migration.issues)
             self.assertFalse(migration_target.exists())
 
             conflict_target = root / "conflict-target"
@@ -644,7 +644,7 @@ class DataRootInitializerTests(unittest.TestCase):
 
             self.assertGreaterEqual(calls, 2)
             self.assertEqual(result.status, "blocked")
-            self.assertIn("migration_required", result.issues)
+            self.assertIn("unsupported_legacy_storage", result.issues)
             self.assertEqual(list(target.glob("*.json")) if target.exists() else [], [])
 
     def test_two_processes_serialize_and_leave_one_complete_layout(self):
