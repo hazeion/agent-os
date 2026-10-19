@@ -38,8 +38,8 @@ The beta should be:
 
 - safe to install without placing personal data inside the application or Git
   checkout;
-- safe to upgrade, back up, restore, and uninstall without losing operator
-  data;
+- safe to replace the application, back up, restore and uninstall while
+  preserving supported current operator data;
 - predictable on the supported operating systems and Python versions;
 - explicit when Hermes, Google Calendar, or Obsidian is unavailable;
 - able to preserve its mandatory workflows when Hermes is reached through the
@@ -246,7 +246,7 @@ Current requirements:
    current backup/restore, application replacement and uninstall preservation
    on the actual integrated graph and supported platforms.
 
-No legacy migration CLI, schema5 sibling export or old-format restore remains.
+No legacy migration CLI, schema 5 sibling export or old-format restore remains.
 An operator must retain older data separately and select a fresh supported root
 instead of expecting this build to convert it. Plain `mentat task-export`
 remains offline current SQLite-to-JSON recovery, never alternate live authority.

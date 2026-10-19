@@ -199,7 +199,7 @@ npm --prefix web run build
 ## Data and recovery
 
 This build supports fresh data directories and the current database format.
-Older data and backup formats are refused without upgrading or deleting them.
+Older database and backup formats are refused without upgrading or deleting them.
 Keep older data separately and select a fresh directory when needed. Current
 backup and restore instructions are in [Data storage and backups](DATA_LAYOUT.md).
 
