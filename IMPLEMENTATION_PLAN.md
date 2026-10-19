@@ -32,8 +32,8 @@ The older foundation is merged through [PR #231](https://github.com/hazeion/agen
 and [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow remains a stack of full, open PRs starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243), most recently
-[PR #313](https://github.com/hazeion/agent-os/pull/313), with the subsequent
-private [scope readback slice](reviews/2026-09-30-project-scope-readback.md).
+[PR #316](https://github.com/hazeion/agent-os/pull/316), with the subsequent
+private [Linux helper origin slice](reviews/2026-09-30-linux-helper-origin.md).
 Open PRs, passing local
 checks and clean mergeability are not merged-product or issue-close evidence.
 Hosted CI, normal review and integrated acceptance remain gates. No blanket
@@ -91,9 +91,12 @@ residual QA based on a fixture or an unmerged change alone.
    [synthetic inference broker](reviews/2026-09-30-project-inference-broker.md),
    [immutable image](reviews/2026-09-30-project-runtime-image.md),
    [sealed libraries](reviews/2026-09-30-project-runtime-libraries.md),
-   [public artifact origin](reviews/2026-09-30-project-runtime-origin.md) and
+   [public artifact origin](reviews/2026-09-30-project-runtime-origin.md),
+   [fixed Linux helper origin](reviews/2026-09-30-linux-helper-origin.md) and
    [public-page reader](reviews/2026-09-30-project-public-page-reader.md)
-   have component evidence. Complete loader/system/helper/model qualification
+   have component evidence. Helper origin proves selected signed package bytes;
+   immutable helper launch and library/loading/provider qualification remain.
+   Complete loader/system/helper/model qualification
    is still separate. Restart readback is observation only: it cannot recover
    a lost token, settle a Run, prove durable closure or release capacity.
    Implement reviewed atomic admission with shared
