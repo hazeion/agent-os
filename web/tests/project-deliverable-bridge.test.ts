@@ -25,6 +25,14 @@ test("fixed bridge request carries only approved owner mutation and exact respon
   assert.equal(calls, 1);
 });
 
+test("inbox capacity rejects a result save as one exact recoverable conflict", async () => {
+  await assert.rejects(
+    () => projectDeliverableCapability("publish", publish,
+      async () => Response.json({ schema_version: 1, status: "inbox_capacity" }, { status: 409 }), environment),
+    (error: unknown) => error instanceof DeliverableBridgeError && error.code === "inbox_capacity" && error.status === 409,
+  );
+});
+
 test("preview must be one exact PNG with matching bytes and digest", async () => {
   const bytes = Buffer.from("89504e470d0a1a0a", "hex");
   const valid = { ...envelope, data: { version_id: versionId, content_base64: bytes.toString("base64"), sha256: createHash("sha256").update(bytes).digest("hex"), byte_size: bytes.length } };

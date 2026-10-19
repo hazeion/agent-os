@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
@@ -15,6 +15,7 @@ import sqlite3
 import stat
 import time
 from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Callable, Iterable, Mapping
 
 from agent_runtime import MentatAgent, RuntimeContext
@@ -670,18 +671,32 @@ def _embedded_schema_signature(
     )
 
 
-@lru_cache(maxsize=1)
-def _expected_embedded_schema_signature(
-    schema_version: int = DATABASE_SCHEMA_VERSION,
+_EXPECTED_EMBEDDED_SCHEMA_LOCK = Lock()
+
+
+def _embedded_schema_recipe(schema_version: int) -> tuple:
+    # Cache only a code-generated expected SQL signature. Actual databases,
+    # rows, authority receipts and relationship evidence never enter this key.
+    return (
+        schema_version, tuple(MIGRATIONS), _embedded_schema_signature,
+        sqlite3.connect, sqlite3.sqlite_version_info, DATABASE_SCHEMA_VERSION,
+    )
+
+
+@lru_cache(maxsize=8)
+def _cached_expected_embedded_schema_signature(
+    recipe: tuple,
 ) -> tuple[tuple[str, str, str, str], ...]:
-    # This database contains only the expected DDL, never owner data. Building
-    # it in memory avoids a filesystem sync for every migration statement on
-    # the first registry read, while preserving the complete schema check.
-    with closing(sqlite3.connect(":memory:")) as connection:
+    schema_version, migrations, normalizer = recipe[:3]
+    # This database exists only to derive code-owned SQL definitions. No
+    # operator bytes, rows or paths are loaded, and no database bytes escape.
+    # Memory avoids filesystem/fsync latency even on the first cache miss.
+    connection = sqlite3.connect(":memory:")
+    try:
         connection.execute(
             "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
         )
-        for version, script in MIGRATIONS:
+        for version, script in migrations:
             if version > schema_version:
                 break
             connection.executescript(script)
@@ -689,7 +704,25 @@ def _expected_embedded_schema_signature(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
                 (version,),
             )
-        return _embedded_schema_signature(connection)
+        signature = normalizer(connection)
+        if recipe != _embedded_schema_recipe(schema_version):
+            raise AgentRegistryError("agent_registry.schema_invalid")
+        return signature
+    finally:
+        connection.close()
+
+
+def _expected_embedded_schema_signature(
+    schema_version: int = DATABASE_SCHEMA_VERSION,
+) -> tuple[tuple[str, str, str, str], ...]:
+    recipe = _embedded_schema_recipe(schema_version)
+    # Avoid duplicate expensive synthetic builds on simultaneous misses. This
+    # lock neither acquires a live data-root lock nor encloses actual validation.
+    with _EXPECTED_EMBEDDED_SCHEMA_LOCK:
+        signature = _cached_expected_embedded_schema_signature(recipe)
+    if recipe != _embedded_schema_recipe(schema_version):
+        raise AgentRegistryError("agent_registry.schema_invalid")
+    return signature
 
 
 def authority_receipt(
@@ -788,7 +821,7 @@ def validate_registry_connection(
                 )
             except (sqlite3.Error, TypeError, ValueError) as exc:
                 raise AgentRegistryError("agent_registry.corrupt") from exc
-            if schema_version not in {8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, DATABASE_SCHEMA_VERSION}:
+            if schema_version not in {8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, DATABASE_SCHEMA_VERSION}:
                 raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)

@@ -488,6 +488,12 @@ def publish_owner_edit(
                             "UPDATE attachments SET state='attached',expires_at=NULL,delete_after=NULL,updated_at=? WHERE id=?",
                             (now, identifier),
                         )
+                    from owner_inbox import OwnerInboxError, sync_result_review_connection, validate_inbox_connection
+                    try:
+                        sync_result_review_connection(connection, project_id)
+                        validate_inbox_connection(connection)
+                    except OwnerInboxError as exc:
+                        _fail("inbox_capacity" if str(exc) == "owner_inbox.capacity" else "inbox_unavailable")
                     validate_project_context_connection(connection, require_available=False)
                     return {"slot": slot, "slot_id": slot_id, "version_id": version_id, "revision": revision,
                             "origin": "owner_edit",

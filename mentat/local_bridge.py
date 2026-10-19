@@ -49,6 +49,7 @@ OWNER_GATEWAY_ROOT = "/bridge/v1/owner/"
 PROJECT_CONTEXT_ROOT = "/bridge/v1/project-context/"
 PROJECT_DELIVERABLE_ROOT = "/bridge/v1/project-deliverables/"
 PROJECT_PLAN_ROOT = "/bridge/v1/project-plans/"
+OWNER_INBOX_ROOT = "/bridge/v1/owner-inbox/"
 TASK_INPUT_ROOT = "/bridge/v1/task-inputs/"
 OWNER_GATEWAY_OPERATIONS = frozenset({'login-start', 'login-callback', 'login-cancel', 'session', 'validate', 'sign-out', 'sign-out-all', 'sse-reserve', 'sse-check', 'sse-release'})
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
@@ -6279,6 +6280,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = dispatch_project_plans(DATA_DIR, operation, dict(pairs))
             self._send_json(payload, status)
             return
+        if parsed.path == OWNER_INBOX_ROOT + 'list' and not parsed.query:
+            from owner_inbox_http import dispatch_owner_inbox
+            from server import DATA_DIR
+            payload, status = dispatch_owner_inbox(DATA_DIR, 'list', {})
+            self._send_json(payload, status)
+            return
         if parsed.path.startswith(TASK_INPUT_ROOT):
             from task_inputs_http import READ_OPERATIONS, dispatch_task_inputs
             from server import DATA_DIR
@@ -6836,6 +6843,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self._action_json_body(MAX_ACTION_BYTES)
             payload, status = dispatch_project_plans(DATA_DIR, operation, body)
+            self._send_json(payload, status)
+            return
+        if parsed.path == OWNER_INBOX_ROOT + 'mark' and not parsed.query:
+            from owner_inbox_http import MAX_ACTION_BYTES, dispatch_owner_inbox
+            from server import DATA_DIR
+            body = self._action_json_body(MAX_ACTION_BYTES)
+            payload, status = dispatch_owner_inbox(DATA_DIR, 'mark', body)
             self._send_json(payload, status)
             return
         if parsed.path.startswith(TASK_INPUT_ROOT) and not parsed.query:
@@ -7702,6 +7716,8 @@ def main(argv: list[str] | None = None) -> int:
             from server import DATA_DIR
 
             cleanup_owner_auth_at_startup(DATA_DIR)
+            from owner_inbox import reconcile_inbox_at_startup
+            reconcile_inbox_at_startup(DATA_DIR)
             if configured_owner_origin:
                 from owner_gateway import OwnerGateway
                 bridge.owner_gateway = OwnerGateway(DATA_DIR, configured_owner_origin, _client_secret=owner_secret)

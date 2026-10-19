@@ -11,6 +11,7 @@ function failure(error: unknown): string {
   if (error instanceof PublicDeliverableError && error.code === "incomplete") return "Save all three results before asking for a review.";
   if (error instanceof PublicDeliverableError && ["stale", "confirmation_conflict", "project_unavailable"].includes(error.code)) return "The Project, results, or review changed. Refresh the results and preview the decision again.";
   if (error instanceof PublicDeliverableError && error.code === "capacity") return "The review history is full. No decision was recorded.";
+  if (error instanceof PublicDeliverableError && error.code === "inbox_capacity") return "The Inbox is full. No decision was recorded; finish and acknowledge older review items before trying again.";
   return "Mentat could not verify the review. Refresh and try again.";
 }
 
