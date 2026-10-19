@@ -112,25 +112,34 @@ class GoogleSessionIssuanceTests(unittest.TestCase):
         sessions_before = self.connection.execute("SELECT * FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall()
         open_connection = self.authority._open
         observed = []
-        def open_with_delete_denial():
-            connection = open_connection()
-            saw_session_insert = False
-            def authorize(action, table, _column, _database, _source):
-                nonlocal saw_session_insert
-                if action == sqlite3.SQLITE_INSERT and table == 'mentat_owner_auth_sessions':
-                    saw_session_insert = True
-                if action == sqlite3.SQLITE_DELETE and table == 'mentat_owner_google_transactions' and saw_session_insert:
-                    observed.append((connection.in_transaction, connection.execute(
+        denied = []
+        class ObserveBeforeDelete:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def execute(self, statement, parameters=()):
+                if statement == "DELETE FROM mentat_owner_google_transactions WHERE transaction_id=?":
+                    observed.append((self.connection.in_transaction, self.connection.execute(
                         "SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'"
                     ).fetchone()[0]))
-                    return sqlite3.SQLITE_DENY
-                return sqlite3.SQLITE_OK
-            connection.set_authorizer(authorize)
-            return connection
+                    def authorize(action, table, _column, _database, _source):
+                        if action == sqlite3.SQLITE_DELETE and table == 'mentat_owner_google_transactions':
+                            denied.append(table)
+                            return sqlite3.SQLITE_DENY
+                        return sqlite3.SQLITE_OK
+                    self.connection.set_authorizer(authorize)
+                return self.connection.execute(statement, parameters)
+
+        def open_with_delete_denial():
+            return ObserveBeforeDelete(open_connection())
         with patch.object(self.authority, '_open', side_effect=open_with_delete_denial):
             with self.assertRaisesRegex(owner_auth.OwnerAuthError, '^invalid$'):
                 self.authority.complete_google_login(**values)
         self.assertEqual(observed, [(True, 1)])
+        self.assertEqual(denied, ['mentat_owner_google_transactions'])
         self.assertEqual(self.connection.execute("SELECT * FROM mentat_owner_auth_sessions ORDER BY session_digest").fetchall(), sessions_before)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0], 0)
         self.assertEqual(tuple(self.connection.execute(
