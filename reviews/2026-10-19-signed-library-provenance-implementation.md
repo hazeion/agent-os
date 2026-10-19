@@ -157,3 +157,44 @@ and every non-results baseline field remain exact, for245 total entries. No
 credential, detector/filter/threshold change or broad exclusion was introduced.
 The unchanged tracked-secret gate and exact-branch artifact checks follow on
 this baseline-owner commit; their success is not assumed by this record.
+
+## Final portable/security/package evidence
+
+On baseline-owner head d9b3ae2c4dfe97b582a19a41c65d4721fe318476, the unchanged
+tracked-file secret gate passes with245 reviewed entries. Root and the independent
+reviewer cleared exact bf25185 source and the28-row public-hash packet before
+that baseline update. The complete original217 records and non-results metadata
+were rechecked exact. No scanner or policy bypass was used.
+
+One real no-isolation build creates the sdist and builds its wheel. The unchanged
+strict verifier passes exact public membership, wheel RECORD integrity and
+private-file exclusions. All2635 public sdist/source bytes match this exact
+component source graph, and all1108 tracked Git blobs remain exact before and
+after the build. This is a new component archive, not a relabelled aggregate.
+
+Only the actual frozen Next runtime was reused: web source equality to1c33 was
+proved; its2451 files/24817140 bytes have canonical manifest SHA256
+ffefc85397738902015943646ec78e3daea943b4983e33ab3593de7654412bbe before copy,
+after copy, after normal staging and after the build. Frozen checkout head,
+clean state and runtime bytes remain unchanged. No Next rebuild or app launch.
+
+A fresh offline --no-index/--no-deps installation imports all three new modules
+plus the two shared modules with exact source byte identity. It confirms the
+11 compiled packages,19 fixed inputs,15573045 captured-byte identity sum and two
+exact glibc profiles; the ordinary tag set excludes the new triple and freshness
+remains false. No Linux signature/decoder/worker or loader qualification is
+inferred from imports or compiled constants.
+
+| Artifact | SHA256 |
+|---|---|
+| mentat_local-0.1.0b1-py3-none-any.whl | c4e94e2d891c6d72de9b837e4c0b4cb5315050d13451e7970d46253dd75031f9 |
+| mentat_local-0.1.0b1.tar.gz | 93a3237197fa0dee23ca41e33bfcb23650faa506d020e64dba102046d4e672ca |
+
+Artifacts, exact source/runtime manifests, verifier/install logs and result.json
+remain only in /private/tmp/mentat-library-package-gate.s19hmjsr. The unchanged
+secret-gate log is /private/tmp/mentat-library-origin-secret-gate-final.log.
+This final record changes no packaged source, input pin, baseline or runtime
+byte. Actual Linux signature/origin/worker, loader/rewrite/IFUNC/FUSE/immutable
+launch, sealed runtime image, package currency, provider and Run qualification
+remain separate unresolved gates. No production capability or readiness is
+claimed by these completed Mac artifact and portable-source checks.
