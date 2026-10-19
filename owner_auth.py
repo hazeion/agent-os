@@ -97,6 +97,61 @@ def _digest(value: bytes) -> bytes:
     return hashlib.sha256(value).digest()
 
 
+def google_principal_digest(issuer: str, subject: str) -> bytes:
+    """Private method-specific identity; email is deliberately not an input."""
+    return _digest(b"mentat-google-principal-v1\0" + issuer.encode("ascii") + b"\0" + subject.encode("ascii"))
+
+
+def _google_principal(connection: sqlite3.Connection, state) -> sqlite3.Row:
+    from owner_auth_google import GOOGLE_ISSUER, _client_id
+
+    configuration = connection.execute("SELECT * FROM mentat_owner_google_configuration WHERE singleton = 1").fetchone()
+    principal = connection.execute("SELECT * FROM mentat_owner_google_principal WHERE singleton = 1").fetchone()
+    if configuration is None or principal is None:
+        raise OwnerAuthError("invalid")
+    _client_id(configuration["client_id"])
+    origin, hostname = canonical_origin(configuration["canonical_origin"])
+    if "." not in hostname or not any(character.isalpha() for character in hostname.rsplit(".", 1)[-1]):
+        raise OwnerAuthError("invalid")
+    subject, email = principal["subject"], principal["email"]
+    if (
+        principal["issuer"] != GOOGLE_ISSUER
+        or not isinstance(subject, str) or not 1 <= len(subject) <= 255
+        or any(not 33 <= ord(character) <= 126 for character in subject)
+        or not isinstance(email, str) or not 3 <= len(email) <= 254
+        or email.count("@") != 1 or not all(email.split("@"))
+        or any(not 33 <= ord(character) <= 126 for character in email)
+        or state["state"] != "active" or state["canonical_origin"] != origin
+        or principal["owner_generation"] != state["owner_generation"]
+        or principal["configuration_revision"] != configuration["revision"]
+        or configuration["credential_source"] != "environment"
+        or configuration["requires_reconciliation"] not in {0, 1}
+        or not isinstance(principal["principal_digest"], bytes) or len(principal["principal_digest"]) != 32
+        or not hmac.compare_digest(bytes(principal["principal_digest"]), google_principal_digest(principal["issuer"], subject))
+    ):
+        raise OwnerAuthError("invalid")
+    return principal
+
+
+def _session_method_valid(connection: sqlite3.Connection, session, state) -> bool:
+    if state["state"] != "active" or session["auth_method"] != state["auth_method"] or session["owner_generation"] != state["owner_generation"]:
+        return False
+    if session["auth_method"] == "passkey":
+        device = connection.execute("SELECT state FROM mentat_owner_auth_credentials WHERE device_id = ?", (session["device_id"],)).fetchone()
+        return device is not None and device["state"] == "active" and session["principal_digest"] is None
+    if session["auth_method"] != "google" or not isinstance(session["principal_digest"], bytes) or len(session["principal_digest"]) != 32:
+        return False
+    try:
+        principal = _google_principal(connection, state)
+    except (ValueError, TypeError, KeyError, sqlite3.Error, OwnerAuthError):
+        return False
+    configuration = connection.execute("SELECT requires_reconciliation FROM mentat_owner_google_configuration WHERE singleton = 1").fetchone()
+    return (
+        configuration[0] == 0 and session["device_id"] is None and session["reauthenticated_at"] == 0
+        and hmac.compare_digest(bytes(session["principal_digest"]), bytes(principal["principal_digest"]))
+    )
+
+
 def _token(bytes_count: int) -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(bytes_count)).rstrip(b"=").decode("ascii")
 
@@ -377,7 +432,7 @@ class OwnerAuthAuthority:
         now = self._clock()
         self._cleanup(connection, now)
         state = self._state(connection)
-        if state["state"] not in {"bootstrap_open", "active"}:
+        if state["auth_method"] != "passkey" or state["state"] not in {"bootstrap_open", "active"}:
             raise OwnerAuthError("invalid")
         count = int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_ceremonies WHERE state = 'pending'").fetchone()[0])
         unauthenticated = purpose in {"bootstrap", "authentication", "recovery"}
@@ -389,7 +444,7 @@ class OwnerAuthAuthority:
             raise OwnerAuthError("limited")
         expires = min(now + CEREMONY_SECONDS, float(state["bootstrap_expires_at"])) if purpose == "bootstrap" else now + CEREMONY_SECONDS
         ceremony_id = _id()
-        connection.execute("INSERT INTO mentat_owner_auth_ceremonies(ceremony_id, purpose, challenge_digest, configuration_revision, session_digest, session_revision, recovery_id, credential_lookup_digest, expires_at, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)", (ceremony_id, purpose, _digest(challenge), int(state["configuration_revision"]), None if session is None else session["session_digest"], None if session is None else session["revision"], recovery_id, credential_digest, expires, now))
+        connection.execute("INSERT INTO mentat_owner_auth_ceremonies(ceremony_id, purpose, challenge_digest, configuration_revision, session_digest, session_revision, recovery_id, credential_lookup_digest, expires_at, state, created_at, owner_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)", (ceremony_id, purpose, _digest(challenge), int(state["configuration_revision"]), None if session is None else session["session_digest"], None if session is None else session["revision"], recovery_id, credential_digest, expires, now, state["owner_generation"]))
         encoded_challenge = base64.urlsafe_b64encode(challenge).rstrip(b"=").decode("ascii")
         options = (
             self._registration_options(encoded_challenge, state)
@@ -425,7 +480,7 @@ class OwnerAuthAuthority:
                 self._cleanup(connection, now)
                 row = connection.execute("SELECT * FROM mentat_owner_auth_ceremonies WHERE ceremony_id = ?", (ceremony_id,)).fetchone()
                 state = self._state(connection)
-                if row is None or row["state"] != "pending" or row["purpose"] not in set(purpose) or float(row["expires_at"]) <= now:
+                if state["auth_method"] != "passkey" or row is None or row["owner_generation"] != state["owner_generation"] or row["state"] != "pending" or row["purpose"] not in set(purpose) or float(row["expires_at"]) <= now:
                     raise OwnerAuthError("invalid")
                 updated = connection.execute("UPDATE mentat_owner_auth_ceremonies SET state = 'consumed', consumed_at = ? WHERE ceremony_id = ? AND state = 'pending'", (now, ceremony_id))
                 if updated.rowcount != 1:
@@ -480,6 +535,9 @@ class OwnerAuthAuthority:
         self._cleanup(connection, now)
 
     def _new_session(self, connection: sqlite3.Connection, device_id: str, now: float, *, reauthenticated: bool = False) -> SessionGrant:
+        owner = self._state(connection)
+        if owner["auth_method"] != "passkey":
+            raise OwnerAuthError("invalid")
         cookie = _token(32)
         csrf = _token(32)
         digest = _digest(_token_bytes(cookie, 32))
@@ -491,7 +549,7 @@ class OwnerAuthAuthority:
         ):
             rows = connection.execute(sql, args).fetchall()
             for row in rows[limit:]: self._revoke_session_digest(connection, row[0], now)
-        connection.execute("INSERT INTO mentat_owner_auth_sessions(session_digest, csrf_digest, device_id, state, created_at, reauthenticated_at, last_seen_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)", (digest, csrf_digest, device_id, now, now if reauthenticated else 0, now, now + SESSION_IDLE_SECONDS, now + SESSION_ABSOLUTE_SECONDS))
+        connection.execute("INSERT INTO mentat_owner_auth_sessions(session_digest, csrf_digest, device_id, state, created_at, reauthenticated_at, last_seen_at, idle_expires_at, absolute_expires_at, owner_generation) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)", (digest, csrf_digest, device_id, now, now if reauthenticated else 0, now, now + SESSION_IDLE_SECONDS, now + SESSION_ABSOLUTE_SECONDS, owner["owner_generation"]))
         return SessionGrant(cookie, csrf, ())
 
     def _new_recovery_codes(self, connection: sqlite3.Connection, generation: int, now: float) -> tuple[str, ...]:
@@ -538,6 +596,8 @@ class OwnerAuthAuthority:
                 state = self._state(connection)
                 if (
                     int(row["configuration_revision"]) != int(state["configuration_revision"])
+                    or state["auth_method"] != "passkey"
+                    or state["owner_generation"] != state_snapshot["owner_generation"]
                     or str(state["canonical_origin"]) != str(state_snapshot["canonical_origin"])
                     or str(state["rp_id"]) != str(state_snapshot["rp_id"])
                 ):
@@ -554,7 +614,7 @@ class OwnerAuthAuthority:
                 if row["purpose"] == "bootstrap" and state["state"] != "bootstrap_open": raise OwnerAuthError("invalid")
                 if row["purpose"] == "device_add":
                     authorizer = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (row["session_digest"],)).fetchone()
-                    if authorizer is None or authorizer["state"] != "active" or int(authorizer["revision"]) != int(row["session_revision"]) or now - float(authorizer["reauthenticated_at"]) > REAUTH_SECONDS: raise OwnerAuthError("invalid")
+                    if authorizer is None or authorizer["state"] != "active" or not _session_method_valid(connection, authorizer, self._state(connection)) or int(authorizer["revision"]) != int(row["session_revision"]) or now - float(authorizer["reauthenticated_at"]) > REAUTH_SECONDS: raise OwnerAuthError("invalid")
                 if row["purpose"] == "bootstrap":
                     bootstrap_user_handle = state["bootstrap_user_handle"]
                     if not isinstance(bootstrap_user_handle, bytes) or len(bootstrap_user_handle) != 32:
@@ -668,6 +728,8 @@ class OwnerAuthAuthority:
                 state = self._state(connection)
                 if (
                     state["state"] != "active"
+                    or state["auth_method"] != "passkey"
+                    or state["owner_generation"] != state_snapshot["owner_generation"]
                     or int(row["configuration_revision"]) != int(state["configuration_revision"])
                     or str(state["canonical_origin"]) != str(state_snapshot["canonical_origin"])
                     or str(state["rp_id"]) != str(state_snapshot["rp_id"])
@@ -688,7 +750,7 @@ class OwnerAuthAuthority:
                     self._audit(connection, "authentication_succeeded", "credential", _digest(str(credential["device_id"]).encode()), now)
                     if row["purpose"] == "reauthentication":
                         authorizer = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (row["session_digest"],)).fetchone()
-                        if authorizer is None or authorizer["state"] != "active" or int(authorizer["revision"]) != int(row["session_revision"]) or authorizer["device_id"] != credential["device_id"]:
+                        if authorizer is None or authorizer["state"] != "active" or not _session_method_valid(connection, authorizer, self._state(connection)) or int(authorizer["revision"]) != int(row["session_revision"]) or authorizer["device_id"] != credential["device_id"]:
                             raise OwnerAuthError("invalid")
                         self._revoke_session_digest(connection, bytes(row["session_digest"]), now)
                         self._audit(connection, "session_reauthenticated", "session", bytes(row["session_digest"]), now)
@@ -714,8 +776,8 @@ class OwnerAuthAuthority:
             with transaction(connection, immediate=True):
                 self._cleanup(connection, now)
                 row = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)).fetchone()
-                device = None if row is None else connection.execute("SELECT state FROM mentat_owner_auth_credentials WHERE device_id = ?", (row["device_id"],)).fetchone()
-                if row is None or row["state"] != "active" or device is None or device["state"] != "active" or (csrf_value is not None and not hmac.compare_digest(bytes(row["csrf_digest"]), _digest(_token_bytes(csrf_value, 32)))): raise OwnerAuthError("invalid")
+                state = self._state(connection)
+                if row is None or row["state"] != "active" or not _session_method_valid(connection, row, state) or (csrf_value is not None and not hmac.compare_digest(bytes(row["csrf_digest"]), _digest(_token_bytes(csrf_value, 32)))): raise OwnerAuthError("invalid")
                 if touch: connection.execute("UPDATE mentat_owner_auth_sessions SET last_seen_at = ?, idle_expires_at = ?, revision = revision + 1 WHERE session_digest = ?", (now, min(now + SESSION_IDLE_SECONDS, float(row["absolute_expires_at"])), digest))
                 return row
         finally:
@@ -744,7 +806,7 @@ class OwnerAuthAuthority:
                 now = self._clock()
                 self._cleanup(connection, now)
                 current = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)).fetchone()
-                if current is None or current["state"] != "active" or int(current["revision"]) != int(session["revision"]) or not hmac.compare_digest(bytes(current["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
+                if current is None or current["state"] != "active" or not _session_method_valid(connection, current, self._state(connection)) or int(current["revision"]) != int(session["revision"]) or not hmac.compare_digest(bytes(current["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
                     raise OwnerAuthError("invalid")
                 credential = connection.execute("SELECT * FROM mentat_owner_auth_credentials WHERE device_id = ?", (current["device_id"],)).fetchone()
                 if credential is None or credential["state"] != "active":
@@ -765,10 +827,7 @@ class OwnerAuthAuthority:
                 session = connection.execute(
                     "SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)
                 ).fetchone()
-                device = None if session is None else connection.execute(
-                    "SELECT state FROM mentat_owner_auth_credentials WHERE device_id = ?", (session["device_id"],)
-                ).fetchone()
-                if session is None or session["state"] != "active" or device is None or device["state"] != "active":
+                if session is None or session["state"] != "active" or not _session_method_valid(connection, session, self._state(connection)):
                     raise OwnerAuthError("invalid")
                 count = int(connection.execute(
                     "SELECT COUNT(*) FROM mentat_owner_auth_sse_reservations WHERE session_digest = ?", (digest,)
@@ -822,7 +881,7 @@ class OwnerAuthAuthority:
             with transaction(connection, immediate=True):
                 self._cleanup(connection, now)
                 session = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)).fetchone()
-                if session is None or session["state"] != "active" or not self._fresh_reauthentication(session, now) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
+                if session is None or session["state"] != "active" or not _session_method_valid(connection, session, self._state(connection)) or not self._fresh_reauthentication(session, now) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
                     raise OwnerAuthError("invalid")
                 return self._reserve_ceremony(connection, purpose="device_add", challenge=secrets.token_bytes(32), session=session)
         finally:
@@ -843,7 +902,7 @@ class OwnerAuthAuthority:
                 self._cleanup(connection, now)
                 session = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)).fetchone()
                 target = connection.execute("SELECT * FROM mentat_owner_auth_credentials WHERE device_id = ?", (device_id,)).fetchone()
-                if session is None or session["state"] != "active" or not self._fresh_reauthentication(session, now) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))) or target is None or target["state"] != "active" or int(target["revision"]) != expected_revision:
+                if session is None or session["state"] != "active" or not _session_method_valid(connection, session, self._state(connection)) or not self._fresh_reauthentication(session, now) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))) or target is None or target["state"] != "active" or int(target["revision"]) != expected_revision:
                     raise OwnerAuthError("invalid")
                 active_credentials = int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_credentials WHERE state = 'active'").fetchone()[0])
                 active_recovery = int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_recovery_codes WHERE state = 'active'").fetchone()[0])
@@ -852,6 +911,7 @@ class OwnerAuthAuthority:
                 connection.execute("UPDATE mentat_owner_auth_credentials SET state = 'revoked', revoked_at = ?, revision = revision + 1 WHERE device_id = ? AND state = 'active'", (now, device_id))
                 connection.execute("UPDATE mentat_owner_auth_sessions SET state = 'revoked', revoked_at = ?, revision = revision + 1 WHERE device_id = ? AND state = 'active'", (now, device_id))
                 self._audit(connection, "credential_revoked", "credential", _digest(device_id.encode("ascii")), now)
+                self._cleanup(connection, now)
         finally:
             connection.close()
 
@@ -867,10 +927,11 @@ class OwnerAuthAuthority:
             with transaction(connection, immediate=True):
                 self._cleanup(connection, now)
                 session = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)).fetchone()
-                if session is None or session["state"] != "active" or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
+                if session is None or session["state"] != "active" or not _session_method_valid(connection, session, self._state(connection)) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
                     raise OwnerAuthError("invalid")
                 connection.execute("UPDATE mentat_owner_auth_sessions SET state = 'revoked', revoked_at = ?, revision = revision + 1 WHERE state = 'active'", (now,))
                 self._audit(connection, "sessions_signed_out", "owner", None, now)
+                self._cleanup(connection, now)
         finally:
             connection.close()
 
@@ -886,7 +947,7 @@ class OwnerAuthAuthority:
             with transaction(connection, immediate=True):
                 self._cleanup(connection, now)
                 session = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest = ?", (digest,)).fetchone()
-                if session is None or session["state"] != "active" or not self._fresh_reauthentication(session, now) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
+                if session is None or session["state"] != "active" or not _session_method_valid(connection, session, self._state(connection)) or not self._fresh_reauthentication(session, now) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
                     raise OwnerAuthError("invalid")
                 state = self._state(connection)
                 if state["state"] != "active":
@@ -906,10 +967,53 @@ def bootstrap_owner_auth(data_dir: Path, origin: str) -> BootstrapGrant:
     return OwnerAuthAuthority(data_dir).open_bootstrap(origin)
 
 
+def _validate_owner_methods(connection: sqlite3.Connection) -> None:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(mentat_owner_auth_state)")}
+    if "auth_method" not in columns:
+        return  # Historical schema-24 backup; its exact graph is checked upstream.
+    previous_factory = connection.row_factory
+    connection.row_factory = sqlite3.Row
+    try:
+        state = connection.execute("SELECT * FROM mentat_owner_auth_state WHERE singleton = 1").fetchone()
+        configurations = connection.execute("SELECT * FROM mentat_owner_google_configuration").fetchall()
+        principals = connection.execute("SELECT * FROM mentat_owner_google_principal").fetchall()
+        if state is None or state["auth_method"] not in {"passkey", "google"} or type(state["owner_generation"]) is not int or state["owner_generation"] < 0 or len(configurations) > 1 or len(principals) > 1:
+            raise ValueError("invalid")
+        if configurations:
+            from owner_auth_google import _client_id
+            configuration = configurations[0]
+            _client_id(configuration["client_id"])
+            origin, hostname = canonical_origin(configuration["canonical_origin"])
+            if "." not in hostname or not any(character.isalpha() for character in hostname.rsplit(".", 1)[-1]) or configuration["credential_source"] != "environment" or configuration["requires_reconciliation"] not in {0, 1}:
+                raise ValueError("invalid")
+        if state["auth_method"] == "google":
+            _google_principal(connection, state)
+            if connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_credentials WHERE state = 'active'").fetchone()[0]:
+                raise ValueError("invalid")
+        elif principals:
+            raise ValueError("invalid")
+        sessions = connection.execute("SELECT * FROM mentat_owner_auth_sessions LIMIT 161").fetchall()
+        active = [row for row in sessions if row["state"] == "active"]
+        if len(active) > MAX_OWNER_SESSIONS or len(sessions) - len(active) > MAX_TERMINAL_SESSIONS:
+            raise ValueError("invalid")
+        for row in sessions:
+            if row["owner_generation"] > state["owner_generation"] or row["state"] == "active" and not _session_method_valid(connection, row, state):
+                raise ValueError("invalid")
+        invalid_ceremony = connection.execute("SELECT 1 FROM mentat_owner_auth_ceremonies WHERE owner_generation > ? OR (state IN ('pending', 'consumed') AND (owner_generation != ? OR ? != 'passkey')) LIMIT 1", (state["owner_generation"], state["owner_generation"], state["auth_method"])).fetchone()
+        if invalid_ceremony is not None:
+            raise ValueError("invalid")
+        devices = connection.execute("SELECT device_id FROM mentat_owner_auth_sessions WHERE state = 'active' AND auth_method = 'passkey' GROUP BY device_id HAVING COUNT(*) > ?", (MAX_DEVICE_SESSIONS,)).fetchone()
+        if devices is not None:
+            raise ValueError("invalid")
+    finally:
+        connection.row_factory = previous_factory
+
+
 def validate_owner_auth_connection(connection: sqlite3.Connection) -> None:
     """Validate the bounded owner-auth graph while inspecting a private backup."""
 
     try:
+        _validate_owner_methods(connection)
         states = connection.execute("SELECT state, user_handle, canonical_origin, rp_id, bootstrap_verifier, bootstrap_user_handle, bootstrap_expires_at FROM mentat_owner_auth_state").fetchall()
         if len(states) != 1:
             raise ValueError
@@ -960,6 +1064,9 @@ def sanitize_after_restore(connection: sqlite3.Connection, *, now: float | None 
         if state[0] == "bootstrap_open":
             connection.execute("UPDATE mentat_owner_auth_state SET state = 'unbootstrapped', canonical_origin = NULL, rp_id = NULL, bootstrap_verifier = NULL, bootstrap_user_handle = NULL, bootstrap_expires_at = NULL, revision = revision + 1, updated_at = ? WHERE singleton = 1", (now,))
         connection.execute("UPDATE mentat_owner_auth_sessions SET state = 'revoked', revoked_at = ?, revision = revision + 1 WHERE state = 'active'", (now,))
+        if "auth_method" in {row[1] for row in connection.execute("PRAGMA table_info(mentat_owner_auth_state)")}:
+            connection.execute("UPDATE mentat_owner_google_configuration SET requires_reconciliation = 1")
+        connection.execute("DELETE FROM mentat_owner_auth_sessions WHERE session_digest IN (SELECT session_digest FROM mentat_owner_auth_sessions WHERE state != 'active' ORDER BY revoked_at DESC, session_digest DESC LIMIT -1 OFFSET ?)", (MAX_TERMINAL_SESSIONS,))
         connection.execute("DELETE FROM mentat_owner_auth_sse_reservations")
         connection.execute("UPDATE mentat_owner_auth_ceremonies SET state = 'cancelled', consumed_at = ? WHERE state = 'pending'", (now,))
         connection.execute("UPDATE mentat_owner_auth_recovery_codes SET state = 'active', reserved_ceremony_id = NULL, updated_at = ? WHERE state = 'reserved'", (now,))
