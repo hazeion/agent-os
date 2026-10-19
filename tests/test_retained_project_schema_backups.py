@@ -145,6 +145,34 @@ class CurrentProjectSchemaBackupTests(unittest.TestCase):
                 self.assertEqual((runtime.stat().st_mode, evidence.stat().st_mode, evidence.stat().st_mtime_ns), before)
                 self.assertFalse((root / "private").exists())
 
+    @unittest.skipUnless(os.name == "posix", "POSIX link and permission metadata")
+    def test_fresh_history_rechecks_link_count_and_mode_after_read(self):
+        for change in ("link", "mode"):
+            with self.subTest(change=change), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                console = ensure_console_root(root)
+                history = console / "agent-console-runs.json"
+                raw = b'{"schema_version":3,"runs":[]}'
+                history.write_bytes(raw)
+                history.chmod(0o600)
+                real_read = os.read
+                changed = False
+                def mutate_after_read(descriptor, size):
+                    nonlocal changed
+                    data = real_read(descriptor, size)
+                    if data and not changed:
+                        changed = True
+                        if change == "link":
+                            os.link(history, root / "outside-history")
+                        else:
+                            history.chmod(0o644)
+                    return data
+                with patch("private_state.os.read", side_effect=mutate_after_read):
+                    self.assertEqual(fresh_console_storage_issue(root), "private_history_invalid")
+                self.assertTrue(changed)
+                self.assertEqual(history.read_bytes(), raw)
+                self.assertFalse((console / "mentat.sqlite3").exists())
+
     def test_fresh_capture_rechecks_storage_after_empty_template_construction(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

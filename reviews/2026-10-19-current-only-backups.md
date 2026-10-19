@@ -160,3 +160,26 @@ currently exposes an existing startup error projection failure after waiting
 on the shared lock; root owns that implementation, and the original refusal,
 thread termination and unchanged-tree assertions remain. Final composed suite
 qualification and two independent reviews remain pending.
+
+## Integrated freshness and tamper review followup
+
+Normal merges now include A de8e585 and root0bd705b/f1955a5. The affected
+startup/shared-admission/fresh-registry10-method run passed in41.210s; after
+kernel integration another10-method run passed in33.903s, including exact
+locked startup refusal and cleanup-time tampering of current canonical SQLite
+Run status. The latter replaces an obsolete attack on stale JSON, which current
+SQL authority deliberately ignores; it now proves the mutation happened by
+exact SQL readback and still requires retained partial restore evidence.
+An orphaned POSIX-only decorator from a removed historical symlink method was
+removed from the ordinary backup-filter method, restoring Windows coverage.
+
+Independent review identified a narrow same-inode history metadata race:
+link-count or mode changes during reading were not included in the original
+identity tuple. The helper now validates regular/no-reparse, one link, owner,
+0600 mode and bounded size at lexical stat, opened fstat, post-read fstat and
+terminal path stat. A deterministic read hook creates an outside hardlink or
+changes mode after the first read; both refuse without creating SQLite or
+rewriting history. All nine focused current/refusal methods pass in5.025s.
+These source changes require final independent re-review. The original broad
+run remains diagnostic (known obsolete startup and stale-JSON fixture failures);
+no final exact-head whole-suite pass is claimed yet.

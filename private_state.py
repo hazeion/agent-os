@@ -179,17 +179,21 @@ def fresh_console_storage_issue(data_root: Path) -> str | None:
                 return None if not inventory() and inspect_console_root(root)[1] == identity else "private_console_changed"
             if entries != (HISTORY_NAME,):
                 return "private_database_missing"
+            def history_safe(details):
+                return (stat.S_ISREG(details.st_mode) and not _is_redirecting_entry(details)
+                        and details.st_nlink == 1 and details.st_size <= maximum
+                        and (os.name != "posix" or (details.st_uid == os.getuid()
+                             and stat.S_IMODE(details.st_mode) == 0o600)))
             lexical = history_stat()
-            if (not stat.S_ISREG(lexical.st_mode) or _is_redirecting_entry(lexical)
-                    or lexical.st_nlink != 1 or lexical.st_size > maximum
-                    or (os.name == "posix" and (lexical.st_uid != os.getuid()
-                        or stat.S_IMODE(lexical.st_mode) != 0o600))):
+            if not history_safe(lexical):
                 return "private_history_invalid"
             history_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
             history_descriptor = (os.open(HISTORY_NAME, history_flags, dir_fd=descriptor)
                                   if descriptor is not None else os.open(source / HISTORY_NAME, history_flags))
             try:
                 before = os.fstat(history_descriptor)
+                if not history_safe(before):
+                    return "private_history_invalid"
                 if (before.st_dev, before.st_ino) != (lexical.st_dev, lexical.st_ino):
                     return "private_console_changed"
                 raw = bytearray()
@@ -199,6 +203,8 @@ def fresh_console_storage_issue(data_root: Path) -> str | None:
                         break
                     raw.extend(chunk)
                 after = os.fstat(history_descriptor)
+                if not history_safe(after):
+                    return "private_history_invalid"
                 if (len(raw) > maximum or len(raw) != before.st_size
                         or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
                         != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
@@ -218,6 +224,8 @@ def fresh_console_storage_issue(data_root: Path) -> str | None:
                     or document["runs"] != []):
                 return "private_history_invalid"
             current = history_stat()
+            if not history_safe(current):
+                return "private_history_invalid"
             if (inventory() != entries
                     or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
                     != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)

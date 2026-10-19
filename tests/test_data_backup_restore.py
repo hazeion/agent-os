@@ -921,6 +921,9 @@ class DataBackupRestoreTests(unittest.TestCase):
             base = Path(tmpdir)
             _source, backup_path, _result = self.create_source_backup(base)
             _seeds, target = self.make_current(base, "target", "target")
+            from mentat_db import connect
+            connection = connect(target)
+            connection.close()
             preview = backup_restore.preview_durable_restore(target, backup_path)
             initial_checked = Event()
             startup_finished = Event()

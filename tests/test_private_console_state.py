@@ -147,9 +147,6 @@ class PrivateConsoleStateTests(unittest.TestCase):
             self.assertTrue(observed_flags[0] & synthetic_binary)
 
 
-    @unittest.skipIf(os.name == "nt", "POSIX nested-symlink staging test")
-
-
     def test_backup_filters_unretained_rows_and_includes_only_referenced_blob(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1036,12 +1033,12 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 real_remove(data_root, path)
                 if not changed and path.name.endswith("-old"):
                     changed = True
-                    live_history = history_path(target)
-                    payload = json.loads(live_history.read_text())
-                    payload["runs"][0]["status"] = "failed"
-                    live_history.write_bytes(data_backup_restore._canonical_json(payload))
-                    if os.name == "posix":
-                        live_history.chmod(0o600)
+                    connection = sqlite3.connect(history_path(target).parent / "mentat.sqlite3")
+                    try:
+                        connection.execute("UPDATE mentat_runs SET status='failed' WHERE id='run_source'")
+                        connection.commit()
+                    finally:
+                        connection.close()
 
             with patch.object(
                 data_backup_restore,
@@ -1052,6 +1049,12 @@ class PrivateConsoleStateTests(unittest.TestCase):
                     target, backup_path, confirmation_token=preview.confirmation_token or ""
                 )
             self.assertEqual(result.status, "partial_failure")
+            self.assertTrue(changed)
+            connection = sqlite3.connect(history_path(target).parent / "mentat.sqlite3")
+            try:
+                self.assertEqual(connection.execute("SELECT status FROM mentat_runs WHERE id='run_source'").fetchone()[0], "failed")
+            finally:
+                connection.close()
             self.assertTrue((target / "config" / "restore-state-v1.json").is_file())
 
     def test_private_restore_never_promotes_extra_stage_entries(self):
