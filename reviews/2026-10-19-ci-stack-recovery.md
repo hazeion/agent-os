@@ -1,6 +1,6 @@
 # CI stack recovery
 
-Status: implementation and verification in progress.
+Status: reviewed repair; hosted verification and stack carry in progress.
 
 The owner requested finishing the existing work, beginning with a current
 checkout and repair of the open PR stack. The original checkout contains
@@ -43,7 +43,9 @@ expected identical absolute-path formatting. The direct replacement also
 expanded nested directories, producing a verified false-positive lint error
 for unrelated fixture pages. Both regressions were reproduced before adding
 the narrow adapter and explicit nested-directory and lint-rule tests.
-Re-review of the final adapter is pending.
+Both final independent reviews are clear after correcting Windows root-path
+normalization in the regression test. The adapter uses the repository's ESM
+style, loaded synchronously by Next under the pinned Node 24.19.0.
 
 Local isolated Python 3.13.14 evidence so far:
 
@@ -51,8 +53,13 @@ Local isolated Python 3.13.14 evidence so far:
 - The previously timed-out cold bridge request and nine CI gate tests pass.
 - The oldest PR's own 32 registry and Node contract tests pass.
 - The unchanged tracked-secret gate and runtime dependency audit pass.
-- Refreshed npm audit reports zero vulnerabilities before the final clean
-  install. Full Python, web, build and final security checks are in progress.
+- Fresh locked npm install/audit reports zero vulnerabilities. Lint and
+  typecheck pass. All 514 web tests pass with two concurrent test files, and
+  the production standalone build passes with Next 16.3.8. The ordinary local
+  test command had UI readiness/latency failures under concurrent host load;
+  no test, timeout, assertion or repository CI command was changed to pass.
+- The full Python suite remains running. No completion claim is made from its
+  partial output. Hosted current-head verification remains required.
 
 Hosted multi-platform CI, stack propagation, integrated owner workflow,
 provider qualification and real host/garage acceptance remain incomplete.
