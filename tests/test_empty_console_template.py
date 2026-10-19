@@ -12,10 +12,9 @@ from threading import Barrier, Event, Lock, Thread, get_ident
 import unittest
 from unittest.mock import patch
 
-from agent_run_history import save_run_summaries
+from tests.test_private_console_state import initialize_current_run_store, save_current_run_summaries
 import mentat_db
 import private_console_unit as units
-from private_state import history_path
 
 
 class EmptyConsoleTemplateTests(unittest.TestCase):
@@ -109,8 +108,10 @@ class EmptyConsoleTemplateTests(unittest.TestCase):
                 changed = units.empty_private_console_unit()
                 self.assertEqual(json.loads(changed.history_raw)["schema_version"], units.HISTORY_SCHEMA_VERSION)
                 self.assertNotEqual(changed.history_raw, original.history_raw)
-            with patch.object(units, "PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION", units.PROJECT_CONTEXT_ACCESS_DATABASE_SCHEMA_VERSION + 1):
+            import owner_auth_google_transactions as transactions
+            with patch.object(transactions, "discard_transactions", wraps=transactions.discard_transactions):
                 changed = units.empty_private_console_unit()
+                self.assertIsNot(changed, original)
                 self.assertEqual(changed, original)
             self.assertEqual(initialize.call_count, 4)
             self.assertEqual(units._cached_empty_private_console_unit.cache_info().currsize, 1)
@@ -271,14 +272,13 @@ class EmptyConsoleTemplateTests(unittest.TestCase):
             root = Path(temporary) / "data"
             missing = units.capture_private_console_unit(root, harden_source=False)
             self.assertFalse(root.exists())
-            connection = mentat_db.connect(root)
-            connection.close()
+            initialize_current_run_store(root)
             for status in ("running", "failed"):
-                save_run_summaries(history_path(root), [{
+                save_current_run_summaries(root, [{
                     "id": "run_fixture", "status": status,
                     "created_at": "2026-07-18T01:00:00+00:00",
                     "updated_at": "2026-07-18T01:01:00+00:00",
-                }], data_root=root)
+                }])
                 before = self.snapshot(root)
                 captured = units.capture_private_console_unit(root, harden_source=False)
                 self.assertEqual(json.loads(captured.history_raw)["runs"][0]["status"], status)

@@ -61,7 +61,7 @@ from mentat_db import (
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
     MentatDatabaseError,
     connect,
-    connect_existing_readonly,
+    connect_current_readonly,
     validate_current_database_root,
 )
 from private_state import (
@@ -8031,7 +8031,7 @@ def ensure_run_sqlite_authority(data_dir: Path, history_path: Path) -> RunAuthor
         # permission changes and writable SQLite. Existing authority never
         # consults JSON, including unsupported or hostile stale history.
         if validate_current_database_root(root):
-            with connect_existing_readonly(root) as existing:
+            with connect_current_readonly(root) as existing:
                 repository = RunRepository(existing)
                 receipt = repository.authority_receipt()
                 if receipt is not None:
