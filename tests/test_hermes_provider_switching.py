@@ -1,5 +1,8 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
@@ -7,6 +10,119 @@ import hermes_provider_switching as switching
 
 
 class HermesProviderSwitchingTests(unittest.TestCase):
+    def test_fixed_model_writer_requires_current_stock_owner(self):
+        for owner in ("new", "legacy", "legacy_with_router_package"):
+            with self.subTest(owner=owner), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                package = root / "hermes_cli"
+                package.mkdir()
+                (package / "__init__.py").write_text("", encoding="utf-8")
+                (package / "profiles.py").write_text(
+                    "def resolve_profile_env(profile_id): return profile_id\n", encoding="utf-8",
+                )
+                (package / "inventory.py").write_text(
+                    "from types import SimpleNamespace\n"
+                    "def load_picker_context(): return SimpleNamespace(current_provider='provider', current_model='model')\n"
+                    "def build_models_payload(ctx, **kwargs): return {'providers': [{'slug': 'provider', 'authenticated': True, 'models': ['model']}]}\n",
+                    encoding="utf-8",
+                )
+                writer = (
+                    "import json\nfrom pathlib import Path\n"
+                    "def _write_profile_model(profile_dir, provider, model):\n"
+                    "    profile_dir.mkdir(exist_ok=True)\n"
+                    "    (profile_dir / 'call.json').write_text(json.dumps([OWNER, provider, model]))\n"
+                )
+                (package / "web_server.py").write_text("OWNER='legacy'\n" + writer, encoding="utf-8")
+                if owner != "legacy":
+                    routers = package / "web_routers"
+                    routers.mkdir()
+                    (routers / "__init__.py").write_text("", encoding="utf-8")
+                    if owner == "new":
+                        (routers / "profiles.py").write_text("OWNER='new'\n" + writer, encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, "-c", switching.HERMES_PROVIDER_SWITCH_SCRIPT,
+                     "fixture", "provider", "model"], cwd=root,
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                if owner == "new":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(json.loads(result.stdout)["ok"])
+                    self.assertEqual(json.loads((root / "fixture" / "call.json").read_text()),
+                                     ["new", "provider", "model"])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((root / "fixture" / "call.json").exists())
+                inventory = subprocess.run(
+                    [sys.executable, "-c", switching.HERMES_PROVIDER_INVENTORY_SCRIPT,
+                     "fixture", "cached"], cwd=root, capture_output=True,
+                    text=True, timeout=10, check=False,
+                )
+                self.assertEqual(inventory.returncode, 0, inventory.stderr)
+                payload = json.loads(inventory.stdout)
+                self.assertEqual(payload["switch_supported"], owner == "new")
+                self.assertEqual(payload["current_provider"], "provider")
+
+    def test_present_broken_stock_owner_never_calls_legacy_writer(self):
+        sources = (
+            "raise ModuleNotFoundError('missing dependency', name='stock_dependency')\n",
+            "raise ModuleNotFoundError('present owner failed', name='hermes_cli.web_routers')\n",
+            "raise ModuleNotFoundError('present owner failed', name='hermes_cli.web_routers.profiles')\n",
+            "raise RuntimeError('initialization failed')\n",
+            "# Missing supported writer\n",
+        )
+        for source in sources:
+            with self.subTest(source=source), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                package = root / "hermes_cli"
+                routers = package / "web_routers"
+                routers.mkdir(parents=True)
+                for folder in (package, routers):
+                    (folder / "__init__.py").write_text("", encoding="utf-8")
+                (package / "profiles.py").write_text(
+                    "def resolve_profile_env(profile_id): return profile_id\n", encoding="utf-8",
+                )
+                (package / "web_server.py").write_text(
+                    "from pathlib import Path\n"
+                    "def _write_profile_model(*args): Path('legacy-called').touch()\n", encoding="utf-8",
+                )
+                (routers / "profiles.py").write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, "-c", switching.HERMES_PROVIDER_SWITCH_SCRIPT,
+                     "fixture", "provider", "model"], cwd=root,
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((root / "legacy-called").exists())
+
+    def test_present_broken_router_package_never_calls_legacy_writer(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "hermes_cli"
+            routers = package / "web_routers"
+            routers.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "profiles.py").write_text(
+                "def resolve_profile_env(profile_id): return profile_id\n", encoding="utf-8",
+            )
+            (package / "web_server.py").write_text(
+                "from pathlib import Path\n"
+                "def _write_profile_model(*args): Path('legacy-called').touch()\n", encoding="utf-8",
+            )
+            (routers / "__init__.py").write_text(
+                "raise ModuleNotFoundError('router initialization failed', name='hermes_cli.web_routers')\n",
+                encoding="utf-8",
+            )
+            (routers / "profiles.py").write_text(
+                "def _write_profile_model(*args): pass\n", encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", switching.HERMES_PROVIDER_SWITCH_SCRIPT,
+                 "fixture", "provider", "model"], cwd=root,
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "legacy-called").exists())
+
     def test_inventory_returns_only_safe_authenticated_metadata(self):
         raw = {
             "profile_id": "builder",
