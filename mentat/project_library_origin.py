@@ -409,12 +409,15 @@ def _snapshot_rows():
     return [[suite, pin[4], pin[1], pin[3]] for suite, pin in SNAPSHOTS.items()]
 
 
-def _verify_core(root, deadline):
+@contextmanager
+def _verified_selection(root, deadline):
+    """Retain one verified capture through a private byte-custody operation."""
     with _capture(root, deadline) as captured:
         _verify_metadata(captured, deadline)
         members = {}
         parsed = {}
         scanned = 0
+        owners = {}
         for pin in PINS:
             descriptor = origin._sealed(captured[PurePosixPath(pin.filename).name])
             try:
@@ -429,6 +432,7 @@ def _verify_core(root, deadline):
             if set(members) & set(selected):
                 _fail()
             members.update(selected)
+            owners.update((path, pin) for path in selected)
             for path, raw in selected.items():
                 if type(raw) is bytes:
                     parsed[path] = host._ParsedElf(_sha(raw), len(raw), _inspect_origin_member(pin, path, raw))
@@ -458,8 +462,17 @@ def _verify_core(root, deadline):
                   "required_qualification": list(REQUIRED), "sampled_at": time.time()}
         if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_RESULT_BYTES:
             _fail()
+        retained = dict(members)
+        for pin in origin.PINS:
+            retained["/" + pin.member] = captured[PurePosixPath(pin.member).name + ".elf"]
+        yield result, retained, owners
     # The context has revalidated and closed every source descriptor.
     origin._remaining(deadline)
+
+
+def _verify_core(root, deadline):
+    with _verified_selection(root, deadline) as (result, _members, _owners):
+        pass
     return result
 
 

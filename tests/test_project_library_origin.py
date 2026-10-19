@@ -54,7 +54,7 @@ class LibraryOriginTests(unittest.TestCase):
     def one_pin(self):
         return replace(library.PINS[0], roots=(library.LIB + "libc.so.6",))
 
-    def complete_fixture(self, directory):
+    def complete_fixture(self, directory, *, custody_layout=False):
         """Real FD capture, tar/ELF/graph parsing; only OS signature/decoder mocked."""
         root = Path(directory).resolve() / "public"
         root.mkdir(mode=0o700)
@@ -67,7 +67,18 @@ class LibraryOriginTests(unittest.TestCase):
                     entries.extend([(target.lstrip("/"), "../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"),
                                     (library.LIB.lstrip("/") + "ld-linux-x86-64.so.2", elf())])
                 else:
-                    entries.append((target.lstrip("/"), elf(Path(target).name)))
+                    real_names = {
+                        'libcap.so.2': 'libcap.so.2.75', 'libfuse3.so.4': 'libfuse3.so.3.18.2',
+                        'liblz4.so.1': 'liblz4.so.1.10.0', 'liblzma.so.5': 'liblzma.so.5.8.3',
+                        'liblzo2.so.2': 'liblzo2.so.2.0.0', 'libpcre2-8.so.0': 'libpcre2-8.so.0.14.0',
+                        'libzstd.so.1': 'libzstd.so.1.5.7', 'libxxhash.so.0': 'libxxhash.so.0.8.3',
+                        'libz.so.1': 'libz.so.1.3.1',
+                    }
+                    canonical = (library.LIB + real_names[Path(target).name]
+                                 if custody_layout and Path(target).name in real_names else target)
+                    if canonical != target:
+                        entries.append((target.lstrip('/'), Path(canonical).name))
+                    entries.append((canonical.lstrip("/"), elf(Path(target).name)))
             raw = ("public archive fixture " + str(n)).encode()
             pins.append(replace(pin, size=len(raw), archive_digest=library._sha(raw)))
             decoded[raw] = archive(entries)
