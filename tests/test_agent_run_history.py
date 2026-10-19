@@ -11,7 +11,10 @@ from unittest.mock import patch
 import agent_run_history
 import run_repository
 import server
-from mentat_db import MentatDatabaseError
+from mentat_db import MentatDatabaseError, connect, database_path
+from private_console_unit import capture_private_console_unit
+from private_state import fresh_console_storage_issue
+from tests.test_private_console_state import save_current_run_summaries, initialize_current_run_store
 from run_repository import RunRepositoryUnavailable, load_authoritative_run_summaries
 from task_repository import ensure_task_sqlite_authority
 
@@ -70,32 +73,26 @@ class AgentRunHistoryTests(unittest.TestCase):
 
     def test_save_rejects_explicitly_malformed_transport_binding(self):
         with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "history.json"
+            root = Path(tmpdir)
+            initialize_current_run_store(root)
             with self.assertRaisesRegex(ValueError, "transport binding"):
-                agent_run_history.save_run_summaries(
-                    path,
-                    [
-                        sample_run(
-                            "run_invalid_binding",
-                            "2026-07-10T12:00:00-07:00",
-                            transport_mode="remote",
-                            connection_binding_id="local-default",
-                        )
-                    ],
-                )
-            self.assertFalse(path.exists())
+                save_current_run_summaries(root, [sample_run(
+                    "run_invalid_binding", "2026-07-10T12:00:00-07:00",
+                    transport_mode="remote", connection_binding_id="local-default",
+                )])
+            self.assertEqual(load_authoritative_run_summaries(root), [])
 
     def test_persisted_summaries_are_bounded_and_redact_common_secrets(self):
         with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "history.json"
+            root = Path(tmpdir)
             prompt = "api_key=very-secret-value " + ("p" * 800)
             response = "Authorization: Bearer hidden-token\n" + ("r" * 2_500)
-            agent_run_history.save_run_summaries(
-                path,
+            save_current_run_summaries(
+                root,
                 [sample_run("run_private", "2026-07-10T12:00:00-07:00", prompt=prompt, response=response)],
             )
 
-            raw = path.read_text(encoding="utf-8")
+            raw = capture_private_console_unit(root).history_raw.decode("utf-8")
             payload = json.loads(raw)
             stored = payload["runs"][0]
 
@@ -123,9 +120,9 @@ super-private-material
             ]
         )
         with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "runtime" / "history.json"
-            agent_run_history.save_run_summaries(
-                path,
+            root = Path(tmpdir)
+            save_current_run_summaries(
+                root,
                 [
                     sample_run(
                         "run_secrets",
@@ -135,7 +132,8 @@ super-private-material
                     )
                 ],
             )
-            raw = path.read_text(encoding="utf-8")
+            raw = capture_private_console_unit(root).history_raw.decode("utf-8")
+            path = database_path(root)
             file_mode = stat.S_IMODE(path.stat().st_mode)
             directory_mode = stat.S_IMODE(path.parent.stat().st_mode)
 
@@ -165,44 +163,59 @@ super-private-material
             sample_run("run_b", "2026-07-10T13:00:00-07:00"),
         ]
         with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "history.json"
-            agent_run_history.save_run_summaries(path, runs, retention=2)
-            stored = json.loads(path.read_text(encoding="utf-8"))["runs"]
+            root = Path(tmpdir)
+            save_current_run_summaries(root, runs)
+            stored = load_authoritative_run_summaries(root, limit=2)
 
         self.assertEqual([item["id"] for item in stored], ["run_b", "run_c"])
 
-    def test_load_marks_previously_active_run_interrupted(self):
+    def test_current_sql_load_marks_unattached_console_run_interrupted(self):
         with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "history.json"
-            agent_run_history.save_run_summaries(
-                path,
-                [sample_run("run_active", "2026-07-10T12:00:00-07:00", status="running")],
-            )
-            runs, recovered = agent_run_history.load_run_summaries(
-                path, now=lambda: "2026-07-10T14:00:00-07:00"
-            )
+            root = Path(tmpdir)
+            save_current_run_summaries(root, [sample_run(
+                "run_active", "2026-07-10T12:00:00-07:00", status="running", completed_at=None,
+            )])
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
+                self.load_runs(root)
+            runs = load_authoritative_run_summaries(root)
+            self.assertEqual(runs[0]["status"], "interrupted")
+            self.assertTrue(runs[0]["partial"])
+            self.assertIsNotNone(runs[0]["completed_at"])
+            self.assertTrue(any(e["type"] == "run.interrupted" for e in runs[0]["events"]))
 
-        self.assertTrue(recovered)
-        self.assertEqual(runs[0]["status"], "interrupted")
-        self.assertEqual(runs[0]["completed_at"], "2026-07-10T14:00:00-07:00")
-        self.assertIn("restarted", runs[0]["error"])
+    def test_corrupt_and_future_sql_refuse_without_rewriting_or_empty_fallback(self):
+        for kind in ("corrupt", "future"):
+            with self.subTest(kind=kind), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                initialize_current_run_store(root)
+                path = database_path(root)
+                if kind == "corrupt":
+                    path.write_bytes(b"invalid database")
+                else:
+                    connection = connect(root)
+                    try:
+                        connection.execute("INSERT INTO schema_migrations VALUES(47,0)")
+                        connection.commit()
+                    finally:
+                        connection.close()
+                before = path.read_bytes()
+                with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
+                    with self.assertRaises(RunRepositoryUnavailable):
+                        server.load_agent_console_runs()
+                self.assertEqual(path.read_bytes(), before)
+                self.assertFalse(server.AGENT_CONSOLE_HISTORY_LOADED)
+                self.assertTrue(server.AGENT_CONSOLE_PERSISTENCE_DEGRADED)
 
-    def test_corrupt_and_unknown_schema_history_fall_back_to_empty(self):
-        with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "history.json"
-            path.write_text("{broken", encoding="utf-8")
-            self.assertEqual(agent_run_history.load_run_summaries(path), ([], False))
-            path.write_text(json.dumps({"schema_version": 99, "runs": []}), encoding="utf-8")
-            self.assertEqual(agent_run_history.load_run_summaries(path), ([], False))
-
-    def test_server_load_cuts_over_recovered_status_without_rewriting_legacy_source(self):
+    def test_server_recovers_current_sql_without_reading_stale_history(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
             path = data_dir / "private" / "console" / "agent-console-runs.json"
-            agent_run_history.save_run_summaries(
-                path,
-                [sample_run("run_queued", "2026-07-10T12:00:00-07:00", status="queued")],
+            save_current_run_summaries(
+                data_dir,
+                [sample_run("run_queued", "2026-07-10T12:00:00-07:00", status="queued", completed_at=None)],
             )
+            path.write_text(json.dumps({"schema_version": 3, "runs": [{"id": "run_queued", "status": "queued"}]}))
+            path.chmod(0o600)
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
@@ -215,59 +228,24 @@ super-private-material
         self.assertEqual(legacy[0]["status"], "queued")
         server.AGENT_CONSOLE_RUNS.clear()
 
-    def test_server_load_migrates_completed_history_to_current_redaction_and_modes(self):
-        legacy_secret = "github_" + "pat_1234567890abcdefghijklmnop"
-        with TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir)
-            path = data_dir / "private" / "console" / "agent-console-runs.json"
-            path.parent.mkdir(parents=True)
-            path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": agent_run_history.SCHEMA_VERSION,
-                        "runs": [
-                            {
-                                "id": "run_completed",
-                                "agent_id": "default",
-                                "agent_name": "default",
-                                "model": "test/model",
-                                "status": "completed",
-                                "session_id": None,
-                                "created_at": "2026-07-10T12:00:00-07:00",
-                                "updated_at": "2026-07-10T12:01:00-07:00",
-                                "completed_at": "2026-07-10T12:01:00-07:00",
-                                "prompt_excerpt": legacy_secret,
-                                "response_excerpt": legacy_secret,
-                                "error_excerpt": "",
-                                "events": [],
-                            }
-                        ],
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            path.parent.chmod(0o755)
-            path.chmod(0o644)
+    def test_server_current_sql_preserves_redaction_and_private_modes(self):
+        secret = "github_" + "pat_1234567890abcdefghijklmnop"
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            save_current_run_summaries(root, [sample_run(
+                "run_completed", "2026-07-10T12:00:00-07:00", prompt=secret, response=secret,
+            )])
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
+                self.load_runs(root)
+            stored = load_authoritative_run_summaries(root)[0]
+            self.assertNotIn(secret, json.dumps(stored))
+            self.assertIn("[REDACTED]", json.dumps(stored))
+            self.assertNotIn(secret.encode(), capture_private_console_unit(root).history_raw)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(database_path(root).stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(database_path(root).parent.stat().st_mode), 0o700)
 
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
-                server, "AGENT_CONSOLE_HISTORY_LOADED", False
-            ):
-                self.load_runs(data_dir)
-                legacy_raw = path.read_text(encoding="utf-8")
-                stored = load_authoritative_run_summaries(data_dir)[0]
-                file_mode = stat.S_IMODE(path.stat().st_mode)
-                directory_mode = stat.S_IMODE(path.parent.stat().st_mode)
-
-        self.assertIn(legacy_secret, legacy_raw)
-        self.assertNotIn(legacy_secret, json.dumps(stored))
-        self.assertIn("[REDACTED]", json.dumps(stored))
-        if os.name != "nt":
-            self.assertEqual(file_mode, 0o600)
-            self.assertEqual(directory_mode, 0o700)
-        server.AGENT_CONSOLE_RUNS.clear()
-
-    def test_server_load_restricts_corrupt_history_without_overwriting_it(self):
+    def test_server_refuses_corrupt_unclaimed_history_without_hardening_it(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
             path = data_dir / "private" / "console" / "agent-console-runs.json"
@@ -288,8 +266,8 @@ super-private-material
 
         self.assertEqual(raw, "{broken")
         if os.name != "nt":
-            self.assertEqual(file_mode, 0o600)
-            self.assertEqual(directory_mode, 0o700)
+            self.assertEqual(file_mode, 0o644)
+            self.assertEqual(directory_mode, 0o755)
         self.assertEqual(server.AGENT_CONSOLE_RUNS, {})
 
     @unittest.skipIf(os.name == "nt", "Symlink creation is not reliably available on Windows")
@@ -322,7 +300,7 @@ super-private-material
             ):
                 server.AGENT_CONSOLE_RUNS["existing"] = {"id": "existing"}
                 with self.assertRaises(RunRepositoryUnavailable):
-                    self.load_runs(data_dir)
+                    server.load_agent_console_runs()
                 self.assertFalse(server.AGENT_CONSOLE_HISTORY_LOADED)
 
             self.assertEqual(server.AGENT_CONSOLE_RUNS, {})
@@ -528,35 +506,31 @@ super-private-material
                 self.assertTrue(server.agent_console_storage_degraded())
 
     @unittest.skipIf(os.name != "posix", "Descriptor identity race is POSIX-specific")
-    def test_permission_repair_rejects_hardlink_replacement_before_chmod(self):
-        with TemporaryDirectory() as tmpdir, TemporaryDirectory() as outside_dir:
-            root = Path(tmpdir)
+    def test_current_history_admission_rejects_hardlink_replacement_without_chmod(self):
+        with TemporaryDirectory() as temporary, TemporaryDirectory() as outside_dir:
+            root = Path(temporary)
             path = root / "private" / "console" / "agent-console-runs.json"
             path.parent.mkdir(parents=True)
-            path.write_text("{}\n", encoding="utf-8")
+            path.write_bytes(b'{"schema_version":3,"runs":[]}')
             path.chmod(0o600)
             outside = Path(outside_dir) / "outside.json"
-            outside.write_text("outside\n", encoding="utf-8")
+            outside.write_bytes(b"outside")
             outside.chmod(0o644)
-            real_open = agent_run_history.os.open
+            real_open = os.open
             replaced = False
-
             def racing_open(candidate, flags, *args, **kwargs):
                 nonlocal replaced
-                if Path(candidate) == path and not replaced:
+                if candidate == path.name and not replaced:
                     replaced = True
                     path.unlink()
                     os.link(outside, path)
                 return real_open(candidate, flags, *args, **kwargs)
-
-            with patch.object(agent_run_history.os, "open", side_effect=racing_open):
-                safe = agent_run_history.secure_history_permissions(
-                    path, data_root=root
-                )
-            outside_mode = stat.S_IMODE(outside.stat().st_mode)
-
-        self.assertFalse(safe)
-        self.assertEqual(outside_mode, 0o644)
+            with patch("private_state.os.open", side_effect=racing_open):
+                self.assertIsNotNone(fresh_console_storage_issue(root))
+            self.assertTrue(replaced)
+            self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o644)
+            self.assertEqual(outside.read_bytes(), b"outside")
+            self.assertFalse(database_path(root).exists())
 
     def test_schema_three_preserves_orchestration_binding_and_rejects_other_runtime(self):
         summary = agent_run_history.summarize_run(

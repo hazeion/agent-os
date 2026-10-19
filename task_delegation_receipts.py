@@ -167,15 +167,11 @@ class DelegationActionReceiptRepository:
         }
         if {str(row[1]) for row in rows} != required:
             raise DelegationReceiptUnavailable("delegation_receipt.schema_unsupported")
-        # A current database is not revalidated by ``connect()`` after its
-        # migrations have already been applied.  This ledger's per-Task
-        # partial unique index is the serialization boundary for an external
-        # Hermes mutation, so accepting a merely column-compatible table
-        # would allow two concurrent actions.  Require the complete current
-        # database shape before touching any receipt.
+        # This ledger's per-Task partial unique index serializes external
+        # Hermes mutations. Require the complete current shape even when a
+        # caller supplies an already-open connection, before touching receipts.
         if (
-            DATABASE_SCHEMA_VERSION < 22
-            or schema_signature_state(self.connection, DATABASE_SCHEMA_VERSION)
+            schema_signature_state(self.connection, DATABASE_SCHEMA_VERSION)
             != "expected"
         ):
             raise DelegationReceiptUnavailable("delegation_receipt.schema_unsupported")

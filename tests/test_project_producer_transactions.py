@@ -174,15 +174,28 @@ class ProducerTransactionTests(unittest.TestCase):
             path.chmod(0o600)
         for name in data_layout.DATA_ROOT_DIRECTORY_NAMES:
             (root/name).mkdir(mode=0o700,exist_ok=True)
+        documents={name:(root/name).read_bytes() for name in data_layout.SEED_FILE_NAMES}
+        with closing(mentat_db.connect(root)) as connection:
+            database_before=connection.serialize()
         with TemporaryDirectory() as temporary:
             seeds=Path(temporary)/'seeds'
             seeds.mkdir()
-            for name in data_layout.SEED_FILE_NAMES:
-                (seeds/name).write_bytes((root/name).read_bytes())
-            preview=data_schema.preview_schema_migration(seeds,root,home=Path(temporary))
-            self.assertEqual(preview.status,'ready')
-            result=data_schema.migrate_data_schema(seeds,root,confirmation_token=preview.confirmation_token,home=Path(temporary))
-            self.assertEqual(result.status,'migrated')
+            for name,raw in documents.items():
+                (seeds/name).write_bytes(raw)
+            fresh=Path(temporary)/'fresh'
+            result=data_layout.initialize_data_root(seeds,fresh,
+                locked_prepare=lambda target,fd,plan:data_schema.prepare_fresh_schema_initialization(seeds,target,fd,plan),
+                locked_finalize=lambda target,fd,_plan:data_schema.initialize_fresh_schema_under_lock(seeds,target,fd))
+            self.assertEqual(result.status,'initialized')
+            self.assertEqual(data_schema.schema_preflight_status(fresh),'current')
+            manifest=root/'config'/data_schema.SCHEMA_MANIFEST_NAME
+            self.assertFalse(manifest.exists())
+            manifest.write_bytes((fresh/'config'/data_schema.SCHEMA_MANIFEST_NAME).read_bytes())
+            manifest.chmod(0o600)
+        self.assertEqual(data_schema.schema_preflight_status(root),'current')
+        self.assertEqual({name:(root/name).read_bytes() for name in data_layout.SEED_FILE_NAMES},documents)
+        with closing(mentat_db.connect(root)) as connection:
+            self.assertEqual(connection.serialize(),database_before)
         good=data_backup_restore.create_durable_backup(root)
         self.assertEqual(good.status,'created')
         before=tuple(sorted(path.name for path in (root/'backups').iterdir()))

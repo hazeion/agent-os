@@ -19,7 +19,7 @@ from typing import Callable, Iterable, Mapping, Any
 from argon2 import PasswordHasher, Type, extract_parameters
 from argon2.exceptions import InvalidHashError, VerificationError
 
-from mentat_db import connect, transaction
+from mentat_db import MentatDatabaseError, connect, transaction
 from private_state import mentat_server_active, private_state_lock
 from owner_auth_webauthn import (
     AssertionEvidence as _AssertionEvidence,
@@ -227,7 +227,10 @@ class OwnerAuthAuthority:
         self._assertion_credential_id = _assertion_credential_id
 
     def _open(self) -> sqlite3.Connection:
-        connection = connect(self._data_dir)
+        try:
+            connection = connect(self._data_dir)
+        except MentatDatabaseError:
+            raise OwnerAuthError("unavailable") from None
         connection.row_factory = sqlite3.Row
         return connection
 

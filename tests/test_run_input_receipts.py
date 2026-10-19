@@ -1,4 +1,4 @@
-"""Schema-30 retained Run-input evidence without Project execution authority."""
+"""Current retained Run-input evidence without Project execution authority."""
 
 from contextlib import closing
 from pathlib import Path
@@ -18,7 +18,6 @@ from run_input_receipts import _digest, validate_run_input_connection, RunInputR
 from run_repository import RunRepository
 from task_inputs import publish_task_inputs, read_task_input_editor, preview_task_input_prune, TaskInputError
 from task_repository import mutate_authoritative_tasks, TaskRepository
-from task_repository import _schema5_private_unit
 from tests import test_project_context as context_tests
 from tests.test_task_repository import task
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
@@ -26,24 +25,12 @@ from private_state import history_path
 
 
 class RunInputReceiptStorageTests(unittest.TestCase):
-    def test_schema_29_upgrade_is_exact_and_creates_no_approval(self):
+    def test_fresh_current_root_creates_no_input_approval(self):
         with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "schema29.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=29)
-            with closing(sqlite3.connect(path)) as connection:
-                mentat_db.migrate(connection)
+            with closing(mentat_db.connect(Path(temporary))) as connection:
                 self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], mentat_db.SCHEMA_VERSION)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_run_input_receipts").fetchone()[0], 0)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_run_input_files").fetchone()[0], 0)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "drifted-schema29.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=29)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("DROP VIEW mentat_retained_attachments")
-                connection.execute("CREATE VIEW mentat_retained_attachments AS SELECT attachment_id FROM run_attachments")
-                with self.assertRaises(mentat_db.MentatDatabaseError):
-                    mentat_db.migrate(connection)
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 29)
 
     def setUp(self):
         self.fixture = context_tests.ProjectContextTests()
@@ -136,15 +123,6 @@ class RunInputReceiptStorageTests(unittest.TestCase):
             connection.rollback()
         unit = private_console_unit.capture_private_console_unit(self.root)
         private_console_unit.validate_private_console_unit(unit)
-        compatible = _schema5_private_unit(unit)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "compatible.sqlite3"
-            path.write_bytes(compatible.database_raw)
-            with closing(sqlite3.connect(path)) as connection:
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5)
-                self.assertIsNone(connection.execute(
-                    "SELECT name FROM sqlite_master WHERE name='mentat_run_input_receipts'",
-                ).fetchone())
         restored = private_console_unit.sanitize_owner_auth_restore_unit(unit)
         private_console_unit.validate_private_console_unit(restored)
         with TemporaryDirectory() as temporary:

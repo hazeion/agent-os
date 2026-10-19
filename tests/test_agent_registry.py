@@ -24,9 +24,8 @@ from agent_registry import (
     MAX_AGENTS,
     connect_registry,
     public_agent_record,
-    registry_database_path,
 )
-from mentat_db import SCHEMA_VERSION, connect, database_path
+from mentat_db import SCHEMA_VERSION, database_path
 from private_console_unit import (
     PrivateConsoleUnitError,
     capture_private_console_unit,
@@ -85,7 +84,7 @@ class AgentRegistryTests(unittest.TestCase):
                     for row in foreign_keys
                 )
             )
-            self.assertFalse(registry_database_path(root).exists())
+            self.assertFalse((database_path(root).parent / "agent-registry.sqlite3").exists())
             self.assertEqual(connected_path.resolve(), database_path(root).resolve())
 
     @unittest.skipIf(os.name == "nt", "POSIX link and mode contract")
@@ -110,26 +109,6 @@ class AgentRegistryTests(unittest.TestCase):
                     sidecar.chmod(0o644)
                 with self.assertRaises(AgentRegistryUnavailableError):
                     connect_registry(root)
-
-    def test_registry_identity_continuity_ignores_transient_sidecar_identity(self):
-        path = Path("agent-registry.sqlite3")
-        wal_path = Path(f"{path}-wal")
-
-        self.assertTrue(
-            agent_registry._same_primary_database(
-                {path: (1, 10), wal_path: (1, 11)},
-                {path: (1, 10), wal_path: (1, 12)},
-                path=path,
-            )
-        )
-        self.assertFalse(
-            agent_registry._same_primary_database(
-                {path: (1, 10)},
-                {path: (1, 12)},
-                path=path,
-            )
-        )
-
 
     def test_create_reopen_and_private_snapshot_preserve_agent_binding(self):
         with TemporaryDirectory() as tmpdir:
@@ -778,7 +757,7 @@ class AgentRegistryTests(unittest.TestCase):
             with patch.object(server, "DATA_DIR", root):
                 rejected.do_POST()
             self.assertEqual(rejected.send_response.call_args.args, (403,))
-            self.assertFalse(registry_database_path(root).exists())
+            self.assertFalse((database_path(root).parent / "agent-registry.sqlite3").exists())
             self.assertFalse(database_path(root).exists())
 
             statuses = []
@@ -874,7 +853,7 @@ class AgentRegistryTests(unittest.TestCase):
                 connection.close()
             with self.assertRaisesRegex(
                 AgentRegistryError,
-                "agent_registry.schema_invalid",
+                "agent_registry.unsupported",
             ):
                 self.registry(root).list_agents()
 
