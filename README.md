@@ -196,6 +196,13 @@ npm --prefix web ci --ignore-scripts
 npm --prefix web run build
 ```
 
+## Data and recovery
+
+This build supports fresh data directories and the current database format.
+Older data and backup formats are refused without upgrading or deleting them.
+Keep older data separately and select a fresh directory when needed. Current
+backup and restore instructions are in [Data storage and backups](DATA_LAYOUT.md).
+
 ## Keep in mind
 
 - Mentat listens only on local addresses.
@@ -208,7 +215,7 @@ npm --prefix web run build
 
 - [Architecture and safety rules](ARCHITECTURE.md)
 - [Current implementation roadmap](IMPLEMENTATION_PLAN.md)
-- [Data, migration, and backups](DATA_LAYOUT.md)
+- [Data storage and backups](DATA_LAYOUT.md)
 - [Remote Hermes setup](REMOTE_HERMES.md)
 - [Privacy](PRIVACY.md)
 - [Security](SECURITY.md)

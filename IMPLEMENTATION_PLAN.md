@@ -1,6 +1,6 @@
 # Mentat implementation roadmap
 
-Status: active · updated September 30, 2026
+Status: active · updated October 19, 2026
 
 This is the short resume map, not permission to implement an unspecified slice.
 Read [AGENTS.md](AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md),
@@ -55,6 +55,19 @@ failed, queued or unreviewed heads remain open.
 and [Fresh-install release readiness: Project, Task, and Agent journey](https://github.com/hazeion/agent-os/issues/223)
 remain acceptance work against the appropriate integrated branch. Do not close
 residual QA based on a fixture or an unmerged change alone.
+
+## Current storage decision
+
+The owner chose fresh/current storage only on October 19. Current SQLite
+schema 46, backup format 5 and restore protocol 4 replace the old-root upgrade,
+standalone Agent convergence and older archive support paths. Unsupported data
+is refused unchanged; current authority, row constraints, retention, unknown
+outcomes and validated recovery remain. Plain `task-export` remains current
+SQLite-to-JSON recovery. See [ADR0002](docs/adr/0002-current-only-storage.md).
+Current-only source, fixture and documentation branches require composed QA and
+independent reviews before release; local component passes are not that gate.
+The earlier schema-specific review records remain historical evidence, not
+permission to reconstruct old roots.
 
 ## Next steps and dependencies
 
@@ -112,7 +125,7 @@ residual QA based on a fixture or an unmerged change alone.
    New scope/call bookkeeping now requires an immutable output hold charged
    across shared retained writers. It reserves storage capacity and future
    bounded receipt representation, not producing-Run or output authority.
-   The coupled schema46 implementation adds explicit synthetic producer
+   The coupled schema 46 implementation adds explicit synthetic producer
    lifecycle, immutable output registration/finalization, durable Stop and
    source-aware active backup/restore. Its complete review and qualification
    must finish together. Synthetic output cannot be promoted to production
