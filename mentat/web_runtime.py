@@ -138,6 +138,11 @@ def gateway_port_is_available(port: int, host: str = GATEWAY_HOST) -> bool:
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     try:
         with socket.socket(family, socket.SOCK_STREAM) as candidate:
+            if os.name == "posix":
+                # Node/libuv permits POSIX TIME_WAIT reuse, but not sharing a
+                # live listener. Keep Windows's original default bind: its
+                # REUSEADDR permits port stealing; EXCLUSIVEADDRUSE blocks TIME_WAIT.
+                candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             candidate.bind((host, port))
     except OSError:
         return False
