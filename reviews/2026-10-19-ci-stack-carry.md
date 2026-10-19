@@ -53,6 +53,7 @@ passing ancestor as current-head acceptance.
 | 296 | `5e7d3cb` | `4ee41ce` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 15 targeted tests discovered; 15 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 297 | `15193e1` | `84383e5` | Preserve the complete original POSIX lifecycle AST after stripping only reviewed diagnostic imports/calls. Original listener, ownership, generation and pidfd safeguards unchanged; only preflight-order test gains phase observations. Two independent reviews clear. The 63-test Node/lifecycle/diagnostic group has 62 passes and one supported-Linux pidfd acceptance skip. No authority or timeout change. Hosted and integrated acceptance remain pending. |
 | 298 | `2013801` | `2b8a06e` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 8 targeted tests discovered; 8 pass; no skips. Hosted and integrated acceptance remain pending. |
+| 299 | `8b7f8e9` | `d4038d0` | Reviewed shared CI repairs carried forward; dependency conflicts guarded and historical review evidence retained. Explicit historical schema union preserved. 172 targeted tests pass, no skips. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret
