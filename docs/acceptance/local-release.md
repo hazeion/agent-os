@@ -53,9 +53,11 @@ not silently change ports or retry a failed launch. The default run attempts imm
 A successful diagnostic run explicitly reports `immediate_restart_acceptance: false`
 and does not satisfy release restart acceptance.
 
-The reviewed POSIX preflight repair is integrated on this branch. The default
-startup/restart phases have passed in recorded local runs; final browser acceptance
-remains open. The TIME_WAIT discussion retains the baseline diagnostic distinction.
+The reviewed POSIX preflight repair is integrated on this branch. The
+default four-scenario local journey passed on exact source `204275eb` with the
+verified standalone runtime. The [recorded result](../../reviews/2026-10-19-acceptance-transitional-document.md)
+limits that result to the disposable local scenarios. The TIME_WAIT discussion
+retains the baseline diagnostic distinction.
 
 The browser step uses CDP readiness rather than `--dump-dom`, virtual time or
 Chrome's natural CLI exit. A diagnostic instrumented run produced actual rows
@@ -89,8 +91,8 @@ incomplete trailing record cannot grant success. Cleanup rules remain unchanged.
 
 Prior failed runs remain recorded in focused reviews and preserved reports.
 Their later process absence or a different startup contract does not change
-those outcomes. The current direct-startup contract has only mock verification
-until a separately authorized actual run is recorded.
+those outcomes. The current direct-startup contract passed the recorded actual
+local journey; none of those earlier outcomes is reclassified.
 
 Chrome starts once at the configured local origin's exact `/tasks` URL. After
 verifying its loopback CDP listener/group, discovery requires one exact owned
