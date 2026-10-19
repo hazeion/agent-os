@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -2341,6 +2341,24 @@ MIGRATIONS += ((34, """
             WHERE source_id=OLD.id AND source_incarnation=OLD.deliverable_incarnation AND resolved_at IS NULL; END;
 """),)
 
+MIGRATIONS += ((35, """
+    CREATE TABLE mentat_run_identities (
+        run_id TEXT PRIMARY KEY REFERENCES mentat_runs(id) ON DELETE CASCADE,
+        incarnation TEXT NOT NULL UNIQUE CHECK(
+            length(incarnation)=32 AND incarnation NOT GLOB '*[^0-9a-f]*'
+        ),
+        created_at TEXT NOT NULL CHECK(length(created_at) BETWEEN 1 AND 64)
+    );
+    INSERT INTO mentat_run_identities(run_id,incarnation,created_at)
+        SELECT id,lower(hex(randomblob(16))),created_at FROM mentat_runs;
+    CREATE TRIGGER mentat_run_identity_insert AFTER INSERT ON mentat_runs
+        BEGIN INSERT INTO mentat_run_identities(run_id,incarnation,created_at)
+            VALUES(NEW.id,lower(hex(randomblob(16))),NEW.created_at); END;
+    CREATE TRIGGER mentat_run_identity_immutable
+        BEFORE UPDATE ON mentat_run_identities
+        BEGIN SELECT RAISE(ABORT,'run.identity_immutable'); END;
+"""),)
+
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16, 25})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
@@ -2677,7 +2695,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2809,6 +2827,8 @@ def migrate(
                     raise MentatDatabaseError("Mentat schema 32 cannot be safely upgraded")
                 if version == 34 and schema_signature_state(connection, 33) != "expected":
                     raise MentatDatabaseError("Mentat schema 33 cannot be safely upgraded")
+                if version == 35 and schema_signature_state(connection, 34) != "expected":
+                    raise MentatDatabaseError("Mentat schema 34 cannot be safely upgraded")
                 _execute_script_in_active_transaction(connection, script)
             else:
                 # executescript otherwise commits before running its statements.
