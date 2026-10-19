@@ -102,7 +102,7 @@ class PreparedNamespace:
     """
     def __init__(self, roots: RuntimeRoots, query: bytes, query_digest: str,
                  model: str, *, vision: bool = False, image: bytes | None = None,
-                 image_digest: str | None = None, image_extension: str = ""):
+                 image_digest: str | None = None, image_extension: str = "", runtime_image=None):
         if (not IS_LINUX or not callable(getattr(os, "memfd_create", None))
                 or type(roots) is not RuntimeRoots or type(vision) is not bool
                 or not isinstance(model, str) or _MODEL.fullmatch(model) is None
@@ -124,12 +124,24 @@ class PreparedNamespace:
         self._image_digest = image_digest
         self._fds = []
         self._closed = False
+        self._runtime_image = None
         try:
-            for path in (roots.source, roots.venv, roots.python, Path("/usr/lib"), Path("/usr/lib64")):
+            if runtime_image is not None:
+                from mentat.project_runtime_image import ImmutableRuntimeImage
+                if type(runtime_image) is not ImmutableRuntimeImage:
+                    raise WorkerScopeError("worker_namespace.runtime")
+                self._fds.extend(runtime_image.acquire_roots(check_bootstrap=True))
+                self._runtime_image = runtime_image
+            else:
+                for path in (roots.source, roots.venv, roots.python):
+                    self._fds.append(_open_directory(path))
+            for path in (Path("/usr/lib"), Path("/usr/lib64")):
                 self._fds.append(_open_directory(path))
             # Fixed installation sentinels; release/content qualification remains
             # a separate prerequisite owned by the trusted host controller.
             for root_fd, name in ((self._fds[0], "hermes_cli/main.py"), (self._fds[1], "pyvenv.cfg")):
+                if self._runtime_image is not None:
+                    continue  # FUSE sentinel inspection is in the bounded probe.
                 parent = os.dup(root_fd)
                 try:
                     parts = name.split("/")
@@ -163,6 +175,8 @@ class PreparedNamespace:
                 or type(wall_seconds) is not int or not 0 < wall_seconds <= 3600
                 or time.monotonic() >= deadline):
             raise WorkerScopeError("worker_namespace.handoff")
+        if self._runtime_image is not None:
+            self._runtime_image.verify()
         config = {"model": self._model, "vision": self._vision, "venv": self._paths[1],
                   "image_extension": self._extension, "image_digest": self._image_digest,
                   "wall_seconds": wall_seconds}
@@ -185,6 +199,9 @@ class PreparedNamespace:
             for descriptor in self._fds:
                 os.close(descriptor)
             self._fds.clear()
+            if self._runtime_image is not None:
+                self._runtime_image.release_roots()
+                self._runtime_image = None
             self._closed = True
 
 
@@ -295,15 +312,18 @@ def receive_ready(endpoint, deadline):
 
 class NamespaceWorker:
     """Private output evidence, never canonical Run completion authority."""
-    def __init__(self, scope, lifecycle, exports):
+    def __init__(self, scope, lifecycle, exports, runtime_image=None):
         self._scope, self._lifecycle, self.exports_descriptor = scope, lifecycle, exports
         self._consumed = False
+        self._runtime_image = runtime_image
 
     def wait(self):
         from mentat.project_worker_frontend import MAX_OUTPUT, MAX_REPLY, _json, _text
         if self._consumed or self._scope._deadline is None:
             raise WorkerScopeError("worker_namespace.terminal")
         self._consumed = True  # Lost/malformed outcomes never trigger a new worker.
+        if self._runtime_image is not None:
+            self._runtime_image.verify()
         deadline = self._scope._deadline
         self._lifecycle.settimeout(_remaining(deadline))
         data, ancillary, flags, _ = self._lifecycle.recvmsg(MAX_REPLY + 512, socket.CMSG_SPACE(MAX_DESCRIPTORS * 4),
@@ -336,5 +356,8 @@ class NamespaceWorker:
             raise WorkerScopeError("worker_namespace.terminal")
         if not self._scope.stop_local_and_verify():
             raise WorkerScopeError("worker_namespace.cleanup_unknown")
+        _remaining(deadline)
+        if self._runtime_image is not None:
+            self._runtime_image.verify()
         _remaining(deadline)
         return result
