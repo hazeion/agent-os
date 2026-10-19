@@ -1156,6 +1156,18 @@ syntax-only suggestions until exact intake and owner Apply revalidate them.
 The pure parser establishes no producing Run, artifact provenance, Task write,
 owner approval or execution authority; registered-output intake remains gated.
 
+The private Linux worker-scope component owns launch of one fixed inert
+bootstrap, verifies its process generation and kernel cgroup membership,
+descriptor-pins that generation, and verifies finite effective resource limits.
+Its bootstrap receives only a control socket and deadline; its current commands
+are fixed disposable qualification probes, not Agent execution or Run handoff.
+An independent parent watchdog and held-cgroup local Stop include detached
+descendants. Startup refusal closes control, and unverified cleanup retains
+ownership evidence. Only verified local emptiness permits releasing handles;
+it makes no claim that an external provider stopped. This component adds no
+browser route, Run admission, input/broker grant, durable controller authority,
+or runtime qualification. Project dispatch guards remain intact.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance

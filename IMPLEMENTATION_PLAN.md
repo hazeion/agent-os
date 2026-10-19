@@ -161,6 +161,12 @@ have clear independent reviews; hosted timing gains remain unverified.
    on September 29. Implement and qualify the fixed worker scope and broker
    transport first; existing Project dispatch guards remain in force until
    complete admission, provenance and host qualification pass.
+   The [implemented local-scope component](reviews/2026-09-30-project-worker-scope.md)
+   provides a fixed inert bootstrap, kernel-verified limits, owned-generation
+   local Stop and an independent watchdog. All 13 actual Linux tests and
+   wheel/sdist/install checks pass after two clear reviews. It grants no Run
+   or production handoff. Next integrate the fixed namespace bootstrap and
+   durable controller/broker receipts before any Project execution admission.
 3. Extend the canonical Project/Run sources for generated deliverable
    promotion, missing-dimension questions, checkpoint approvals, and
    coordinated change requests. The Inbox may index only those exact source
