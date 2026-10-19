@@ -156,6 +156,10 @@ The fixed item-bound website review path and Inbox page are reviewed on the
 schema-34 authority in
 [the Inbox UI review](reviews/2026-09-24-owner-inbox-ui.md). They preserve exact
 three-result review and stale/retained history without granting execution.
+Home's [Inbox attention card](reviews/2026-09-24-home-inbox-attention.md)
+adds a bounded count and exact navigation links. Existing Run failure,
+unknown-submission and recovery attention remains the next owner-inbox
+authority slice; the Home card does not make issue #240 complete.
 
 ### Implemented baseline and retained boundaries
 

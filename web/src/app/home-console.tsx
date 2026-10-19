@@ -67,6 +67,7 @@ import {
 import { RunConversationMedia } from "./conversation-media";
 import { ConversationContextControls } from "./conversation-context-controls";
 import { ConversationHistoryManager } from "./conversation-history-manager";
+import { HomeInboxAttention } from "./home-inbox-attention";
 import {
   ConversationPlanningControls,
   PlanningAttention,
@@ -644,6 +645,7 @@ const ActivityRail = memo(function ActivityRail({
         {activityState === "error" ? <StatusMessage state="error">Activity could not be read safely.</StatusMessage> : null}
         {activityState === "ready" && activity?.activity.length === 0 ? <StatusMessage state="empty">No Agent activity yet.</StatusMessage> : null}
         {activityState === "ready" && activity?.activity.length ? <div className="activity-list">{activity.activity.map((item) => { const expanded = expandedAgents.has(item.agent.id); const contentId = `activity-agent-${item.agent.id}`; return <article className="activity-card" data-attention={item.attention ? "true" : "false"} key={item.agent.id}><button aria-controls={contentId} aria-expanded={expanded} className="activity-agent-toggle" onClick={() => onToggleAgent(item.agent.id)} type="button"><span className="activity-state-dot" aria-hidden="true" /><span className="activity-agent-label"><strong>{item.agent.name}</strong><small>{readable(item.state)}</small></span><span aria-hidden="true">{expanded ? "−" : "+"}</span></button>{expanded ? <div className="activity-card-content" id={contentId}><p className="activity-summary">{item.summary}</p>{item.conversations.length ? <ul>{item.conversations.map((conversation) => <li key={conversation.id}><button onClick={() => onSelectConversation(conversation.id)} type="button">{conversation.title}</button><span>{readable(conversation.run_status)}</span></li>)}</ul> : null}</div> : null}</article>; })}</div> : null}
+        <HomeInboxAttention />
         <PlanningAttention overview={planning} state={planningState} />
       </div>
     </aside>
