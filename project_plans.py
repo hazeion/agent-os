@@ -13,6 +13,7 @@ import unicodedata
 import uuid
 
 from private_state import private_state_lock
+from project_plan_policy import MAX_POLICY_CONTENT_BYTES, PlanPolicyError, normalize_policy
 from project_repository import ProjectRepository
 from task_repository import TaskRepository, _guarded_transaction, _open_repository_database
 
@@ -46,6 +47,13 @@ def _canonical(value: object) -> bytes:
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     except (TypeError, ValueError, UnicodeError):
+        _fail("invalid")
+
+
+def _policy(value: object, nodes: list[dict], *, stored: bool) -> dict:
+    try:
+        return normalize_policy(value, nodes, stored=stored)
+    except PlanPolicyError:
         _fail("invalid")
 
 
@@ -120,6 +128,13 @@ def normalize_owner_plan(title: object, nodes: object) -> dict:
     if len(_canonical(content)) > MAX_CONTENT_BYTES:
         _fail("capacity")
     return content
+
+
+def _public_policy(content: dict) -> dict | None:
+    policy = content.get("policy")
+    if policy is None:
+        return None
+    return {key: policy[key] for key in ("operations", "outputs", "transfers", "ceilings")}
 
 
 def _dependency_comparison(connection: sqlite3.Connection, content: dict) -> dict:
@@ -216,14 +231,18 @@ def validate_plan_connection(connection: sqlite3.Connection) -> list[list]:
         "SELECT version_id,input_id FROM mentat_plan_input_refs ORDER BY version_id,input_id"
     ).fetchmany(MAX_VERSIONS * MAX_NODES + 1)
     input_rows = connection.execute(
-        "SELECT v.id,s.task_id,s.task_incarnation,s.project_scope_id,v.task_revision,v.agent_id,v.agent_incarnation "
+        "SELECT v.id,s.task_id,s.task_incarnation,s.project_scope_id,v.task_revision,v.agent_id,v.agent_incarnation,v.instructions "
         "FROM mentat_task_input_versions v JOIN mentat_task_input_scopes s ON s.id=v.scope_id"
     ).fetchmany(257)
     if len(scopes) > MAX_SCOPES or len(versions) > MAX_VERSIONS or len(refs) > MAX_VERSIONS * MAX_NODES:
         _fail("capacity")
     if len(input_rows) > 256:
         _fail("capacity")
-    input_map = {row[0]: tuple(row)[1:] for row in input_rows}
+    input_map = {row[0]: tuple(row)[1:7] for row in input_rows}
+    instructions = {row[0]: row[7] for row in input_rows}
+    inputs_with_files = {row[0] for row in connection.execute(
+        "SELECT DISTINCT input_id FROM mentat_task_input_files"
+    )}
     current = {row[0]: row[1] for row in connection.execute("SELECT id,deliverable_incarnation FROM mentat_projects")}
     context = {row[0]: (row[1], row[2]) for row in connection.execute(
         "SELECT id,project_id,retired_at FROM mentat_project_context_scopes"
@@ -258,8 +277,9 @@ def validate_plan_connection(connection: sqlite3.Connection) -> list[list]:
                 or scope_id not in scope_map or type(revision) is not int
                 or not 1 <= revision <= MAX_SCOPE_VERSIONS
                 or type(project_revision) is not int or project_revision < 1
-                or format_version != 1 or origin != "owner_edit"
-                or not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_CONTENT_BYTES
+                or format_version not in (1, 2) or origin != "owner_edit"
+                or not isinstance(raw, str) or len(raw.encode("utf-8")) > (
+                    MAX_CONTENT_BYTES if format_version == 1 else MAX_POLICY_CONTENT_BYTES)
                 or not isinstance(digest, str) or _HEX64.fullmatch(digest) is None
                 or type(created) not in (int, float) or not math.isfinite(created) or created <= 0):
             _fail("invalid")
@@ -267,11 +287,21 @@ def validate_plan_connection(connection: sqlite3.Connection) -> list[list]:
             content = json.loads(raw)
         except (ValueError, TypeError):
             _fail("invalid")
-        if not isinstance(content, dict) or set(content) != {"title", "nodes"}:
+        if not isinstance(content, dict) or set(content) != (
+                {"title", "nodes"} if format_version == 1 else {"title", "nodes", "policy"}):
             _fail("invalid")
         title = _title(content["title"])
         nodes = _nodes(content["nodes"], stored=True)
         normalized = {"title": title, "nodes": nodes}
+        if format_version == 2:
+            policy = _policy(content["policy"], nodes, stored=True)
+            normalized["policy"] = policy
+            for brief in policy["public_briefs"]:
+                input_id = nodes[brief["node"]]["input_version_id"]
+                instruction = instructions.get(input_id)
+                if (not isinstance(instruction, str) or input_id in inputs_with_files
+                        or hashlib.sha256(instruction.encode("utf-8")).hexdigest() != brief["digest"]):
+                    _fail("invalid")
         encoded = _canonical(normalized)
         if encoded.decode("utf-8") != raw or hashlib.sha256(encoded).hexdigest() != digest:
             _fail("invalid")
@@ -292,7 +322,8 @@ def validate_plan_connection(connection: sqlite3.Connection) -> list[list]:
 
 
 def publish_owner_plan(data_dir: Path, project_id: str, title: object, nodes: object, *,
-                       expected_project_revision: int, expected_plan_revision: int) -> dict:
+                       expected_project_revision: int, expected_plan_revision: int,
+                       policy: object | None = None) -> dict:
     """Publish one owner plan version after exact current authority checks."""
     from agent_registry import AgentRegistryError, _canonical_agent_records
     from project_context import validate_project_context_connection
@@ -302,6 +333,7 @@ def publish_owner_plan(data_dir: Path, project_id: str, title: object, nodes: ob
             or type(expected_plan_revision) is not int or not 0 <= expected_plan_revision <= MAX_SCOPE_VERSIONS):
         _fail("request_invalid")
     requested = normalize_owner_plan(title, nodes)
+    requested_policy = _policy(policy, requested["nodes"], stored=False) if policy is not None else None
     root = Path(data_dir)
     with private_state_lock(root):
         with _open_repository_database(root) as (connection, guard):
@@ -341,7 +373,8 @@ def publish_owner_plan(data_dir: Path, project_id: str, title: object, nodes: ob
                     _fail("agent_unavailable")
                 agents = {record.agent.id: record for record in records}
                 stored = []
-                for node in requested["nodes"]:
+                public_briefs = []
+                for index, node in enumerate(requested["nodes"]):
                     task_id, agent_id, input_id = node["task_id"], node["agent_id"], node["input_version_id"]
                     task = TaskRepository(connection).get(task_id)
                     if (task.revision != node["expected_task_revision"] or task.document.get("project_id") != project_id
@@ -380,6 +413,18 @@ def publish_owner_plan(data_dir: Path, project_id: str, title: object, nodes: ob
                     digest = hashlib.sha256(_canonical([list(binding), record.revision, sorted(record.agent.capabilities)])).hexdigest() if binding else None
                     if digest != input_row[11]:
                         _fail("agent_changed")
+                    if requested_policy is not None and "read_public_web" in requested_policy["operations"][index]:
+                        brief = connection.execute(
+                            "SELECT instructions FROM mentat_task_input_versions WHERE id=?", (input_id,),
+                        ).fetchone()
+                        selected_file = connection.execute(
+                            "SELECT 1 FROM mentat_task_input_files WHERE input_id=? LIMIT 1", (input_id,),
+                        ).fetchone()
+                        if (brief is None or not isinstance(brief[0], str) or not brief[0].strip()
+                                or selected_file is not None):
+                            _fail("input_changed")
+                        public_briefs.append({"node": index, "digest": hashlib.sha256(
+                            brief[0].encode("utf-8")).hexdigest()})
                     stored.append({"task_id": task_id, "task_incarnation": identity,
                                    "task_revision": task.revision, "agent_id": agent_id,
                                    "agent_incarnation": agent_identity, "input_version_id": input_id,
@@ -388,8 +433,11 @@ def publish_owner_plan(data_dir: Path, project_id: str, title: object, nodes: ob
                                    "max_wall_seconds": node["max_wall_seconds"],
                                    "max_work_units": node["max_work_units"]})
                 content = {"title": requested["title"], "nodes": stored}
+                if requested_policy is not None:
+                    content["policy"] = _policy({**requested_policy, "public_briefs": public_briefs},
+                                                stored, stored=True)
                 encoded = _canonical(content)
-                if len(encoded) > MAX_CONTENT_BYTES:
+                if len(encoded) > (MAX_CONTENT_BYTES if requested_policy is None else MAX_POLICY_CONTENT_BYTES):
                     _fail("capacity")
                 now = time.time()
                 scope_id = existing[0] if existing else f"plan_scope_{uuid.uuid4().hex}"
@@ -401,7 +449,8 @@ def publish_owner_plan(data_dir: Path, project_id: str, title: object, nodes: ob
                     connection.execute("INSERT INTO mentat_plan_scopes VALUES(?,?,?,?,?,?,NULL)",
                                        (scope_id, project_id, incarnation, context_id, revision, now))
                 connection.execute("INSERT INTO mentat_plan_versions VALUES(?,?,?,?,?,?,?,?,?)",
-                                   (version_id, scope_id, revision, project.revision, 1, encoded.decode("utf-8"),
+                                   (version_id, scope_id, revision, project.revision,
+                                    1 if requested_policy is None else 2, encoded.decode("utf-8"),
                                     hashlib.sha256(encoded).hexdigest(), "owner_edit", now))
                 connection.executemany("INSERT INTO mentat_plan_input_refs VALUES(?,?)",
                                        [(version_id, node["input_version_id"]) for node in stored])
@@ -442,6 +491,9 @@ def read_project_plan(data_dir: Path, project_id: str) -> dict:
                         (scope[0], scope[1]),
                     ).fetchone()
                     current = json.loads(current_row[0])
+                    public_policy = _public_policy(current)
+                    if public_policy is not None:
+                        current["policy"] = public_policy
                     dependency_comparison = _dependency_comparison(connection, current)
                     stale_reasons = _stale_reasons(connection, project_id, project.document["status"],
                                                    project.revision, current_row[1],
@@ -486,6 +538,7 @@ def read_plan_version(data_dir: Path, project_id: str, version_id: str) -> dict:
                 if row is None:
                     _fail("version_unavailable")
                 content = json.loads(row[2])
+                public_policy = _public_policy(content)
                 nodes = []
                 for node in content["nodes"]:
                     task = connection.execute(
@@ -505,8 +558,11 @@ def read_plan_version(data_dir: Path, project_id: str, version_id: str) -> dict:
                                      if key not in {"task_incarnation", "agent_incarnation"}},
                                   "task_state": task_state, "task_title": task[0] if task_state == "current" else None,
                                   "agent_state": agent_state, "agent_name": agent[0] if agent_state == "current" else None})
-                return {"id": version_id, "project_id": project_id,
+                result = {"id": version_id, "project_id": project_id,
                         "revision": row[0], "project_revision": row[1],
                         "title": content["title"], "nodes": nodes,
                         "created_at": row[3], "current": row[0] == row[4],
                         "status": "unapproved"}
+                if public_policy is not None:
+                    result["policy"] = public_policy
+                return result

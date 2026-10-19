@@ -4,11 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import type { PublicAgent } from "@/lib/bridge-agents";
 import { readPlanningTaskDependencies, readPlanningTasks, type PublicPlanningTaskListItem } from "@/lib/public-planning";
 import { readTaskInputs } from "@/lib/public-task-inputs";
-import { type PlanDraftNode, type PlanProject, type PlanVersion, projectPlanRequest } from "@/lib/project-plan-contract";
+import { type PlanDraftNode, type PlanPolicy, type PlanProject, type PlanVersion, projectPlanRequest } from "@/lib/project-plan-contract";
 import { projectPlans, PublicProjectPlanError } from "@/lib/public-project-plans";
+import { ProjectPlanPolicyEditor } from "./project-plan-policy-editor";
+import { initialPolicy, reconcilePolicy } from "./project-plan-policy-draft";
 
-export type PlanDraft = { projectRevision: number; planRevision: number; title: string; nodes: PlanDraftNode[]; unresolved: boolean };
-type Prepared = { taskId: string; title: string; revision: number; agentId: string; inputId: string; exactGrant: boolean };
+export type PlanDraft = { projectRevision: number; planRevision: number; title: string; nodes: PlanDraftNode[]; policy: PlanPolicy; unresolved: boolean };
+type Prepared = { taskId: string; title: string; revision: number; agentId: string; inputId: string; exactGrant: boolean; fileCount: number; hasBrief: boolean };
 type Comparison = { fingerprint: string; missing: Array<[string, string]>; additional: Array<[string, string]>; acknowledged: boolean };
 type DraftChange = (update: (current: PlanDraft | null) => PlanDraft | null) => void;
 
@@ -18,11 +20,19 @@ function errorMessage(error: unknown): string {
   return "Mentat could not verify this plan. Your draft is preserved; refresh before deciding what to do next.";
 }
 function savedToDraft(version: PlanProject["current"], projectRevision: number, planRevision: number): PlanDraft {
+  const nodes = version?.nodes.map(({ task_revision, ...node }) => ({ ...node, expected_task_revision: task_revision })) ?? [];
   return { projectRevision, planRevision, title: version?.title ?? "", unresolved: false,
-    nodes: version?.nodes.map(({ task_revision, ...node }) => ({ ...node, expected_task_revision: task_revision })) ?? [] };
+    nodes, policy: version?.policy ?? initialPolicy(nodes) };
+}
+function stableJson(value: unknown): string {
+  const ordered = (item: unknown): unknown => Array.isArray(item) ? item.map(ordered)
+    : item && typeof item === "object" ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, part]) => [key, ordered(part)])) : item;
+  return JSON.stringify(ordered(value)) ?? "";
 }
 function samePublished(draft: PlanDraft, version: PlanVersion): boolean {
-  if (draft.title.trim() !== version.title || draft.nodes.length !== version.nodes.length) return false;
+  if (draft.title.trim() !== version.title || draft.nodes.length !== version.nodes.length
+    || stableJson(draft.policy) !== stableJson(version.policy)) return false;
   return draft.nodes.every((node, index) => {
     const saved = version.nodes[index];
     return saved.task_id === node.task_id && saved.task_revision === node.expected_task_revision
@@ -67,9 +77,14 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
     return node?.task_state === "current" ? node.task_title : `${taskId} (${node?.task_state ?? "unavailable"})`;
   };
   const agentName = (agentId: string) => agents.find((agent) => agent.id === agentId)?.name ?? `${agentId} (unavailable)`;
-  const change = (update: (current: PlanDraft) => PlanDraft) => {
-    onDraftChange((current) => current ? update(current) : current);
-    setComparison(null); setPendingEdit(null);
+  const change = (update: (current: PlanDraft) => PlanDraft, graphChange = true) => {
+    onDraftChange((current) => {
+      if (!current) return current;
+      const next = update(current);
+      return next.nodes === current.nodes ? next : { ...next, policy: reconcilePolicy(next.policy, current.nodes, next.nodes) };
+    });
+    if (graphChange) setComparison(null);
+    setPendingEdit(null);
   };
   async function perform(action: () => Promise<void>) {
     if (locked.current) return;
@@ -126,7 +141,8 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
       || version.agent_id !== input.task.assigned_agent_id
       || !input.eligible_contexts.some((item) => item.context.id === version.context_id && item.grant_revision === version.grant_revision)) return null;
     return { taskId, title: input.task.title, revision: input.task.revision,
-      agentId: input.task.assigned_agent_id, inputId: version.id, exactGrant: true };
+      agentId: input.task.assigned_agent_id, inputId: version.id, exactGrant: true,
+      fileCount: version.files.length, hasBrief: !!version.instructions.trim() };
   }
   async function addTask(taskId: string) {
     if (!draft || draft.nodes.length >= 32 || draft.nodes.some((item) => item.task_id === taskId)) return;
@@ -158,9 +174,11 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
   function stageRemoval(index: number) {
     if (!draft) return;
     const removed = draft.nodes[index], dependent = draft.nodes.filter((node) => node.after.includes(removed.task_id)).length;
+    const outputs = draft.policy.outputs.filter((output) => output.producer === index).length;
+    const handoffs = draft.policy.transfers.filter((transfer) => transfer.producer === index || transfer.consumer === index).length;
     const next = compactSegments(draft.nodes.filter((_, position) => position !== index)
       .map((node) => ({ ...node, after: node.after.filter((id) => id !== removed.task_id) })));
-    setPendingEdit({ nodes: next, description: `Remove ${titleFor(removed.task_id)}; remove ${dependent} prerequisite link${dependent === 1 ? "" : "s"} and compact checkpoint numbers.` });
+    setPendingEdit({ nodes: next, description: `Remove ${titleFor(removed.task_id)}; remove ${dependent} prerequisite link${dependent === 1 ? "" : "s"}, ${outputs} output slot${outputs === 1 ? "" : "s"}, and ${handoffs} handoff${handoffs === 1 ? "" : "s"}; compact checkpoint numbers.` });
   }
   function stageMove(index: number, delta: -1 | 1) {
     if (!draft) return;
@@ -176,6 +194,10 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
     if (add ? node.segment !== prior.segment : node.segment !== prior.segment + 1) return;
     const next = draft.nodes.map((item, position) => position < index ? item : { ...item, segment: item.segment + (add ? 1 : -1) });
     if (!graphValid(next)) return;
+    if (reconcilePolicy(draft.policy, draft.nodes, next).transfers.length < draft.policy.transfers.length) {
+      setNotice("This checkpoint protects a planned handoff. Remove that handoff explicitly before merging checkpoints.");
+      return;
+    }
     setPendingEdit({ nodes: next, description: `${add ? "Add" : "Remove"} the owner checkpoint before ${titleFor(node.task_id)}; later checkpoint numbers shift.` });
   }
   async function compareDependencies() {
@@ -200,7 +222,7 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
     let result;
     try { result = await projectPlans("publish", { project_id: projectId,
       expected_project_revision: submitted.projectRevision, expected_plan_revision: submitted.planRevision,
-      title: submitted.title, nodes: submitted.nodes }); }
+      title: submitted.title, nodes: submitted.nodes, policy: submitted.policy }); }
     catch (error) {
       if (!(error instanceof PublicProjectPlanError) || ["unavailable", "invalid_response"].includes(error.code))
         onDraftChange((current) => current === submitted ? { ...current, unresolved: true } : current);
@@ -214,12 +236,14 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
   }
   const exact = draft?.nodes.every((node) => { const item = prepared[node.task_id]; return item?.exactGrant && item.revision === node.expected_task_revision
     && item.agentId === node.agent_id && item.inputId === node.input_version_id; }) ?? false;
+  const publicBriefsReady = draft?.nodes.every((node, index) => !draft.policy.operations[index]?.includes("read_public_web")
+    || prepared[node.task_id]?.fileCount === 0 && prepared[node.task_id]?.hasBrief) ?? false;
   let canSave = !!draft && !!view && view.project.status === "active" && !draft.unresolved && !pendingEdit && !busy
-    && draft.projectRevision === view.project.revision && draft.planRevision === view.plan_revision && exact
+    && draft.projectRevision === view.project.revision && draft.planRevision === view.plan_revision && exact && publicBriefsReady
     && !!comparison && comparison.fingerprint === JSON.stringify(draft.nodes)
     && (!comparison.missing.length && !comparison.additional.length || comparison.acknowledged);
   if (canSave) { try { projectPlanRequest("publish", { project_id: projectId, expected_project_revision: draft!.projectRevision,
-    expected_plan_revision: draft!.planRevision, title: draft!.title, nodes: draft!.nodes }); } catch { canSave = false; } }
+    expected_plan_revision: draft!.planRevision, title: draft!.title, nodes: draft!.nodes, policy: draft!.policy }); } catch { canSave = false; } }
   const shown = candidates.filter((task) => !filter || task.title.toLowerCase().includes(filter.toLowerCase()) || task.id.toLowerCase().includes(filter.toLowerCase()));
 
   return <section aria-label="Project plan" className="project-context-panel">
@@ -229,10 +253,10 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
         {view.stale_reasons.length ? <p>Review needed: {view.stale_reasons.map((reason) => reason.replaceAll("_", " ")).join(", ")}.</p> : null}
         {view.dependency_comparison.missing_count || view.dependency_comparison.additional_count ? <p>Saved plan differs from Task prerequisites: {view.dependency_comparison.missing_count} missing, {view.dependency_comparison.additional_count} additional.</p> : null}
         {view.versions.length ? <ul>{view.versions.map((item) => <li key={item.id}><button disabled={busy} onClick={() => void perform(async () => { const version = await projectPlans("version", { project_id: projectId, version_id: item.id }); if (mounted.current) setHistory(version); })} type="button">View version {item.revision}</button> · {item.title}</li>)}</ul> : null}
-        {history ? <section aria-label="Saved plan version"><h4>{history.title} · version {history.revision}{history.current ? " · current" : ""}</h4><ol>{history.nodes.map((node) => <li key={node.task_id}>{node.task_state === "current" ? node.task_title : `${node.task_id} (${node.task_state})`} ({node.agent_state === "current" ? node.agent_name : `${node.agent_id} (${node.agent_state})`}) · input {node.input_version_id} · checkpoint {node.segment}{node.after.length ? ` · after ${node.after.map(historicalTitleFor).join(", ")}` : ""}</li>)}</ol><p>Unapproved history; this version cannot start work.</p></section> : null}
+        {history ? <section aria-label="Saved plan version"><h4>{history.title} · version {history.revision}{history.current ? " · current" : ""}</h4><ol>{history.nodes.map((node) => <li key={node.task_id}>{node.task_state === "current" ? node.task_title : `${node.task_id} (${node.task_state})`} ({node.agent_state === "current" ? node.agent_name : `${node.agent_id} (${node.agent_state})`}) · input {node.input_version_id} · checkpoint {node.segment}{node.after.length ? ` · after ${node.after.map(historicalTitleFor).join(", ")}` : ""}</li>)}</ol>{history.policy ? <p>Requested operations: {history.policy.operations.map((items, index) => `${history.nodes[index].task_id}: ${items.join(", ")}`).join("; ")}. Outputs: {history.policy.outputs.map((item) => item.slot).join(", ") || "none"}. Handoffs: {history.policy.transfers.length}.</p> : <p>Format-1 history has no execution policy.</p>}<p>Unapproved history; this version cannot start work.</p></section> : null}
         {!draft && view.project.status === "active" ? <button disabled={busy} onClick={beginEdit} type="button">{view.current ? "Edit plan" : "Create plan"}</button> : null}
       </> : !busy ? <p>Plan authority is unavailable. Refresh to try again.</p> : null}
-      {draft ? <section aria-label="Plan draft" className="project-plan-draft"><p>This is a local draft. Version-1 plans cannot be approved for execution.</p>{draft.unresolved ? <p>A save may have reached Mentat. Refresh the saved plan and choose explicitly before retrying.</p> : null}
+      {draft ? <section aria-label="Plan draft" className="project-plan-draft"><p>This is a local draft. A saved policy is still unapproved and cannot start Agents.</p>{draft.unresolved ? <p>A save may have reached Mentat. Refresh the saved plan and choose explicitly before retrying.</p> : null}
         <label>Plan title<input disabled={busy} maxLength={120} onChange={(event) => change((current) => ({ ...current, title: event.target.value }))} value={draft.title} /></label>
         <label>Find a Task in loaded pages<input maxLength={160} onChange={(event) => setFilter(event.target.value)} type="search" value={filter} /></label>
         <ul aria-label="Plan Task candidates">{shown.filter((task) => !draft.nodes.some((node) => node.task_id === task.id)).map((task) => <li key={task.id}><span>{task.title}</span><button disabled={busy || draft.nodes.length >= 32} onClick={() => void perform(() => addTask(task.id))} type="button">Add {task.title}</button></li>)}</ul>
@@ -240,13 +264,18 @@ export function ProjectPlanEditor({ projectId, agents, draft, onDraftChange, onO
         <ol aria-label="Planned Tasks">{draft.nodes.map((node, index) => { const item = prepared[node.task_id]; const matches = item?.revision === node.expected_task_revision && item.agentId === node.agent_id && item.inputId === node.input_version_id;
           const earlier = draft.nodes.slice(0, index);
           return <li key={node.task_id} className="project-plan-node"><h4>{titleFor(node.task_id)}</h4><p>Agent: {agentName(node.agent_id)} · Task revision {node.expected_task_revision} · saved input {node.input_version_id}</p><p>Checkpoint segment {node.segment}{index && node.segment > draft.nodes[index - 1].segment ? " · owner review before this Task" : ""}</p><p>{item === undefined ? "Task preparation has not been checked." : matches ? "Current Task inputs match this plan." : "Task assignment, input or grant changed. Use the current preparation explicitly."}</p><div className="project-context-actions"><button disabled={busy} onClick={() => void perform(async () => { const checked = await taskPreparation(node.task_id); if (mounted.current) setPrepared((current) => ({ ...current, [node.task_id]: checked })); })} type="button">Check Task inputs</button>{item && !matches ? <button disabled={busy} onClick={() => applyCurrentInput(node.task_id)} type="button">Use current Task inputs</button> : null}<button disabled={busy} onClick={() => onOpenTask(node.task_id)} type="button">Open Task</button></div>
-            <fieldset><legend>After these planned Tasks</legend>{earlier.map((prior) => <label key={prior.task_id}><input checked={node.after.includes(prior.task_id)} disabled={busy} onChange={(event) => change((current) => ({ ...current, nodes: current.nodes.map((entry) => entry.task_id === node.task_id ? { ...entry, after: event.target.checked ? [...entry.after, prior.task_id] : entry.after.filter((id) => id !== prior.task_id) } : entry) }))} type="checkbox" />{titleFor(prior.task_id)}</label>)}</fieldset>
+            <fieldset><legend>After these planned Tasks</legend>{earlier.map((prior) => {
+              const producer = draft.nodes.findIndex((item) => item.task_id === prior.task_id);
+              const protectedEdge = draft.policy.transfers.some((transfer) => transfer.producer === producer && transfer.consumer === index);
+              return <label key={prior.task_id}><input checked={node.after.includes(prior.task_id)} disabled={busy || protectedEdge} onChange={(event) => change((current) => ({ ...current, nodes: current.nodes.map((entry) => entry.task_id === node.task_id ? { ...entry, after: event.target.checked ? [...entry.after, prior.task_id] : entry.after.filter((id) => id !== prior.task_id) } : entry) }))} type="checkbox" />{titleFor(prior.task_id)}{protectedEdge ? " · remove handoff first" : ""}</label>;
+            })}</fieldset>
             <div className="project-plan-limits"><label>Attempts<input disabled={busy} min={1} max={3} onChange={(event) => change((current) => ({ ...current, nodes: current.nodes.map((entry) => entry.task_id === node.task_id ? { ...entry, max_attempts: Number(event.target.value) } : entry) }))} type="number" value={node.max_attempts} /></label><label>Wall time (seconds)<input disabled={busy} min={60} max={86400} onChange={(event) => change((current) => ({ ...current, nodes: current.nodes.map((entry) => entry.task_id === node.task_id ? { ...entry, max_wall_seconds: Number(event.target.value) } : entry) }))} type="number" value={node.max_wall_seconds} /></label><label>Requested work units<input disabled={busy} min={1} max={1000} onChange={(event) => change((current) => ({ ...current, nodes: current.nodes.map((entry) => entry.task_id === node.task_id ? { ...entry, max_work_units: Number(event.target.value) } : entry) }))} type="number" value={node.max_work_units} /></label></div>
             <div className="project-context-actions"><button disabled={busy || index === 0 || !graphValid(draft.nodes.map((entry, position) => position === index - 1 ? draft.nodes[index] : position === index ? draft.nodes[index - 1] : entry))} onClick={() => stageMove(index, -1)} type="button">Move up</button><button disabled={busy || index === draft.nodes.length - 1 || !graphValid(draft.nodes.map((entry, position) => position === index + 1 ? draft.nodes[index] : position === index ? draft.nodes[index + 1] : entry))} onClick={() => stageMove(index, 1)} type="button">Move down</button><button disabled={busy || index === 0 || node.segment !== draft.nodes[index - 1].segment} onClick={() => stageCheckpoint(index, true)} type="button">Add checkpoint before</button><button disabled={busy || index === 0 || node.segment !== draft.nodes[index - 1].segment + 1} onClick={() => stageCheckpoint(index, false)} type="button">Merge checkpoint</button><button disabled={busy} onClick={() => stageRemoval(index)} type="button">Remove Task</button></div>
           </li>; })}</ol>
         {pendingEdit ? <div className="project-context-confirmation"><p>{pendingEdit.description}</p><div className="project-context-actions"><button disabled={busy} onClick={() => { change((current) => ({ ...current, nodes: pendingEdit.nodes })); setPendingEdit(null); }} type="button">Apply plan edit</button><button disabled={busy} onClick={() => setPendingEdit(null)} type="button">Cancel edit</button></div></div> : null}
         <div className="project-context-actions"><button disabled={busy || !draft.nodes.length || !!pendingEdit} onClick={() => void perform(checkTasks)} type="button">Check all Task inputs</button><button disabled={busy || !draft.nodes.length || !exact || !!pendingEdit} onClick={() => void perform(compareDependencies)} type="button">Review Task dependencies</button></div>
         {comparison && comparison.fingerprint === JSON.stringify(draft.nodes) ? <section aria-label="Dependency comparison"><p>Canonical Task prerequisites missing from this plan: {comparison.missing.length}. Extra plan sequencing links: {comparison.additional.length}. Saving does not edit Task prerequisites.</p>{comparison.missing.length ? <ul>{comparison.missing.map(([taskId, predecessor]) => <li key={`${taskId}:${predecessor}`}>{titleFor(taskId)} needs {titleFor(predecessor)}</li>)}</ul> : null}{comparison.additional.length ? <ul>{comparison.additional.map(([taskId, predecessor]) => <li key={`${taskId}:${predecessor}`}>{titleFor(taskId)} follows {titleFor(predecessor)} only in this plan</li>)}</ul> : null}{comparison.missing.length || comparison.additional.length ? <button disabled={busy || comparison.acknowledged} onClick={() => setComparison((current) => current ? { ...current, acknowledged: true } : current)} type="button">I reviewed these differences</button> : <p>Plan and canonical Task prerequisites match.</p>}</section> : null}
+        <ProjectPlanPolicyEditor disabled={busy || draft.unresolved} nodes={draft.nodes} onChange={(policy) => change((current) => ({ ...current, policy }), false)} policy={draft.policy} prepared={prepared} />
         <div className="project-context-actions"><button disabled={!canSave || busy} onClick={() => void perform(save)} type="button">Save plan version</button><button disabled={busy} onClick={() => { onDraftChange(() => null); setComparison(null); setPrepared({}); setReconciledRevision(null); }} type="button">Discard draft</button>
           {draft.unresolved && reconciledRevision !== null && view && view.plan_revision > draft.planRevision && history?.id === view.versions[0]?.id ? <button disabled={busy} onClick={() => { onDraftChange(() => null); setComparison(null); setReconciledRevision(null); }} type="button">Use reviewed saved plan</button> : null}
           {draft.unresolved && reconciledRevision === draft.planRevision && view?.project.revision === draft.projectRevision ? <button disabled={busy} onClick={() => { onDraftChange((current) => current ? { ...current, unresolved: false } : current); setPrepared({}); setComparison(null); setReconciledRevision(null); }} type="button">Retry after review</button> : null}

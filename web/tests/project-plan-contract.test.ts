@@ -45,3 +45,19 @@ test("dependency comparison is bounded in both directions", () => {
   assert.equal(projectPlanResult("project", project, { project_id: projectId }).dependency_comparison.missing_count, 1);
   assert.throws(() => projectPlanResult("project", { ...project, dependency_comparison: { ...project.dependency_comparison, extra_private: true } }, { project_id: projectId }), ProjectPlanContractError);
 });
+
+test("policy readback accepts valid intermediate names without prototype confusion", () => {
+  const policy = { operations: [["read_selected_inputs", "write_registered_artifacts"]],
+    outputs: [{ slot: "constructor", kind: "intermediate", type: "research", producer: 0,
+      max_bytes: 100_000, owner_review: true }], transfers: [],
+    ceilings: { max_attempts: 1, max_wall_seconds: 900, max_work_units: 100 } };
+  assert.deepEqual(projectPlanRequest("publish", { ...publish, policy }).policy, policy);
+  const project = { project: { id: projectId, name: "Garage", revision: 1, status: "active" }, plan_revision: 1,
+    current: { title: publish.title, nodes: [saved], policy },
+    versions: [{ id: versionId, revision: 1, title: publish.title, node_count: 1, created_at: 1790035200 }],
+    stale_reasons: [], dependency_comparison: comparison, execution_available: false };
+  assert.deepEqual(projectPlanResult("project", project, { project_id: projectId }).current?.policy, policy);
+  assert.throws(() => projectPlanRequest("publish", { ...publish, policy: {
+    ...policy, operations: [["ask_owner", "read_public_web", "write_registered_artifacts"]],
+  } }), ProjectPlanContractError);
+});

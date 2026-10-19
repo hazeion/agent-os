@@ -35,7 +35,7 @@ The old Beta/MDA foundation is merged through
 [PR #233](https://github.com/hazeion/agent-os/pull/233). The newer owner
 workflow is a stack of **full, open PRs** starting at
 [PR #243](https://github.com/hazeion/agent-os/pull/243) and currently ending
-at [PR #281](https://github.com/hazeion/agent-os/pull/281). The PRs being open
+at [PR #285](https://github.com/hazeion/agent-os/pull/285). The PRs being open
 is not merged-product or issue-close evidence. Hosted CI and ordinary review
 remain gates. [PR #276](https://github.com/hazeion/agent-os/pull/276) is a
 separate Windows CI-shard correction based on the results-review UI branch;
@@ -74,10 +74,14 @@ integrate it deliberately when advancing that part of the stack.
 - [Approved plans and handoffs](https://github.com/hazeion/agent-os/issues/239):
   [PR #273](https://github.com/hazeion/agent-os/pull/273) stores owner-edited
   immutable plan versions and [PR #274](https://github.com/hazeion/agent-os/pull/274)
-  provides the owner editor. Version-1 plans lack immutable allowed-operation
-  policy and cannot receive execution approval. Agent-authored proposals,
+  provides the initial owner editor. The [reviewed policy design](https://github.com/hazeion/agent-os/pull/283),
+  [schema-37 storage](https://github.com/hazeion/agent-os/pull/284), and
+  [format-2 owner editor](https://github.com/hazeion/agent-os/pull/285)
+  add immutable requested operations, output slots, scoped planned handoffs,
+  and retry ceilings. Version-1 plans remain ineligible for execution approval;
+  saving format 2 is still preparation only. Agent-authored proposals,
   qualified adapter enforcement, exact approval, budget debit, checkpoint
-  admission, and scoped handoffs are still absent. The
+  admission, and verified transfer receipts are still absent. The
   [runtime candidate research](https://github.com/hazeion/agent-os/issues/237)
   is resolved; real Linux runtime qualification is not.
 - [Project review and owner Inbox](https://github.com/hazeion/agent-os/issues/240):

@@ -40,6 +40,23 @@ class ProjectPlanCapabilityTests(unittest.TestCase):
         self.assertEqual(historical["data"]["nodes"][0]["task_id"], "task_research")
         self.assertNotIn("incarnation", json.dumps(historical))
 
+    def test_policy_publish_has_bounded_safe_readback_without_execution(self):
+        policy = {"operations": [["read_selected_inputs", "write_registered_artifacts"]],
+                  "outputs": [{"slot": "products", "kind": "final", "type": "document",
+                               "producer": 0, "max_bytes": 100_000, "owner_review": True}],
+                  "transfers": [],
+                  "ceilings": {"max_attempts": 1, "max_wall_seconds": 900, "max_work_units": 100}}
+        saved, status = dispatch_project_plans(self.root, "publish", {**self.body(), "policy": policy})
+        self.assertEqual(status, 200)
+        current, status = dispatch_project_plans(self.root, "project", {"project_id": "project_mentat"})
+        self.assertEqual((status, current["data"]["current"]["policy"]), (200, policy))
+        history, status = dispatch_project_plans(self.root, "version", {
+            "project_id": "project_mentat", "version_id": saved["data"]["id"],
+        })
+        self.assertEqual((status, history["data"]["policy"]), (200, policy))
+        self.assertNotIn("public_briefs", json.dumps(current))
+        self.assertNotIn("incarnation", json.dumps(history))
+
     def test_widened_malformed_and_stale_requests_fail_closed(self):
         for operation, body in (
             ("shell", {}),

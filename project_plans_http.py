@@ -8,6 +8,7 @@ import sqlite3
 
 from agent_registry import AgentRegistryError
 from project_context import ProjectContextError
+from project_plan_policy import PlanPolicyError, normalize_policy
 from project_plans import ProjectPlanError, normalize_owner_plan, publish_owner_plan, read_plan_version, read_project_plan
 from project_repository import ProjectRepositoryError
 from task_repository import TaskRepositoryError
@@ -34,7 +35,8 @@ def _failure(code: str, status: int) -> tuple[dict, int]:
 
 def dispatch_project_plans(data_dir: Path, operation: str, body: object) -> tuple[dict, int]:
     if (operation not in READ_OPERATIONS | WRITE_OPERATIONS or not isinstance(body, dict)
-            or set(body) != _FIELDS[operation]):
+            or set(body) not in ((_FIELDS["publish"], _FIELDS["publish"] | {"policy"})
+                if operation == "publish" else (_FIELDS[operation],))):
         return _failure("invalid", 400)
     project_id = body["project_id"]
     if not isinstance(project_id, str) or _PROJECT.fullmatch(project_id) is None:
@@ -46,8 +48,10 @@ def dispatch_project_plans(data_dir: Path, operation: str, body: object) -> tupl
                 or type(body["expected_plan_revision"]) is not int or not 0 <= body["expected_plan_revision"] <= 32):
             return _failure("invalid", 400)
         try:
-            normalize_owner_plan(body["title"], body["nodes"])
-        except ProjectPlanError as exc:
+            normalized = normalize_owner_plan(body["title"], body["nodes"])
+            if "policy" in body:
+                normalize_policy(body["policy"], normalized["nodes"], stored=False)
+        except (ProjectPlanError, PlanPolicyError) as exc:
             return _failure("capacity" if str(exc) == "project_plan.capacity" else "invalid", 400)
     try:
         if operation == "project":
@@ -59,6 +63,7 @@ def dispatch_project_plans(data_dir: Path, operation: str, body: object) -> tupl
                 data_dir, project_id, body["title"], body["nodes"],
                 expected_project_revision=body["expected_project_revision"],
                 expected_plan_revision=body["expected_plan_revision"],
+                policy=body.get("policy"),
             )
         return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
                 "status": "ready", "data": result}, 200

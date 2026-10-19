@@ -1070,9 +1070,18 @@ make a version-1 plan eligible for approval.
 Schema 37 widens only the immutable plan-version storage constraint for a later
 policy-bearing format 2. Its exact schema-36 migration retains every format-1
 row, digest and input reference, and rejects drift or insufficient temporary
-disk headroom before the shadow-table copy. Format-2 publication remains
-unavailable until semantic validation, private-backup accounting and the owner
-editor land together. This storage migration grants no approval or execution.
+disk headroom before the shadow-table copy. Format-2 publication requires
+semantic validation, private-backup accounting and the owner editor together.
+The format-2 owner editor publishes immutable
+requested operations, typed final and intermediate output slots, direct
+dependency-bound handoffs, and whole-plan retry limits. A public-web node
+binds one exact fileless Task-input instruction digest as its reviewed public
+brief; it cannot request selected private files or an owner answer. Its outputs
+require owner review and a later checkpoint before private synthesis can use
+their exact registered versions. Readback omits the private brief digest.
+Format-1 plans remain permanently ineligible for execution approval. Format-2
+publication is still preparation: no saved policy, output slot or handoff
+dispatches work, grants runtime tools, or approves a checkpoint.
 
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision

@@ -946,6 +946,23 @@ button {
 .project-plan-node fieldset label { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .project-plan-node fieldset input[type="checkbox"] { width: auto; flex: 0 0 auto; }
 .project-plan-limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; min-width: 0; }
+.project-plan-policy { display: grid; min-width: 0; gap: 12px; scroll-margin-top: 96px; }
+.project-plan-policy > h4 { margin: 0; color: var(--text-primary); }
+.project-plan-policy > ol, .project-plan-policy > ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.project-plan-policy > ol > li, .project-plan-policy > ul > li { display: grid; min-width: 0; gap: 8px; align-items: stretch; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--panel-raised); overflow-wrap: anywhere; }
+.project-plan-policy > ol > li strong { color: var(--text-primary); }
+.project-plan-policy > ul > li { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.project-plan-policy > ul.project-plan-transfers > li { grid-template-columns: minmax(0, 1fr); }
+.project-plan-policy input[type="number"] { padding: 8px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+.project-plan-policy fieldset { display: grid; gap: 4px; min-width: 0; }
+.project-context-body .project-plan-policy fieldset label,
+.project-context-body .project-plan-policy label:has(input[type="checkbox"]) { display: flex; align-items: center; gap: 8px; }
+.project-plan-policy input[type="checkbox"] { width: auto; flex: 0 0 auto; }
+.project-plan-policy > ul > li > button { justify-self: end; }
+@media (max-width: 760px) {
+  .project-plan-policy fieldset label { min-height: 44px; }
+  .project-plan-policy input[type="checkbox"] { width: 16px; height: 16px; }
+}
 .project-context-brief { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
 .project-context-confirmation { display: grid; gap: 10px; margin: 10px 0; padding: 10px; border: 1px solid var(--border-subtle); }
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
