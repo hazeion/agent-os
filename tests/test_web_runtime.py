@@ -1,19 +1,114 @@
 from __future__ import annotations
 
 from io import BytesIO
+import errno
 import json
 import os
 from pathlib import Path
 import sys
+import socket
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from mentat import web_runtime
 from mentat import local_bridge
 
 
 class WebRuntimeTests(unittest.TestCase):
+    def test_port_probe_uses_only_posix_address_reuse_before_bind(self):
+        candidate = MagicMock()
+        candidate.__enter__.return_value = candidate
+        with patch.object(web_runtime.os, "name", "posix"), patch.object(
+            web_runtime.socket, "socket", return_value=candidate
+        ) as construct:
+            self.assertTrue(web_runtime.gateway_port_is_available(8888))
+        construct.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
+        self.assertEqual(candidate.method_calls, [
+            call.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1),
+            call.bind(("127.0.0.1", 8888)),
+        ])
+        candidate.__exit__.assert_called_once()
+
+    def test_windows_port_probe_retains_default_bind_without_posix_reuse(self):
+        candidate = MagicMock()
+        candidate.__enter__.return_value = candidate
+        with patch.object(web_runtime.os, "name", "nt"), patch.object(
+            web_runtime.socket, "socket", return_value=candidate
+        ) as construct:
+            self.assertTrue(web_runtime.gateway_port_is_available(8888, "::1"))
+        construct.assert_called_once_with(socket.AF_INET6, socket.SOCK_STREAM)
+        self.assertEqual(candidate.method_calls, [
+            call.bind(("::1", 8888)),
+        ])
+        candidate.__exit__.assert_called_once()
+
+    def test_port_probe_option_and_bind_failures_close_and_refuse(self):
+        for platform in ("posix", "nt"):
+            for operation in (("setsockopt", "bind") if platform == "posix" else ("bind",)):
+                candidate = MagicMock()
+                candidate.__enter__.return_value = candidate
+                getattr(candidate, operation).side_effect = OSError("owned fixture failure")
+                with self.subTest(platform=platform, operation=operation), patch.object(
+                    web_runtime.os, "name", platform
+                ), patch.object(
+                    web_runtime.socket, "socket", return_value=candidate
+                ):
+                    self.assertFalse(web_runtime.gateway_port_is_available(8888))
+                candidate.__exit__.assert_called_once()
+                if operation == "setsockopt":
+                    candidate.bind.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX TIME_WAIT bind semantics")
+    def test_posix_immediate_restart_accepts_time_wait_that_rejects_plain_bind(self):
+        # Active-close the accepted server side, and read both EOFs to complete
+        # the FIN exchange. No sleep, polling, reset, external port or process.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.settimeout(2)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer:
+                peer.settimeout(2)
+                peer.connect(("127.0.0.1", port))
+                accepted, _ = listener.accept()
+                with accepted:
+                    accepted.settimeout(2)
+                    accepted.shutdown(socket.SHUT_WR)
+                    self.assertEqual(peer.recv(1), b"")
+                    peer.shutdown(socket.SHUT_WR)
+                    self.assertEqual(accepted.recv(1), b"")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as plain:
+            with self.assertRaises(OSError) as raised:
+                plain.bind(("127.0.0.1", port))
+            self.assertEqual(raised.exception.errno, errno.EADDRINUSE)
+        self.assertTrue(web_runtime.gateway_port_is_available(port))
+        # A second immediate probe must remain eligible as well.
+        self.assertTrue(web_runtime.gateway_port_is_available(port))
+
+    def test_active_owned_ipv4_listener_remains_unavailable(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            if os.name == "posix":
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            self.assertFalse(web_runtime.gateway_port_is_available(listener.getsockname()[1]))
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 loopback socket support")
+    def test_active_owned_ipv6_listener_remains_unavailable(self):
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+            if os.name == "posix":
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                listener.bind(("::1", 0))
+            except OSError as error:
+                if error.errno in {errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT}:
+                    self.skipTest("IPv6 loopback unavailable")
+                raise
+            listener.listen(1)
+            self.assertFalse(web_runtime.gateway_port_is_available(listener.getsockname()[1], "::1"))
+
     def test_linux_runtime_state_records_the_node_process_identity(self):
         with TemporaryDirectory() as temporary:
             data_dir = Path(temporary)
