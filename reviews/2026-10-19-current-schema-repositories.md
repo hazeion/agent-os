@@ -107,3 +107,22 @@ skips, in3.049seconds. Run receipt preflight uses its append-tolerant
 `connect_current_readonly` owned-copy context, keeping strict archival snapshot
 validation out of live receipt checks. Final cache and domain module results await
 the coordinated private-unit and CLI dependency integration.
+
+## Actual combined graph checkpoint
+
+The private-unit checkpoint41c4305 and root startup/CLI checkpoint6c6c589 are
+normally merged, alongside the actual current kernel. The161-method owned module
+run completed in71.504seconds. All12 current cache,13 expected-schema and62 Run
+methods passed. This was not an overall pass: an exact earlier Agent rejection
+code and retired Task CLI expectations needed adaptation, and central lock
+admission surfaced an untranslated Task error. Those four targeted methods now
+pass after preserving bounded Task error translation and current refusal checks.
+The plain export lock wrapper and confirmation protocol remain unchanged.
+
+The run also exposed a real concurrency issue in current admission: closing a
+peer connection could remove transient WAL/SHM after a coherent owned snapshot
+was captured, causing a full sidecar-identity comparison to reject an otherwise
+valid concurrent Agent creation. The unchanged Agent limit test caught this.
+The core owner is repairing that boundary with dedicated snapshot lifetime
+regressions; the Agent concurrency assertions are not relaxed. A final complete
+owned-module rerun remains required after that dependency lands.

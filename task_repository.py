@@ -42,7 +42,7 @@ from mentat_db import (
     database_path,
     transaction,
 )
-from private_state import private_state_lock
+from private_state import PrivateStateError, private_state_lock
 from task_planning import (
     TASK_PLANNING_FIELDS,
     TaskPlanningError,
@@ -1550,7 +1550,7 @@ def import_tasks_from_preview(
     if preview.source is None:
         raise TaskRepositoryConflict("task_migration.preview_blocked")
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         current_source = _read_source_snapshot(
             data_root / "tasks.json",
             required_mode=required_source_mode,
@@ -1580,6 +1580,18 @@ def import_tasks_from_preview(
             return exported
 
 
+@contextmanager
+def _task_repository_state_lock(data_root: Path):
+    """Keep current kernel admission failures inside the Task error boundary."""
+    try:
+        with private_state_lock(data_root) as descriptor:
+            yield descriptor
+    except PrivateStateError as exc:
+        if isinstance(exc.__cause__, (MentatDatabaseError, OSError)):
+            raise TaskRepositoryUnavailable("task_repository.unavailable") from exc
+        raise
+
+
 def ensure_task_sqlite_authority(
     data_dir: Path,
     *,
@@ -1588,7 +1600,7 @@ def ensure_task_sqlite_authority(
     """Atomically establish SQLite as the sole Task authority exactly once."""
 
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         with _open_repository_database(data_root) as (connection, guard):
             repository = TaskRepository(connection, identity_guard=guard)
             receipt = repository.authority_receipt()
@@ -1634,7 +1646,7 @@ def read_authoritative_tasks(data_dir: Path) -> list[dict[str, Any]]:
     """Read one committed Task snapshot without consulting legacy JSON."""
 
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         with _open_repository_database(data_root) as (connection, guard):
             repository = TaskRepository(connection, identity_guard=guard)
             repository.authority_receipt(required=True)
@@ -1645,7 +1657,7 @@ def read_authoritative_task_snapshot(data_dir: Path, task_id: str) -> TaskSnapsh
     """Read one canonical Task and its exact internal revision."""
 
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         with _open_repository_database(data_root) as (connection, guard):
             repository = TaskRepository(connection, identity_guard=guard)
             repository.authority_receipt(required=True)
@@ -1659,7 +1671,7 @@ def mutate_authoritative_tasks(
     """Run one existing Task list mutator against authoritative SQLite."""
 
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         with _open_repository_database(data_root) as (connection, guard):
             return TaskRepository(
                 connection,
@@ -1677,7 +1689,7 @@ def replace_authoritative_task(
     """Apply one non-membership Task edit at its exact revision."""
 
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         with _open_repository_database(data_root) as (connection, guard):
             repository = TaskRepository(connection, identity_guard=guard)
             repository.authority_receipt(required=True)
@@ -1701,7 +1713,7 @@ def move_authoritative_task(
     if PROJECT_ID_RE.fullmatch(project_id or "") is None:
         raise TaskRepositoryValidationError("task_repository.project_id_invalid")
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         with _open_repository_database(data_root) as (connection, guard):
             with _guarded_transaction(connection, guard, immediate=True):
                 repository = TaskRepository(connection, identity_guard=guard)
@@ -1733,7 +1745,7 @@ def export_tasks(data_dir: Path, *, require_authority: bool = False) -> TaskExpo
     """Return a deterministic read-only export from an initialized repository."""
 
     data_root = Path(data_dir)
-    with private_state_lock(data_root):
+    with _task_repository_state_lock(data_root):
         destination = _inspect_destination(data_root)
         if destination.state not in {"empty", "occupied", "authoritative"}:
             raise TaskRepositoryUnavailable("task_repository.schema_unsupported")

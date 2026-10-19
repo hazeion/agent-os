@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -745,8 +745,8 @@ class TaskRepositoryTests(unittest.TestCase):
         for source in (SERVER_SOURCE, RUNTIME_CONFIG_SOURCE, CLI_SOURCE):
             self.assertNotIn("import_tasks_from_preview", source)
             self.assertNotIn("confirm-task-sqlite-migration", source)
-        self.assertIn("--preview-task-sqlite-migration", RUNTIME_CONFIG_SOURCE)
-        self.assertIn('"task-migration"', CLI_SOURCE)
+        self.assertNotIn("--preview-task-sqlite-migration", RUNTIME_CONFIG_SOURCE)
+        self.assertNotIn('"task-migration"', CLI_SOURCE)
         self.assertIn("ensure_task_sqlite_authority", SERVER_SOURCE)
 
     def test_cutover_imports_and_receipts_atomically_then_ignores_stale_source(self):
@@ -1409,19 +1409,16 @@ class TaskRepositoryTests(unittest.TestCase):
                 "task_export.verification_failed",
             )
 
-    def test_unified_cli_runs_bounded_read_only_preview(self):
+    def test_retired_task_migration_command_refuses_without_writes(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = write_tasks(root, [task("task_cli")])
-            output = io.StringIO()
-            with redirect_stdout(output):
-                exit_code = mentat_cli_main(["task-migration", "--data-dir", str(root)])
-            payload = json.loads(output.getvalue())
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(payload["source"]["task_ids"], ["task_cli"])
-            self.assertFalse(payload["writes_performed"])
-            self.assertNotIn(os.fspath(root), output.getvalue())
-            self.assertTrue(source.exists())
+            before = source.read_bytes()
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as rejected:
+                    mentat_cli_main(["task-migration", "--data-dir", str(root)])
+            self.assertEqual(rejected.exception.code, 2)
+            self.assertEqual(source.read_bytes(), before)
             self.assertFalse(os.path.lexists(database_path(root)))
 
 

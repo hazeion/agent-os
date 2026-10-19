@@ -853,7 +853,7 @@ class AgentRegistryTests(unittest.TestCase):
                 connection.close()
             with self.assertRaisesRegex(
                 AgentRegistryError,
-                "agent_registry.schema_invalid",
+                "agent_registry.unsupported",
             ):
                 self.registry(root).list_agents()
 
