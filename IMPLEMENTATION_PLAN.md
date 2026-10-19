@@ -110,6 +110,15 @@ development machine's Windows/Ubuntu WSL PATHs. This is not live qualification.
 Project execution remains
 unavailable until exact admission and runtime qualification are implemented;
 the contract is not completion evidence.
+The owner Task-input editor and retained versions are published in
+[PR 267](https://github.com/hazeion/agent-os/pull/267). Its final guard blocks
+ordinary Run once and legacy Hermes delegation from omitting saved inputs.
+The next Project-execution step is immutable Run-input receipt authority and
+retention under the existing Run/backup limits, followed by exact approval and
+reservation. The current Kanban adapter has no qualified operation binding
+prepared files, allowed tools and enforced limits; no Project execution route
+may be advertised until the actual host/runtime combination proves those
+properties. See the qualification inventory in the Task-input review.
 
 ### Implemented baseline and retained boundaries
 
