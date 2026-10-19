@@ -201,7 +201,7 @@ class CaddyProfileTests(unittest.TestCase):
             for path in (caddy, cosign, certificate, key):
                 path.write_text("fixture", encoding="utf-8")
             stream = io.StringIO()
-            with patch.object(linux_harness, "_require_linux"), patch.object(linux_harness, "verify_signed_checksums"), patch.object(linux_harness, "verify_downloaded_release"), patch.object(linux_harness, "validate_rendered_config"), patch.object(linux_harness, "run_disposable_integration") as integration, patch.object(linux_harness, "run_setup_integration") as setup_integration, redirect_stdout(stream):
+            with patch.object(linux_harness, "_require_linux"), patch.object(linux_harness, "verify_signed_checksums"), patch.object(linux_harness, "verify_downloaded_release"), patch.object(linux_harness, "validate_rendered_config"), patch.object(linux_harness, "run_disposable_integration") as integration, patch.object(linux_harness, "run_setup_integration") as setup_integration, patch.object(linux_harness, "run_owner_integration") as owner_integration, redirect_stdout(stream):
                 result = linux_harness.main([
                     "--release-dir", str(release), "--architecture", "amd64", "--caddy-bin", str(caddy),
                     "--cosign-bin", str(cosign), "--host", "mentat.example.test", "--run-disposable",
@@ -210,6 +210,7 @@ class CaddyProfileTests(unittest.TestCase):
             self.assertEqual(result, 0)
             integration.assert_called_once()
             setup_integration.assert_called_once()
+            owner_integration.assert_called_once()
             self.assertIn("disposable loopback integration passed", stream.getvalue())
 
     def test_caddy_fmt_diff_accepts_context_only_and_rejects_changed_lines(self):

@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 export const PUBLIC_AGENTS_PATH = "/api/agents";
 const PRIVATE_BRIDGE_AGENTS_PATH = "/bridge/v1/agents";
 const MAXIMUM_BRIDGE_RESPONSE_BYTES = 1_048_576;
@@ -221,7 +222,7 @@ export async function fetchBridgeAgents(
         cache: "no-store",
         headers: {
           Accept: "application/json",
-          "X-Mentat-Bridge-Token": configuration.token,
+          ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": configuration.token,
         },
         method: "GET",
         redirect: "error",

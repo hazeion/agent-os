@@ -6,7 +6,8 @@ import { JSDOM } from "jsdom";
 import { fetchBridgeRunEvents } from "../src/lib/bridge-run-events.ts";
 import { createRunTimelineStream } from "../src/lib/run-timeline-stream.ts";
 
-const runtime = readFileSync(new URL("../public/shell-runtime.js", import.meta.url), "utf8");
+const ownerRuntime = readFileSync(new URL("../public/owner-session.js", import.meta.url), "utf8").replace(/^export /gmu, "");
+const runtime = ownerRuntime + "\n" + readFileSync(new URL("../public/shell-runtime.js", import.meta.url), "utf8").replaceAll("\r\n", "\n").replace('import { ownerFetch, expireOwnerSession } from "./owner-session.js";\n', "");
 // Python tests regenerate these exact projections from canonical SQLite Runs.
 const fixtures = JSON.parse(readFileSync(new URL("../../tests/fixtures/run_timeline_contract.json", import.meta.url), "utf8"));
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "A".repeat(48) };

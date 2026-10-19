@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 export type PublicPlanningProjectSearchResult = Readonly<{ id: string; title: string; type: "project" }>;
 export type PublicPlanningTaskSearchResult = Readonly<{
   id: string; title: string; type: "task"; project_id: string; project_name: string;
@@ -76,7 +77,7 @@ function failure(response: Response, payload: unknown): never {
 export async function readPlanningSearch(searchQuery: string, signal?: AbortSignal): Promise<PublicPlanningSearch> {
   if (!query(searchQuery)) throw new PublicPlanningSearchError("invalid");
   try {
-    const response = await fetch(`/api/agent-console/planning-search?${new URLSearchParams({ q: searchQuery }).toString()}`, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, redirect: "error", signal: boundedSignal(signal) });
+    const response = await ownerFetch(`/api/agent-console/planning-search?${new URLSearchParams({ q: searchQuery }).toString()}`, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" }, redirect: "error", signal: boundedSignal(signal) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicPlanningSearchError("response_invalid");
     const payload = await responseJson(response);
     if (response.status === 200) return parsePlanningSearch(payload, searchQuery);

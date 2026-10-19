@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import { validRunId } from "./bridge-run-events.ts";
 
 const PRIVATE_PATH = "/bridge/v1/runs/";
@@ -25,7 +26,7 @@ function actionPath(runId: string, suffix: string) { return `${PRIVATE_PATH}${en
 async function request(runId: string, suffix: string, body: object, fetcher: FetchLike, environment: Environment): Promise<{ response: Response; payload: unknown }> {
   if (!validRunId(runId)) throw new BridgeRunStopError("request_invalid");
   const bridge = config(environment); let response: Response;
-  try { response = await fetcher(new URL(actionPath(runId, suffix), bridge.origin), { method: "POST", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": bridge.token }, body: JSON.stringify(body), signal: AbortSignal.timeout(1_500) }); } catch { throw new BridgeRunStopError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(actionPath(runId, suffix), bridge.origin), { method: "POST", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, body: JSON.stringify(body), signal: AbortSignal.timeout(1_500) }); } catch { throw new BridgeRunStopError("bridge_unavailable"); }
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgeRunStopError("bridge_response_invalid");
   return { response, payload: await bounded(response) };
 }

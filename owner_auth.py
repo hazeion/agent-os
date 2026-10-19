@@ -49,6 +49,7 @@ RECOVERY_SUBMISSION_LIMIT = 5
 UNSAFE_REQUEST_LIMIT = 60
 SECURITY_MANAGEMENT_LIMIT = 1
 MAX_SSE_STREAMS = 2
+SSE_LEASE_SECONDS = 120
 COOKIE_NAME = "__Host-mentat"
 _PHC_PREFIX = "$argon2id$v=19$m=65536,t=3,p=4$"
 _HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16, type=Type.ID)
@@ -305,6 +306,7 @@ class OwnerAuthAuthority:
         if clear_sse:
             connection.execute("DELETE FROM mentat_owner_auth_sse_reservations")
         else:
+            connection.execute("DELETE FROM mentat_owner_auth_sse_reservations WHERE created_at <= ?", (now - SSE_LEASE_SECONDS,))
             connection.execute(
                 "DELETE FROM mentat_owner_auth_sse_reservations WHERE session_digest IN "
                 "(SELECT session_digest FROM mentat_owner_auth_sessions WHERE state != 'active')"
@@ -968,6 +970,37 @@ class OwnerAuthAuthority:
                 self._revoke_session_digest(connection, digest, now)
                 self._audit(connection, "session_revoked", "session", digest, now)
                 self._cleanup(connection, now)
+        finally:
+            connection.close()
+
+    def validate_sse(self, cookie_value: str, reservation_id: str) -> None:
+        """Check a particular existing stream lease without touching idle time."""
+        digest = _digest(_token_bytes(cookie_value, 32))
+        _token_bytes(reservation_id, 24)
+        connection = self._open()
+        valid = False
+        session_valid = False
+        try:
+            with transaction(connection, immediate=True):
+                self._cleanup(connection, self._clock())
+                session = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest=?", (digest,)).fetchone()
+                lease = connection.execute("SELECT session_digest FROM mentat_owner_auth_sse_reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
+                session_valid = session is not None and session['state'] == 'active' and _session_method_valid(connection, session, self._state(connection))
+                valid = session_valid and lease is not None and hmac.compare_digest(bytes(lease[0]), digest)
+            # Expiry cleanup commits even when this lease is no longer valid.
+            if not valid:
+                raise OwnerAuthError('stream_unavailable' if session_valid else 'invalid')
+        finally:
+            connection.close()
+
+    def release_owned_sse(self, cookie_value: str, reservation_id: str) -> None:
+        """Cleanup remains possible after session revocation; never release another session's lease."""
+        digest = _digest(_token_bytes(cookie_value, 32))
+        _token_bytes(reservation_id, 24)
+        connection = self._open()
+        try:
+            with transaction(connection, immediate=True):
+                connection.execute("DELETE FROM mentat_owner_auth_sse_reservations WHERE reservation_id=? AND session_digest=?", (reservation_id, digest))
         finally:
             connection.close()
 

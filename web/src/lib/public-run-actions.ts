@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 import type {
   PendingRunRequest,
   RunActionResponse,
@@ -96,7 +97,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 async function request(path: string, body: object): Promise<{ response: Response; payload: unknown }> {
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await ownerFetch(path, {
       body: JSON.stringify(body),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },

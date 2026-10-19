@@ -1,3 +1,4 @@
+import { ownerFetch } from "../../public/owner-session.js";
 import type { PublicConversation } from "./bridge-conversations.ts";
 
 const MAXIMUM_RESPONSE_BYTES = 768 * 1024;
@@ -463,7 +464,7 @@ export function failure(payload: unknown, response: Response): never {
 
 export async function request(path: string, init: RequestInit = {}, timeout = READ_TIMEOUT_MILLISECONDS): Promise<{ payload: unknown; response: Response }> {
   try {
-    const response = await fetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeout) });
+    const response = await ownerFetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeout) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicPlanningError("response_invalid");
     return { response, payload: await boundedJson(response) };
   } catch (error) { if (error instanceof PublicPlanningError) throw error; throw new PublicPlanningError("unavailable"); }

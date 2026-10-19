@@ -36,7 +36,7 @@ test("manifested static surfaces include authored documents, finite assets, and 
   });
   assert.equal(decision.allowed, true);
   assert.equal(decision.route?.path, "/_next/static/[...path]");
-  assert.equal(matchGatewayRoute("/", "GET")?.exposure, "static");
+  assert.equal(matchGatewayRoute("/", "GET")?.exposure, "owner_session");
   assert.equal(matchGatewayRoute("/agents", "HEAD")?.source, "web/src/app/agents/page.tsx");
   assert.equal(matchGatewayRoute("/api/tasks", "HEAD")?.method, "GET");
   assert.equal(matchGatewayRoute("/api/tasks", "HEAD")?.path, "/api/tasks");
@@ -106,6 +106,6 @@ test("remote activation is rejected at startup and cannot be selected by request
   const decision = authority.authorize(request);
   assert.equal(decision.allowed, true);
   assert.equal(decision.route?.path, "/");
-  assert.equal(decision.route?.exposure, "static");
+  assert.equal(decision.route?.exposure, "owner_session");
   assert.equal(authority.mode, "local");
 });

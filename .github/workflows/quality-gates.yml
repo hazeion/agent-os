@@ -51,9 +51,13 @@ jobs:
           python scripts/stage_web_runtime.py
 
       - name: Build and verify exact artifacts
+        # The built website is required by the real HTTP/stream auth regression.
         run: |
           python -m build --no-isolation --sdist --wheel --outdir dist
           python scripts/verify_python_artifacts.py dist
+
+      - name: Verify authenticated website HTTP and stream boundaries
+        run: python -m unittest tests.test_owner_website_http -v
 
       - name: Exercise pipx installed lifecycle
         shell: bash

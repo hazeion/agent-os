@@ -39,7 +39,7 @@ test("the immutable manifest has one complete, non-duplicated rule per current A
   assert.ok(Object.isFrozen(GATEWAY_ROUTE_MANIFEST));
   const sourceOperations = new Map<string, string>();
   const files = await routeFiles(API_ROOT);
-  assert.equal(files.length, 87);
+  assert.equal(files.length, 90);
   for (const file of files) {
     const source = `web/src/app/api/${relative(API_ROOT, file).split(sep).join("/")}`;
     const path = `/api/${relative(API_ROOT, file).split(sep).join("/").replace(/\/route\.ts$/u, "")}`;
@@ -64,19 +64,19 @@ test("the immutable manifest has one complete, non-duplicated rule per current A
     assert.equal(row.budget, row.path.endsWith("/events") ? "gateway_stream" : ["GET", "HEAD", "OPTIONS"].includes(row.method) ? "gateway_read" : "gateway_mutation");
     assert.equal(row.projection, "route_owned");
     assert.equal(row.audit, ["GET", "HEAD", "OPTIONS"].includes(row.method) ? "gateway_api_read" : "gateway_api_mutation");
-    const supervisor = row.path === "/api/bridge/health" || row.path === "/api/gateway/health";
+    const supervisor = row.path === "/api/gateway/health";
     assert.equal(row.exposure, supervisor ? "local_only" : "owner_session");
     assert.equal(row.bridgeCapability, supervisor ? null : `bridge:${row.path.slice("/api/".length).replaceAll("/", ".")}.${row.method.toLowerCase()}`);
   }
 
   assert.deepEqual([...manifestOperations.keys()].sort(), [...sourceOperations.keys()].sort());
   for (const [key, source] of sourceOperations) assert.equal(manifestOperations.get(key), source, key);
-  assert.equal(sourceOperations.size, 94);
-  assert.equal(GATEWAY_ROUTE_MANIFEST.filter((candidate) => candidate.path.startsWith("/api/")).length, 94);
+  assert.equal(sourceOperations.size, 97);
+  assert.equal(GATEWAY_ROUTE_MANIFEST.filter((candidate) => candidate.path.startsWith("/api/")).length, 97);
 });
 
 test("the static manifest is source-derived, finite, and includes only shipped dashboard surfaces", async () => {
-  const staticRows = GATEWAY_ROUTE_MANIFEST.filter((row) => row.exposure === "static");
+  const staticRows = GATEWAY_ROUTE_MANIFEST.filter((row) => row.projection === "static");
   const rowsByPath = new Map<string, typeof staticRows>();
   for (const row of staticRows) {
     assert.ok(Object.isFrozen(row));
@@ -87,6 +87,8 @@ test("the static manifest is source-derived, finite, and includes only shipped d
     assert.equal(row.idempotency, "not_applicable");
     assert.equal(row.projection, "static");
     assert.equal(row.validator, `static:${row.path}`);
+    const publicAsset = new Set(["/icon.svg", "/mentat-mark-emerald.png", "/shell-runtime.js", "/owner-session.js", "/_next/static/[...path]"]).has(row.path);
+    assert.equal(row.exposure, row.path === "/sign-in" ? "anonymous_auth" : publicAsset ? "static" : "owner_session");
     rowsByPath.set(row.path, [...(rowsByPath.get(row.path) ?? []), row]);
   }
 

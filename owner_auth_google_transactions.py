@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from mentat_db import transaction
 from owner_auth import AUTHENTICATION_START_LIMIT, OwnerAuthAuthority, OwnerAuthError, _google_principal, _id, google_principal_digest
 from owner_auth_google import GOOGLE_ISSUER, VerifiedGoogleIdentity, _secret, authorization_url, new_login_secrets
-from owner_auth_google_transport import GoogleOidcTransport
+from owner_auth_google_transport import GoogleOidcTransport, GoogleOidcTransportError
 
 LIFETIME_SECONDS = 300
 MAX_PENDING = 16
@@ -128,8 +128,10 @@ class GoogleLoginTransactions:
             with transaction(connection, immediate=True):
                 now = self._authority._clock()
                 row = connection.execute("SELECT * FROM mentat_owner_google_transactions WHERE state_digest=?", (state_digest,)).fetchone()
-                if row is None or row["state"] != "pending" or row["expires_at"] <= now or not hmac.compare_digest(bytes(row["browser_digest"]), browser_digest) or not _matches(row, _snapshot(connection)):
+                if row is None or row["state"] != "pending" or not hmac.compare_digest(bytes(row["browser_digest"]), browser_digest) or not _matches(row, _snapshot(connection)):
                     raise OwnerAuthError("invalid")
+                if row["expires_at"] <= now:
+                    raise OwnerAuthError('expired')
                 attempt = dict(row)
                 connection.execute("UPDATE mentat_owner_google_transactions SET state='consumed',nonce=NULL,code_verifier=NULL,terminal_at=? WHERE transaction_id=?", (now, row["transaction_id"]))
                 _cleanup(connection, now)
@@ -139,8 +141,10 @@ class GoogleLoginTransactions:
             # A crash from here onward cannot reopen or replay the code.
             evidence = self._transport.authenticate_code(client_id=attempt["client_id"], origin=attempt["canonical_origin"], code=code, code_verifier=attempt["code_verifier"], client_secret=client_secret, expected_nonce=attempt["nonce"])
             attempt["code_verifier"] = attempt["nonce"] = None
-            if not isinstance(evidence, VerifiedGoogleIdentity) or evidence.issuer != GOOGLE_ISSUER or not hmac.compare_digest(google_principal_digest(evidence.issuer, evidence.subject), attempt["principal_digest"]):
-                raise OwnerAuthError("invalid")
+            if not isinstance(evidence, VerifiedGoogleIdentity) or evidence.issuer != GOOGLE_ISSUER:
+                raise OwnerAuthError('invalid')
+            if not hmac.compare_digest(google_principal_digest(evidence.issuer, evidence.subject), attempt["principal_digest"]):
+                raise OwnerAuthError("wrong_account")
             connection = self._authority._open()
             with transaction(connection, immediate=True):
                 now = self._authority._clock()
@@ -149,14 +153,15 @@ class GoogleLoginTransactions:
                     raise OwnerAuthError("invalid")
                 connection.execute("UPDATE mentat_owner_google_transactions SET state='verified',terminal_at=? WHERE transaction_id=?", (now, row["transaction_id"]))
                 return LoginReceipt(row["transaction_id"])
-        except Exception:
+        except Exception as exc:
             # Consumption is already committed; failures never re-enable it.
             if connection is not None:
                 connection.close()
                 connection = None
             if consumed and attempt is not None:
                 self._fail(attempt["transaction_id"])
-            raise OwnerAuthError("invalid") from None
+            reason = str(exc) if isinstance(exc, OwnerAuthError) and str(exc) in {'expired', 'wrong_account'} else 'unavailable' if isinstance(exc, GoogleOidcTransportError) else 'invalid'
+            raise OwnerAuthError(reason) from None
         finally:
             code = client_secret = ""
             if attempt is not None:
@@ -168,6 +173,20 @@ class GoogleLoginTransactions:
         """Fixed server-only callback flow; never expose the intermediate receipt."""
         receipt = self.verify_callback(state=state, browser_binding=browser_binding, code=code, client_secret=client_secret)
         return self._authority.complete_google_login(transaction_id=receipt.transaction_id, state=state, browser_binding=browser_binding)
+
+    def cancel_callback(self, *, state: str, browser_binding: str) -> None:
+        state_digest, browser_digest = _digest_secret(state), _digest_secret(browser_binding)
+        connection = self._authority._open()
+        try:
+            with transaction(connection, immediate=True):
+                now = self._authority._clock()
+                row = connection.execute('SELECT browser_digest FROM mentat_owner_google_transactions WHERE state_digest=?', (state_digest,)).fetchone()
+                if row is None or not hmac.compare_digest(bytes(row[0]), browser_digest):
+                    raise OwnerAuthError('invalid')
+                connection.execute("UPDATE mentat_owner_google_transactions SET state='cancelled',nonce=NULL,code_verifier=NULL,terminal_at=? WHERE state_digest=? AND state='pending'", (now, state_digest))
+                _cleanup(connection, now)
+        finally:
+            connection.close()
 
     def _fail(self, transaction_id: str) -> None:
         connection = None

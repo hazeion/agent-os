@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 export const PUBLIC_RUNS_PATH = "/api/runs";
 const PRIVATE_PATH = "/bridge/v1/runs";
 const MAX_BYTES = 1_048_576;
@@ -38,7 +39,7 @@ async function bounded(response: Response) {
 }
 export async function fetchBridgeRuns(fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicBridgeRuns> {
   const bridge = config(environment); let response: Response;
-  try { response = await fetcher(new URL(PRIVATE_PATH, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1500) }); } catch { throw new BridgeRunsError("bridge_unavailable"); }
+  try { response = await fetcher(new URL(PRIVATE_PATH, bridge.origin), { method: "GET", cache: "no-store", redirect: "error", headers: { Accept: "application/json", ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token }, signal: AbortSignal.timeout(1500) }); } catch { throw new BridgeRunsError("bridge_unavailable"); }
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgeRunsError("bridge_response_invalid"); const payload = await bounded(response);
   if (response.status === 200 && payload && typeof payload === "object" && !Array.isArray(payload)) { const item = payload as Record<string, unknown>; if (Object.keys(item).sort().join(",") === "count,runs,runtime,schema_version,service,status" && item.schema_version === 1 && item.service === "mentat-local-bridge" && item.runtime === "python" && item.status === "ready" && Array.isArray(item.runs) && item.runs.length <= 50 && Number.isInteger(item.count) && item.count === item.runs.length && item.runs.every(validRun) && new Set(item.runs.map((run) => run.id)).size === item.runs.length) return { ...item, runs: item.runs.map((run) => ({ ...run })) } as PublicBridgeRuns; }
   if (response.status === 404 && payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "error" && (payload as Record<string, unknown>).error === "bridge_route_not_found") throw new BridgeRunsError("bridge_unsupported");

@@ -10,10 +10,10 @@ const SAFE_FETCH_SITES = new Set(["", "same-origin", "none"]);
 const LOCAL_MODE = "local";
 
 export type GatewayAuthorityInput = Readonly<{ expectedPort: number; host: string | null; method: string; origin: string | null; secFetchSite: string | null }>;
-export type GatewayAuthorityRequest = Readonly<{ host: string | null; method: string; origin: string | null; pathname: string; secFetchSite: string | null }>;
-export type GatewayAuthorityDecision = Readonly<{ allowed: true }> | Readonly<{ allowed: false; reason: "host" | "origin" | "port" | "site" }>;
+export type GatewayAuthorityRequest = Readonly<{ host: string | null; method: string; origin: string | null; pathname: string; secFetchSite: string | null; secFetchMode?: string | null; secFetchDest?: string | null; forwardedHost?: string | null; forwardedProto?: string | null; forwardedFor?: string | null; forwardedPort?: string | null; forbiddenForwarding?: boolean }>;
+export type GatewayAuthorityDecision = Readonly<{ allowed: true }> | Readonly<{ allowed: false; reason: "host" | "origin" | "port" | "site" | "route" | "forwarded" }>;
 export type GatewayRouteDecision = GatewayAuthorityDecision & Readonly<{ route: GatewayRouteRule | null }>;
-export type GatewayAuthority = Readonly<{ authorize(request: GatewayAuthorityRequest): GatewayRouteDecision; mode: "local" }>;
+export type GatewayAuthority = Readonly<{ authorize(request: GatewayAuthorityRequest): GatewayRouteDecision; mode: "local" | "owner"; origin: string | null }>;
 type Authority = Readonly<{ hostname: string; port: number }>;
 type GatewayEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -167,6 +167,37 @@ export function evaluateGatewayAuthority(input: GatewayAuthorityInput): GatewayA
 export function createGatewayAuthority(environment: GatewayEnvironment): GatewayAuthority {
   validateGatewayRouteManifest();
   const configuredMode = environment.MENTAT_GATEWAY_MODE?.trim().toLowerCase() ?? "";
+  if (configuredMode === "owner") {
+    const raw = environment.MENTAT_OWNER_ORIGIN ?? "";
+    let origin: URL;
+    try { origin = new URL(raw); } catch { throw new GatewayAuthorityStartupError(); }
+    const labels = origin.hostname.split(".");
+    if (origin.protocol !== "https:" || origin.origin !== raw || origin.port || labels.length < 2 || !labels.every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label)) || !/[a-z]/u.test(labels.at(-1)!) || origin.hostname.endsWith(".localhost") || origin.hostname.endsWith(".local")) throw new GatewayAuthorityStartupError();
+    const expectedPort = parseGatewayPort(environment.PORT);
+    return Object.freeze({mode: "owner" as const, origin: raw,
+      authorize(request: GatewayAuthorityRequest): GatewayRouteDecision {
+        const route = matchGatewayRoute(request.pathname, request.method);
+        if (!route) return { allowed: false, reason: "route", route: null };
+        if (route.path === "/auth/google/callback" && request.method !== "GET") return { allowed: false, reason: "route", route };
+        // Next fills these from its loopback socket after Caddy strips incoming
+        // values. Accept only that fixed internal hop, never an address chain.
+        if (request.forbiddenForwarding || request.forwardedPort !== String(expectedPort) || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.forwardedFor ?? "")) return { allowed: false, reason: "forwarded", route };
+        // Only the supervisor's exact loopback health read bypasses HTTPS.
+        if (route.path === "/api/gateway/health" && request.forwardedHost === request.host && request.forwardedProto === "http") {
+          const decision = evaluateGatewayAuthority({ ...request, expectedPort });
+          return { ...decision, route };
+        }
+        if (route.exposure === "local_only") return { allowed: false, reason: "route", route };
+        if (request.host !== origin.host) return { allowed: false, reason: "host", route };
+        if (request.forwardedHost !== origin.host || request.forwardedProto !== "https") return { allowed: false, reason: "forwarded", route };
+        const callback = request.pathname === "/auth/google/callback" && request.method === "GET";
+        const documentNavigation = request.method === "GET" && route.projection === "static" && request.secFetchMode === "navigate" && request.secFetchDest === "document";
+        if (!callback && !documentNavigation && !SAFE_FETCH_SITES.has(request.secFetchSite ?? "")) return { allowed: false, reason: "site", route };
+        if ((!SAFE_METHODS.has(request.method) && request.origin !== raw) || (request.origin && request.origin !== raw)) return { allowed: false, reason: "origin", route };
+        return { allowed: true, route };
+      },
+    });
+  }
   if (configuredMode && configuredMode !== LOCAL_MODE) {
     throw new GatewayAuthorityStartupError("only the local gateway mode is available");
   }
@@ -177,6 +208,7 @@ export function createGatewayAuthority(environment: GatewayEnvironment): Gateway
       return decision.allowed ? { allowed: true, route: matchGatewayRoute(request.pathname, request.method) } : { ...decision, route: null };
     },
     mode: "local" as const,
+    origin: null,
   });
 }
 

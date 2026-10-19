@@ -16,6 +16,9 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html data-ui-shell="emerald" lang="en" suppressHydrationWarning>
+      <head>
+        <link rel="modulepreload" href="/owner-session.js" />
+      </head>
       <body>
         {children}
         <ShellRuntimeSignal />

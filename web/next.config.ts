@@ -31,7 +31,7 @@ const nextConfig: NextConfig = {
     };
   },
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [{ source: "/:path*", headers: securityHeaders }, { source: "/sign-in", headers: [{ key: "Referrer-Policy", value: "same-origin" }] }];
   },
 };
 

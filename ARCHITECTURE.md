@@ -54,11 +54,15 @@ are rejected. The bridge has no catch-all route, generic proxy, state mutation,
 SQLite access, or direct Hermes access.
 
 The process creates one immutable Gateway Authority before admitting any
-request. Local mode is the only executable profile. Any configured remote or
-unknown mode fails process startup, and no request field can select a mode.
-The universal Next proxy delegates every public path to this authority. It
-accepts only the configured loopback Host and port; cross-site,
-mismatched-origin, and malformed fetch metadata requests fail closed.
+request. Ordinary launch selects local mode. The explicit owner website
+launcher selects the authenticated owner profile using the enrolled canonical
+HTTPS origin; unknown modes fail startup, and no request field selects a mode.
+The universal Next proxy delegates every public path to this authority. Local
+mode accepts only the configured loopback Host and port. Owner mode requires
+the fixed gateway forwarding contract and admits protected routes only after
+session validation. Mismatched origins and malformed fetch metadata fail
+closed; cross-site top-level document navigation is permitted for login and
+bookmark arrival, without granting access to protected content.
 
 A checked-in manifest inventories every exported API method/path operation and
 every shipped document, public asset, generated shell document, and framework
@@ -77,9 +81,10 @@ rejects legacy boundary imports or unwrapped handlers. Route-specific local
 failure envelopes remain authoritative where they differ from the shared
 fixed forbidden response.
 
-MDA-4C adds a disabled Linux-only `remote-caddy-v1` deployment profile under
-`deploy/caddy/`. It is not referenced by the local launcher, lifecycle manager,
-preview supervisor, or CLI. The renderer accepts one canonical non-local DNS
+MDA-4C added the Linux-only `remote-caddy-v1` deployment qualification profile
+under `deploy/caddy/`. Ordinary local launch does not activate it. The explicit
+owner setup and website commands build their fixed profiles on that qualified
+boundary. The renderer accepts one canonical non-local DNS
 name and the literal `127.0.0.1:8888` Node upstream, pins Caddy 2.11.4 release
 and signature material for amd64 and arm64, rejects custom modules, and gives
 every validation subprocess a credential-free environment. No profile code
@@ -94,8 +99,9 @@ replacement. TLS/SNI/Host and canonical HTTP behavior, TCP/UDP listener
 inventory, external-address isolation, atomic failed-reload rollback,
 no-store maintenance, backend loss/recovery, and live SSE keepalive, reconnect,
 closure, cancellation, and bounded drain behavior must all pass. Production
-listener, service-account, certificate, and firewall activation remains a
-separate future approval.
+activation still requires the operator's explicitly configured owner command,
+supplied certificates and host preparation; no deployment is implied by these
+disposable tests.
 
 The browser can call only the fixed same-origin routes in that manifest. Node
 builds each private request on the server, checks its bounded response, and
@@ -208,7 +214,8 @@ and issues no Google session. Private backup validation accepts both historical
 schemas 24 and 25 and the current schema. Restore revokes all sessions, keeps terminal
 history bounded, and marks Google configuration as requiring host reconciliation.
 Schema-5 compatible export omits all owner authentication authority. Ordinary
-website login and remote dashboard activation remain separate integration gates.
+website login uses the fixed Google flow; real operator deployment acceptance
+remains a required gate.
 
 Schema 26 adds disposable ordinary Google login attempts. Python admits only
 an already enrolled Google owner with reconciled settings, using the existing
@@ -230,9 +237,35 @@ eviction; Google sessions have no device identity or fresh reauthentication.
 Exact-session sign-out validates CSRF and current authority, revokes its SSE
 leases and retains bounded history without affecting another browser's session.
 Snapshot copies remove all
-attempts before vacuuming; startup and restore discard them. Future HTTP wiring
-must use an explicit same-origin login start and a Secure, HttpOnly,
-SameSite=Lax `__Host-` browser-binding cookie for the cross-site callback.
+attempts before vacuuming; startup and restore discard them. The website uses
+an explicit same-origin login start and a Secure, HttpOnly, SameSite=Lax
+`__Host-` browser-binding cookie for the cross-site callback.
+
+The explicit Linux `owner-auth serve` profile starts the existing Node/Python
+supervisor behind verified Caddy and supplied TLS files. Ordinary start remains
+local. Owner mode is process-owned and requires a reconciled Google principal,
+credential presence and exact canonical HTTPS origin. Caddy strips untrusted
+forwarding, private authority and middleware headers; Next's fixed loopback-hop
+metadata is checked before admission. Unknown routes fail closed. Dashboard
+documents/RSC, APIs, artifacts and generated shells require a current session;
+only sign-in, the callback/start flow and a finite asset surface are anonymous.
+
+Every protected operation validates session/CSRF before parsing its input. An
+async request context forwards only validated credentials to fixed bridge
+operations, where Python revalidates before executing. The owner client secret
+is removed before executable bridge runtime imports; Node and runtime children
+do not receive it. Host enrollment/recovery is not an ordinary website capability.
+Browser cookies are host-only/Secure with an HttpOnly session and a separate
+session-bound CSRF value. Callback queries are replaced by fixed clean routes;
+only bounded error categories are displayed.
+
+Live streams reserve at most two leases per session and recheck before reads
+and emissions without touching idle expiry. Release is awaited on completion
+or cancellation; two-minute absolute lease expiry bounds abandoned reservations.
+Sign-out revokes future disclosure, and clients clear displayed state on auth
+loss. Availability failures remain distinct from invalid sessions. Protected
+documents use no-store. Google form navigation has its explicit CSP and
+same-origin referrer policy; callbacks remain no-referrer.
 
 The foreground Linux `owner-auth google-setup` ceremony is a separate host-admin
 capability. It reserves the normal server's lifetime slot under the private

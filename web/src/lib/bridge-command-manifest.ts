@@ -1,3 +1,4 @@
+import { ownerBridgeHeaders } from "./owner-request-context.ts";
 import {
   parseCommandManifest,
   PublicCommandManifestError,
@@ -100,7 +101,7 @@ export async function fetchBridgeCommandManifest(
       cache: "no-store",
       headers: {
         Accept: "application/json",
-        "X-Mentat-Bridge-Token": bridge.token,
+        ...ownerBridgeHeaders(), "X-Mentat-Bridge-Token": bridge.token,
       },
       method: "GET",
       redirect: "error",
