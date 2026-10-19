@@ -46,3 +46,24 @@ python -W error::ResourceWarning -m unittest tests.test_google_session_issuance 
 AST comparison confirms 37 of 38 OwnerAuthAuthority methods remain exactly
 unchanged; only `_open` differs. `git diff --check` passes. This focused repair
 does not establish full integration, native acceptance or release readiness.
+
+## Authorizer callback follow-up
+
+The initial rollback fixture queried its connection inside the authorizer.
+SQLite's [authorizer limitations](https://www.sqlite.org/c3ref/set_authorizer.html)
+forbid preparing or stepping statements on that connection within the callback,
+even when the query is read-only. Its earlier passing result does not establish
+that callback use as supported.
+
+The test now uses a narrow connection proxy to observe the real transaction and
+inserted active session immediately before the exact transaction DELETE. Only
+then does it install an authorizer whose callback compares action/table values,
+records the denied table and returns SQLITE_DENY. The callback performs no
+connection operation. The actual SQLite denial still causes the normal
+transaction wrapper to roll back; every exact session, receipt, schema and
+one-use retry assertion remains. Production source is byte-identical to4772179.
+
+Final follow-up validation: all11 Google session issuance methods passed in
+25.491s, no skips, ResourceWarnings as errors. This includes the legal post-insert
+rollback injection, independent schema-drift refusal, concurrency, capacity,
+replay, signout and backup/session invalidation cases. `git diff --check` passes.
