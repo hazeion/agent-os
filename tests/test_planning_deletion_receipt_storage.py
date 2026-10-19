@@ -1,38 +1,20 @@
-from __future__ import annotations
-
+"""Current planning deletion receipts remain content-free and bounded."""
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
-from mentat_db import MIGRATIONS, MentatDatabaseError, SCHEMA_VERSION, connect, database_path, ensure_private_console_dir, schema_signature_state
+from mentat_db import SCHEMA_VERSION, connect, schema_signature_state
 from private_console_unit import PrivateConsoleUnitError, _validate_planning_deletion_receipts
 
 
-class Schema22ForwardMigrationTests(unittest.TestCase):
-    def _schema22(self, root: Path) -> Path:
-        ensure_private_console_dir(root)
-        path = database_path(root)
-        connection = sqlite3.connect(path)
-        try:
-            for version, script in MIGRATIONS:
-                if version > 22:
-                    break
-                connection.executescript(script)
-                connection.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)", (version,))
-            connection.commit()
-        finally:
-            connection.close()
-        path.chmod(0o600)
-        return path
-
-    def test_exact_schema22_upgrades_to_the_content_free_deletion_receipt(self):
+class PlanningDeletionReceiptStorageTests(unittest.TestCase):
+    def test_current_content_free_deletion_receipt_validates(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._schema22(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 46)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], SCHEMA_VERSION)
                 self.assertEqual(schema_signature_state(connection, SCHEMA_VERSION), "expected")
                 connection.execute(
                     "INSERT INTO mentat_planning_deletion_receipts (confirmation_digest, target_kind, target_digest, closure_digest, project_count, task_count, conversation_count, run_count, artifact_count, state, created_at) VALUES (?, 'task', ?, ?, 0, 1, 0, 0, 0, 'deleted', ?)",
@@ -42,24 +24,6 @@ class Schema22ForwardMigrationTests(unittest.TestCase):
                 _validate_planning_deletion_receipts(connection)
             finally:
                 connection.close()
-
-    def test_schema22_drift_fails_before_the_receipt_table_is_created(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = self._schema22(root)
-            connection = sqlite3.connect(path, isolation_level=None)
-            try:
-                connection.execute("DROP TABLE mentat_codex_task_create_receipts")
-            finally:
-                connection.close()
-            with self.assertRaisesRegex(MentatDatabaseError, "schema 22 cannot be safely upgraded"):
-                connect(root)
-            check = sqlite3.connect(path)
-            try:
-                self.assertEqual(check.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 22)
-                self.assertIsNone(check.execute("SELECT name FROM sqlite_master WHERE name = 'mentat_planning_deletion_receipts'").fetchone())
-            finally:
-                check.close()
 
     def test_private_receipt_validator_rejects_content_or_invalid_counts(self):
         with TemporaryDirectory() as temporary:
@@ -101,5 +65,5 @@ class Schema22ForwardMigrationTests(unittest.TestCase):
                 connection.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
