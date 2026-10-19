@@ -75,8 +75,8 @@ class Schema17ForwardMigrationTests(unittest.TestCase):
             self._schema16(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 36)
-                self.assertEqual(schema_signature_state(connection, 36), "expected")
+                self.assertEqual(SCHEMA_VERSION, 37)
+                self.assertEqual(schema_signature_state(connection, 37), "expected")
                 self.assertIsNone(connection.execute("PRAGMA foreign_key_check").fetchone())
                 connection.execute(
                     "INSERT INTO mentat_conversation_planning_context "

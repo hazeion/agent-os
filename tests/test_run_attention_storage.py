@@ -328,7 +328,7 @@ class RunAttentionStorageTests(unittest.TestCase):
                 target, unit, target / "private" / "console"
             )
             with closing(mentat_db.connect(target)) as connection:
-                self.assertEqual(mentat_db.schema_signature_state(connection, 36), "expected")
+                self.assertEqual(mentat_db.schema_signature_state(connection, 37), "expected")
                 first = connection.execute(
                     "SELECT item_id,revision FROM mentat_run_attention "
                     "WHERE run_id='run_schema35_failure'"

@@ -37,6 +37,7 @@ passing ancestor as current-head acceptance.
 | 281 | `e5c85aa` | `24bf559` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 10 targeted tests discovered; 10 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 282 | `65ae7fb` | `f3f625b` | Two independent reviews clear recovery of the existing native startup diagnostics and trusted COLLECT archive slice; all twelve native source/workflow/test files match the reviewed parent. Original roadmap feature unchanged. All 126 Node/architecture/diagnostic/archive/CLI/gateway/lifecycle tests pass without skips, including the previously noted CLI confirmation fixture. No native build or install claimed. Hosted and integrated acceptance remain pending. |
 | 283 | `061c674` | `f97d417` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 8 targeted tests discovered; 8 pass; no skips. Hosted and integrated acceptance remain pending. |
+| 284 | `055701c` | `2cf333e` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 19 targeted tests discovered; 19 pass; no skips. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

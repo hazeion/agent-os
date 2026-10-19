@@ -1067,6 +1067,13 @@ rows disclose changed or unavailable Task/Agent identity without substituting
 new content after ID reuse. Editing or saving a plan does not start work or
 make a version-1 plan eligible for approval.
 
+Schema 37 widens only the immutable plan-version storage constraint for a later
+policy-bearing format 2. Its exact schema-36 migration retains every format-1
+row, digest and input reference, and rejects drift or insufficient temporary
+disk headroom before the shadow-table copy. Format-2 publication remains
+unavailable until semantic validation, private-backup accounting and the owner
+editor land together. This storage migration grants no approval or execution.
+
 Schema 34 adds an owner-private Inbox receipt table for exact Project result
 review generations. A complete three-slot bundle with no exact owner decision
 creates one item in the same transaction as the result save; an exact acceptance
