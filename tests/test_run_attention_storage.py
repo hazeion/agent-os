@@ -187,7 +187,7 @@ class RunAttentionStorageTests(unittest.TestCase):
                 "(id,source,runtime_type,capabilities_json,status,dispatch_state,"
                 "terminal_finalized,created_at,updated_at,completed_at) "
                 "VALUES(?,'console','hermes','[]','failed','legacy',1,?,?,?)",
-                ((f"run_full_{index:05d}", _CREATED, _UPDATED, _UPDATED)
+                ((f"run_full_{index:05d}".ljust(128, "x"), _CREATED, _UPDATED, _UPDATED)
                  for index in range(10_000)),
             )
             page_size = connection.execute("PRAGMA page_size").fetchone()[0]
@@ -208,11 +208,12 @@ class RunAttentionStorageTests(unittest.TestCase):
             connection.execute(
                 "UPDATE mentat_run_attention SET read_at=created_at,"
                 "acknowledged_at=created_at,resolved_at=created_at "
-                "WHERE run_id='run_full_00000'"
+                "WHERE run_id=?", ("run_full_00000".ljust(128, "x"),)
             )
             _insert(connection, "run_one_more", "running")
             self.assertIsNone(connection.execute(
-                "SELECT 1 FROM mentat_run_attention WHERE run_id='run_full_00000'"
+                "SELECT 1 FROM mentat_run_attention WHERE run_id=?",
+                ("run_full_00000".ljust(128, "x"),)
             ).fetchone())
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM mentat_run_attention"

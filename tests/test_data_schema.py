@@ -150,10 +150,20 @@ class DataSchemaTests(unittest.TestCase):
                 target = root / "target"
                 self.write_inventory(seeds)
                 config = self.config(target)
-                self.initialize_current_documents(seeds, target)
+                with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                    self.assertIsNone(runtime_config.prepare_data_root_for_startup(config))
                 if directory == "config":
                     continue
                 selected = target / directory
+                if directory == "private":
+                    import shutil
+                    shutil.rmtree(selected)
+                    before = self.snapshot(target)
+                    with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                        self.assertIn("current_data_root_required", runtime_config.prepare_data_root_for_startup(config) or "")
+                    self.assertEqual(before, self.snapshot(target))
+                    self.assertFalse(selected.exists())
+                    continue
                 selected.rmdir()
                 with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
                     self.assertIsNone(runtime_config.prepare_data_root_for_startup(config))
@@ -243,7 +253,7 @@ class DataSchemaTests(unittest.TestCase):
                 ),
             ):
                 error = runtime_config.prepare_data_root_for_startup(config)
-            self.assertIn("data_initialization_failed", error or "")
+            self.assertIn("current_data_root_required", error or "")
             self.assertFalse((target / "tasks.json").exists())
 
     def test_required_directory_hardening_stays_on_pinned_root(self):
