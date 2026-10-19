@@ -260,7 +260,7 @@ class ProjectPlanTests(unittest.TestCase):
             publish_owner_plan(self.root, "project_mentat", "One too many", [self.node()],
                                expected_project_revision=1, expected_plan_revision=32)
         with closing(mentat_db.connect(self.root)) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_plan_versions").fetchone()[0], mentat_db.SCHEMA_VERSION)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_plan_versions").fetchone()[0], 32)
 
     def test_global_version_ceiling_includes_all_project_scopes(self):
         self.publish()

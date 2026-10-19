@@ -153,8 +153,9 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         # The fresh reservation remains until JSON publication completes. A crash
         # can resume it; an established current root cannot recreate a lost DB.
         try:
-            connection = connect(target)
-            connection.close()
+            if not validate_current_database_root(target):
+                connection = connect(target)
+                connection.close()
         except (MentatDatabaseError, OSError):
             return "unsupported_or_invalid_current_database"
         return None
