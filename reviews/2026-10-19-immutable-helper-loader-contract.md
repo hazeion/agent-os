@@ -188,7 +188,7 @@ published signed-library contract; this draft grants it no execution authority.
 
 This section proposes the previously unresolved handoff. It is design only and
 requires root and independent approval before any custody code. It selects
-worker authentication into sealed objects followed by descriptor transfer;
+worker verification into sealed objects followed by descriptor transfer;
 it does not select an immutable loader namespace or authorize execution.
 
 ### Fixed operation and ownership
@@ -233,8 +233,13 @@ not a reusable message or execution framework.
 2. The worker performs the existing complete authentication, package grammar,
    archive/member selection, two fixed ELF profiles and four shared-graph
    comparisons over its one captured input set. It must include all four
-   helpers as retained regular members, comparing them to the authenticated
-   deb members rather than retaining an independent equal-looking path later.
+   helpers as retained regular members. Libraries and the loader authenticate
+   through the captured signed archive chain. In this operation the four helper
+   ELF inputs bind only to the reviewed compiled size/SHA256 pins in
+   project_system_origin.PINS; the fixed19 inputs contain no helper archives,
+   so this operation does not reauthenticate helper archive membership. Seal
+   and transfer the exact captured helper bytes that passed those pins. The
+   separate helper-origin gate remains independent and unresolved here.
    No parent recapture, source reopen or caller report supplies member bytes.
 3. For each selected regular member, copy directly from those authenticated
    immutable Python bytes into one fresh memfd, apply F_SEAL_WRITE,
@@ -245,8 +250,12 @@ not a reusable message or execution framework.
 4. Send one MANIFEST packet without descriptors, at most the existing 16 KiB
    result bound. It contains nonce, sequence, the existing fixed snapshot and
    package identities, ordered regular rows (virtual path, size, SHA256,
-   st_dev/st_ino from the sealed object), ordered alias path/text rows and the
-   four static comparisons. Order is lexical virtual path order, not local FD
+   st_dev/st_ino from the sealed object and a fixed trust class), ordered alias
+   path/text rows and the four static comparisons. The only trust classes are
+   signed-library-archive for the13 library/loader objects and compiled-helper-
+   pin for the four fixed helpers. Class selection is internal by fixed member
+   identity; callers cannot supply or override it. This is no global
+   authenticated/provenance flag and does not clear either qualification gate. Order is lexical virtual path order, not local FD
    number. Aliases remain bounded authenticated metadata; do not materialize
    filesystem links or attach an FD for them.
 5. Transfer one MEMBER packet per regular row, in that exact order, with exactly
@@ -284,10 +293,14 @@ not a reusable message or execution framework.
    only after all success conditions hold and the channel is closed. No JSON
    result or saved readiness record can recreate a lease.
 
-The manifest's identity rows bind received kernel objects to the owned worker's
+The manifest's identity rows and fixed trust classes bind received kernel
+objects to the owned worker's corresponding signed-library or compiled-helper
 verification; they are not portable identities or independently trusted public
-metadata. A lease can expose bounded private byte reads and close only, with no
-path, launch, witness or admission API. Every retained regular object, including
+metadata. A fixed-byte custody lease preserves that per-member trust distinction in
+its private metadata. It can expose bounded private byte reads and close only,
+with no path, launch, witness or admission API. It cannot claim that all members
+were authenticated by this operation or substitute for the independent helper-
+origin gate. Every retained regular object, including
 loader and libraries, stays sealed until the lease closes. Later execution
 would require a separately reviewed launch capability, not this lease.
 
