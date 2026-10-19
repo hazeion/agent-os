@@ -183,3 +183,172 @@ documents search and environment/secure-execution behavior. These are design
 constraints, not measurements of a supported host or permission to use a new
 launcher. The reviewed glibc rewrite and ABI-marker evidence remains in the
 published signed-library contract; this draft grants it no execution authority.
+
+## Concrete custody protocol proposal for review
+
+This section proposes the previously unresolved handoff. It is design only and
+requires root and independent approval before any custody code. It selects
+worker authentication into sealed objects followed by descriptor transfer;
+it does not select an immutable loader namespace or authorize execution.
+
+### Fixed operation and ownership
+
+Add a separate private fixed custody operation beside the existing origin
+comparison; keep the public comparison API and its constructible result
+unchanged. Reuse its exact trusted worker bootstrap, disposable input capture,
+OS inspection primitives, owned-group lifetime and final source revalidation.
+No new trusted interpreter, privileged process or generic transport is added.
+The worker's trusted verification code remains the authenticity boundary;
+this protocol does not protect a compromised controller, kernel or worker.
+
+The parent creates one unnamed AF_UNIX SOCK_SEQPACKET socketpair before
+spawning that exact worker. Both endpoints start close-on-exec. Only the worker
+endpoint is explicitly inherited by the one owned worker; it is closed in the
+parent immediately after spawn. The worker closes it in every decoder child
+through close_fds and an exact pass_fds list. No bound pathname, listener,
+connection acceptance, external client or caller-supplied socket exists.
+
+Enable SO_PASSCRED on both receiving endpoints before spawning. Every received
+packet must carry exactly one kernel SCM_CREDENTIALS record with the expected
+PID, UID and GID: the parent expects its unreaped owned worker identity, and the
+worker expects its original parent. Retain the parent's existing start-identity
+and pidfd/group controls. SO_PEERCRED on a pre-fork socketpair identifies the
+creator at socketpair time, so it must not be mistaken for the child's identity.
+This nonprivileged worker must not gain credentials or share its endpoint with
+children. A matching nonce alone does not establish sender identity.
+
+Use one parent-generated 32-byte random operation nonce, one protocol version,
+and monotonically increasing sequence numbers. Only this parent's active
+invocation knows the expected nonce. All messages use bounded UTF-8 JSON with
+strict duplicate-key, exact-key/type and termination checks; no raw package,
+archive or private path text is returned. This is a fixed internal wire shape,
+not a reusable message or execution framework.
+
+### Authentication, sealing and packet order
+
+1. The parent sends one START packet, at most 4 KiB, containing the fixed
+   operation name, nonce and parent-created absolute monotonic deadline plus
+   the existing bounded input-root reference. No descriptor is attached.
+2. The worker performs the existing complete authentication, package grammar,
+   archive/member selection, two fixed ELF profiles and four shared-graph
+   comparisons over its one captured input set. It must include all four
+   helpers as retained regular members, comparing them to the authenticated
+   deb members rather than retaining an independent equal-looking path later.
+   No parent recapture, source reopen or caller report supplies member bytes.
+3. For each selected regular member, copy directly from those authenticated
+   immutable Python bytes into one fresh memfd, apply F_SEAL_WRITE,
+   F_SEAL_GROW, F_SEAL_SHRINK and F_SEAL_SEAL, then use bounded pread on that
+   descriptor to recompute size/hash and parse the exact sealed bytes. Bind
+   the four graph comparisons to those sealed reads. Do not send a manifest
+   before this sealed-object validation finishes. No mmap or executable use.
+4. Send one MANIFEST packet without descriptors, at most the existing 64 KiB
+   result bound. It contains nonce, sequence, the existing fixed snapshot and
+   package identities, ordered regular rows (virtual path, size, SHA256,
+   st_dev/st_ino from the sealed object), ordered alias path/text rows and the
+   four static comparisons. Order is lexical virtual path order, not local FD
+   number. Aliases remain bounded authenticated metadata; do not materialize
+   filesystem links or attach an FD for them.
+5. Transfer one MEMBER packet per regular row, in that exact order, with exactly
+   one SCM_RIGHTS descriptor, one credentials record and nonce/sequence/index.
+   Parent recvmsg uses MSG_CMSG_CLOEXEC and space for exactly the permitted
+   rights and credentials. It owns every delivered FD immediately, even on a
+   malformed packet. MSG_TRUNC, MSG_CTRUNC, unknown/multiple ancillary records,
+   extra or missing rights, wrong ordering, duplicate object identity or wrong
+   peer refuse. Close all actually delivered rights on refusal; rely on kernel
+   truncation closure only for rights never delivered to userspace.
+6. Parent verifies regular object type, size, device/inode, exact required
+   seals, and a bounded pread hash from the received descriptor against that
+   manifest row. SCM_RIGHTS refers to the same open file description, not an
+   authenticated filename; pread avoids its shared mutable offset. The parent
+   does not reauthenticate another capture or infer provenance from a report.
+   Send one exact MEMBER_ACK only after successful validation. Worker retains
+   its original descriptor until that ACK; lost ACK retains both references
+   until cleanup. ACK never authorizes execution or source deletion.
+7. After the last ACK, the worker repeats terminal source identity/privacy
+   checks and drains its owned decoder descendants using the existing worker
+   rules. Only then send one READY packet, without rights, binding nonce,
+   manifest digest and final sequence. Worker holds the channel open awaiting
+   RELEASE; it must not send another packet or create another child.
+8. Parent accepts READY only after all rows are verified. Send RELEASE, close
+   the sending direction and perform existing exact owned-group closure while
+   retaining all received FDs privately. Drain the receive side through EOF
+   within the original deadline; any packet after READY, including another
+   READY or extra rights, refuses. Publish a private custody lease only after
+   worker/group absence is proved, the channel is closed and the deadline has
+   not expired. No JSON result or saved readiness record can recreate a lease.
+
+The manifest's identity rows bind received kernel objects to the owned worker's
+verification; they are not portable identities or independently trusted public
+metadata. A lease can expose bounded private byte reads and close only, with no
+path, launch, witness or admission API. Every retained regular object, including
+loader and libraries, stays sealed until the lease closes. Later execution
+would require a separately reviewed launch capability, not this lease.
+
+### Bounds and failure states
+
+Keep the existing input, archive, capture and result bounds: 19 exact inputs,
+80 MiB aggregate captured input, 32 MiB per decoded tar, 320 MiB aggregate scan,
+32 MiB selected library bytes, alias depth16, worker512 MiB address space,
+15 CPU seconds,64 descriptors and core size0. For this narrower custody
+proposal, accept only the already inspected complete fixed selection of
+17 regular objects (13 library/loader objects plus4 helpers) and10 aliases;
+regular helper bytes add only the existing four compiled helper-size bounds.
+A changed selection stops for review rather than extending this count. Do not
+increase RLIMIT_NOFILE: transfer sequentially, close acknowledged worker copies,
+and require an explicit FD accounting test for existing capture/decoder peaks,
+17 retained members, socket and control descriptors before implementation.
+If the existing64 limit cannot accommodate the complete staged sequence, refuse
+and redesign ownership before changing any limit.
+
+One 30-second absolute monotonic deadline begins before worker creation and
+covers START, authentication, sealing, every transfer/hash/ACK, READY, RELEASE,
+source revalidation and verified group/channel closure. No stage or per-object
+retry resets it. No protocol retry or second worker is permitted. Nonblocking
+socket operations check the same deadline; EAGAIN waits consume that budget.
+A cleanup action cannot extend acceptance past the deadline. Existing bounded
+owned-group cleanup remains mandatory even after failure; if closure cannot be
+proved, retain ownership records and temporary capture state and reject the
+operation. Never report a lease while cleanup is uncertain.
+
+States are NEW, VERIFYING, TRANSFERRING, CLOSING, LEASED and CLOSED, with a
+terminal FAILED or CLEANUP_UNCERTAIN outcome. Before LEASED no descriptor is
+available to another consumer. On malformed input, EOF, peer change, deadline,
+worker death, parent cancellation or partial handoff, enter CLOSING: close every
+parent-delivered FD, terminate/reap only the already owned worker group, close
+channels and remove captures only after closure proof. The worker closes all
+of its retained FDs on a terminal error. Parent death makes the worker's socket
+reach EOF, triggering the same local cleanup; this must be tested with real
+Linux ownership rules before qualification. No claim is made that a killed
+parent can publish cleanup evidence. The external supervisor must treat that
+interruption as unqualified until reconciliation, not replay a previous lease.
+A successful lease owns its17 FDs until explicit close; close is idempotent and
+must not release a descriptor while any private read is active.
+
+### Hostile protocol tests and actual evidence
+
+Source-level tests should cover a complete exact ordered handoff using real
+local descriptors where available, then inject wrong nonce/version/sequence,
+old READY replay, alias substitution, manifest mutation, partial send/EOF,
+extra packets, missing/multiple rights, truncated payload/control, foreign
+credentials, inherited child endpoint, changed identity and descriptor reuse.
+Require real post-seal write/truncate rejection on Linux, not just a mocked
+F_GET_SEALS result. Exercise shared-offset changes, incorrect hash/size/seals,
+failed ACK after parent receive, worker exit after send before ACK, decoder
+survival, parent death, deadline at every transition and cleanup uncertainty.
+Assert exact ownership/FD counts and no lease publication on each failure.
+
+Portable tests may substitute credentials/seals only to test refusal logic and
+must identify that substitution. Actual Linux positive qualification requires
+real SCM_RIGHTS/SCM_CREDENTIALS delivery, CLOEXEC inheritance, kernel seal/write
+behavior, process identity and group closure, resource peaks and parent-death
+cleanup. No supported host exists yet. Immutable loader namespace, helper
+execution, glibc dynamic behavior, FUSE privilege/teardown and provider/Run
+qualification remain outside this protocol and unqualified.
+
+Primary APIs: Linux [unix sockets](https://man7.org/linux/man-pages/man7/unix.7.html)
+for SOCK_SEQPACKET, SO_PASSCRED, SCM_CREDENTIALS and shared-open-description
+SCM_RIGHTS semantics; [recvmsg](https://man7.org/linux/man-pages/man2/recv.2.html)
+for ancillary truncation and MSG_CMSG_CLOEXEC; and
+[file sealing](https://man7.org/linux/man-pages/man2/F_ADD_SEALS.2const.html)
+for required seals and writable-mapping restrictions. These API descriptions
+constrain the design; reading them is not actual platform qualification.
