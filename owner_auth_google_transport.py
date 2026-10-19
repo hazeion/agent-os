@@ -103,8 +103,12 @@ class GoogleWorkerRunner:
         failure = "unavailable"
         try:
             encoded = json.dumps(payload, separators=(",", ":")).encode()
-            remaining = deadline_at - time.monotonic()
-            if not 0 < remaining <= WORK_SECONDS or len(encoded) > MAX_INPUT_BYTES:
+            started_at = time.monotonic()
+            remaining = deadline_at - started_at
+            # Compare the caller's absolute deadline with the same-clock bound.
+            # Subtraction can round a valid full budget upward when a coarse
+            # clock repeats across a floating-point exponent boundary.
+            if not remaining > 0 or deadline_at > started_at + WORK_SECONDS or len(encoded) > MAX_INPUT_BYTES:
                 raise ValueError("invalid")
             command = worker_command()
         except Exception:
@@ -132,7 +136,7 @@ class GoogleWorkerRunner:
                 starting = False
                 if self._closed:
                     raise ValueError("closed")
-            remaining = deadline_at - time.monotonic()
+            remaining = min(WORK_SECONDS, deadline_at - time.monotonic())
             if remaining <= 0:
                 raise ValueError("expired")
             output, _ = process.communicate(encoded, timeout=remaining)
