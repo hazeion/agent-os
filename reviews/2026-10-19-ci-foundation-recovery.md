@@ -1,6 +1,6 @@
 # CI foundation recovery
 
-Status: final verification in progress before publication.
+Status: reviewed local repair; hosted verification and stack carry pending.
 
 The owner requested finishing the open work, starting with a current checkout
 and repair of CI failures. This branch starts at PR #243 head `1bdb4a4` and
@@ -37,7 +37,14 @@ adapter changes. They caught the initial direct alias's recursive-root
 behavior and Windows path normalization in a new assertion; both were
 corrected and covered. No credentials or owner services are used.
 
-Full web checks, production build, and final review readback are in progress.
+Both final independent reviews are clear after the root normalization fix.
+The sequential local web gate passes lint, typecheck and all 371 tests;
+the production standalone build passes with Next 16.3.8. An earlier
+concurrent foundation/tip run timed out on UI readiness. The final run keeps
+every original timeout and assertion, including the cached-tab latency check.
+Fresh npm audit reports zero vulnerabilities. The full tip Python suite is
+still running and is not claimed as foundation or hosted evidence.
+
 Hosted multi-platform checks and propagation through the existing PR stack
 remain required. Integrated owner/provider/host/garage acceptance remains
 separate and incomplete.
