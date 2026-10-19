@@ -293,6 +293,7 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
         for mutation, accepted in (('append', True), ('rewrite', False), ('reset', False)):
             with self.subTest(mutation=mutation):
                 path.write_bytes(b'fixed captured prefix')
+                path.chmod(0o600)
                 identity = (path.stat().st_dev, path.stat().st_ino)
                 original_read = os.read
                 changed = False
@@ -397,6 +398,185 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
         finally:
             if connection is not None:
                 connection.close()
+
+    def test_admission_retries_owned_checkpoint_before_wal_open(self):
+        for operation in ('connect', 'validate', 'readonly'):
+            with self.subTest(operation=operation):
+                owner = mentat_db.connect(self.root)
+                try:
+                    owner.execute('UPDATE mentat_deliverable_review_state SET revision=19')
+                    path = mentat_db.database_path(self.root)
+                    identity = (path.stat().st_dev, path.stat().st_ino)
+                    original = mentat_db._read_wal_prefix
+                    captures = []
+                    def checkpoint_then_read(*args):
+                        nonlocal owner
+                        captures.append(args[0])
+                        if owner is not None:
+                            owner.close()
+                            owner = None
+                        return original(*args)
+                    with patch.object(mentat_db, '_read_wal_prefix', side_effect=checkpoint_then_read), patch.object(mentat_db.time, 'sleep') as pause:
+                        if operation == 'connect':
+                            with closing(mentat_db.connect(self.root)) as connection:
+                                self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 19)
+                        elif operation == 'validate':
+                            self.assertTrue(mentat_db.validate_current_database_root(self.root))
+                        else:
+                            with mentat_db.connect_current_readonly(self.root) as connection:
+                                self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 19)
+                        self.assertEqual(len(captures), 1)
+                        pause.assert_called_once_with(mentat_db.DATABASE_OPEN_RETRY_SECONDS)
+                    self.assertEqual((path.stat().st_dev, path.stat().st_ino), identity)
+                finally:
+                    if owner is not None:
+                        owner.close()
+
+    def test_sidecar_race_exhausts_only_existing_three_attempts(self):
+        self.current()
+        before = self.snapshot()
+        for operation in ('connect', 'validate', 'readonly'):
+            with self.subTest(operation=operation):
+                with patch.object(mentat_db, '_current_database_files', side_effect=mentat_db._TransientDatabaseSidecarRace('owned race')) as admission, patch.object(mentat_db.time, 'sleep') as pause:
+                    with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'sidecar changed'):
+                        if operation == 'connect':
+                            mentat_db.connect(self.root)
+                        elif operation == 'validate':
+                            mentat_db.validate_current_database_root(self.root)
+                        else:
+                            with mentat_db.connect_current_readonly(self.root):
+                                self.fail('unstable source yielded')
+                    self.assertEqual(admission.call_count, 3)
+                    self.assertEqual(pause.call_count, 2)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_admission_retries_owned_checkpoint_after_wal_open(self):
+        for operation in ('connect', 'validate', 'readonly'):
+            with self.subTest(operation=operation):
+                owner = mentat_db.connect(self.root)
+                try:
+                    owner.execute('UPDATE mentat_deliverable_review_state SET revision=29')
+                    wal = Path(str(mentat_db.database_path(self.root).resolve(strict=True)) + '-wal')
+                    original = os.open
+                    removed_links = []
+                    def open_then_checkpoint(path, flags, *args, **kwargs):
+                        nonlocal owner
+                        descriptor = original(path, flags, *args, **kwargs)
+                        if Path(path) == wal and owner is not None:
+                            owner.close()
+                            owner = None
+                            removed_links.append(os.fstat(descriptor).st_nlink)
+                        return descriptor
+                    with patch.object(mentat_db.os, 'open', side_effect=open_then_checkpoint), patch.object(mentat_db.time, 'sleep') as pause:
+                        if operation == 'connect':
+                            with closing(mentat_db.connect(self.root)) as connection:
+                                self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 29)
+                        elif operation == 'validate':
+                            self.assertTrue(mentat_db.validate_current_database_root(self.root))
+                        else:
+                            with mentat_db.connect_current_readonly(self.root) as connection:
+                                self.assertEqual(connection.execute('SELECT revision FROM mentat_deliverable_review_state').fetchone()[0], 29)
+                        self.assertEqual(removed_links, [0])
+                        pause.assert_called_once_with(mentat_db.DATABASE_OPEN_RETRY_SECONDS)
+                finally:
+                    if owner is not None:
+                        owner.close()
+
+    def test_safe_replaced_wal_is_transient_but_unsafe_wal_is_not(self):
+        path = self.root / 'owned-wal'
+        path.write_bytes(b'original prefix')
+        path.chmod(0o600)
+        identity = (path.stat().st_dev, path.stat().st_ino)
+        replacement = self.root / 'replacement'
+        replacement.write_bytes(b'new prefix')
+        replacement.chmod(0o600)
+        replacement.replace(path)
+        self.assertNotEqual((path.stat().st_dev, path.stat().st_ino), identity)
+        if os.name == 'posix':
+            path.chmod(0o644)
+            with self.assertRaises(mentat_db.MentatDatabaseError) as refused:
+                mentat_db._read_wal_prefix(path, identity)
+            self.assertNotIsInstance(refused.exception, mentat_db._TransientDatabaseSidecarRace)
+            path.chmod(0o600)
+        with self.assertRaises(mentat_db._TransientDatabaseSidecarRace):
+            mentat_db._read_wal_prefix(path, identity)
+        os.link(path, self.root / 'outside-link')
+        with self.assertRaises(mentat_db.MentatDatabaseError) as refused:
+            mentat_db._read_wal_prefix(path, identity)
+        self.assertNotIsInstance(refused.exception, mentat_db._TransientDatabaseSidecarRace)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX descriptor privacy')
+    def test_wal_descriptor_privacy_changes_refuse_without_retry(self):
+        for mutation in ('chmod-before', 'chmod-during', 'hardlink-during'):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'wal'
+                path.write_bytes(b'captured private WAL')
+                path.chmod(0o600)
+                identity = (path.stat().st_dev, path.stat().st_ino)
+                if mutation == 'chmod-before':
+                    path.chmod(0o644)
+                original = os.read
+                changed = False
+                def read_then_change(descriptor, size):
+                    nonlocal changed
+                    raw = original(descriptor, size)
+                    if not changed:
+                        changed = True
+                        if mutation == 'chmod-during':
+                            path.chmod(0o644)
+                        elif mutation == 'hardlink-during':
+                            os.link(path, path.with_name('outside-link'))
+                    return raw
+                with patch.object(mentat_db.os, 'read', side_effect=read_then_change):
+                    with self.assertRaises(mentat_db.MentatDatabaseError) as refused:
+                        mentat_db._read_wal_prefix(path, identity)
+                self.assertNotIsInstance(refused.exception, mentat_db._TransientDatabaseSidecarRace)
+                self.assertEqual(path.read_bytes(), b'captured private WAL')
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo') and hasattr(os, 'O_NONBLOCK'), 'nonblocking FIFO support')
+    def test_wal_replaced_by_fifo_before_open_refuses_without_reading(self):
+        path = self.root / 'wal'
+        path.write_bytes(b'private WAL')
+        path.chmod(0o600)
+        identity = (path.stat().st_dev, path.stat().st_ino)
+        original = os.open
+        def replace_then_open(candidate, flags):
+            self.assertTrue(flags & os.O_NONBLOCK)
+            self.assertTrue(flags & os.O_NOFOLLOW)
+            path.unlink()
+            os.mkfifo(path, 0o600)
+            return original(candidate, flags)
+        with patch.object(mentat_db.os, 'open', side_effect=replace_then_open), patch.object(mentat_db.os, 'read', side_effect=AssertionError('unsafe read')):
+            with self.assertRaises(mentat_db.MentatDatabaseError) as refused:
+                mentat_db._read_wal_prefix(path, identity)
+        self.assertNotIsInstance(refused.exception, mentat_db._TransientDatabaseSidecarRace)
+        self.assertTrue(stat.S_ISFIFO(path.lstat().st_mode))
+
+    def test_admission_does_not_retry_permanent_failure(self):
+        for operation in ('connect', 'validate', 'readonly'):
+            with self.subTest(operation=operation):
+                with patch.object(mentat_db, '_current_database_files', side_effect=mentat_db.MentatDatabaseError('unsafe source')) as admission, patch.object(mentat_db.time, 'sleep') as pause:
+                    with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'unsafe source'):
+                        if operation == 'connect':
+                            mentat_db.connect(self.root)
+                        elif operation == 'validate':
+                            mentat_db.validate_current_database_root(self.root)
+                        else:
+                            with mentat_db.connect_current_readonly(self.root):
+                                self.fail('unsafe source yielded')
+                    self.assertEqual(admission.call_count, 1)
+                    pause.assert_not_called()
+                self.assertEqual(self.snapshot(), {})
+
+    def test_current_readonly_never_replays_consumer_after_yield(self):
+        self.current()
+        original = mentat_db._current_database_files
+        with patch.object(mentat_db, '_current_database_files', wraps=original) as admission, patch.object(mentat_db.time, 'sleep') as pause:
+            with self.assertRaises(mentat_db._TransientDatabaseSidecarRace):
+                with mentat_db.connect_current_readonly(self.root):
+                    raise mentat_db._TransientDatabaseSidecarRace('consumer failed')
+            self.assertEqual(admission.call_count, 1)
+            pause.assert_not_called()
 
     def test_owned_snapshot_storage_is_removed_on_refusal(self):
         self.current()
