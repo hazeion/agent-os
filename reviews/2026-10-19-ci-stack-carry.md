@@ -24,6 +24,7 @@ passing ancestor as current-head acceptance.
 | 267 | `9bc7fc1` | `cec9c00` | Guarded dependency conflicts; browser smoke script is byte-identical to the independently reviewed parent. Original Task input feature code unchanged. All 28 Node/Task input contract, storage and HTTP tests pass without skips. Hosted and integrated acceptance remain pending. |
 | 268 | `5dc8f64` | `2f14095` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 8 targeted tests discovered; 8 pass; no skips. Hosted and integrated acceptance remain pending. |
 | 269 | `1f2fdee` | `6e32e55` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 19 targeted tests discovered; 19 pass; no skips. Hosted and integrated acceptance remain pending. |
+| 270 | `5b4f4cf` | `769c0c5` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 24 targeted tests discovered; 24 pass; no skips. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret

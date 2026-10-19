@@ -115,9 +115,10 @@ The owner Task-input editor and retained versions are published in
 ordinary Run once and legacy Hermes delegation from omitting saved inputs.
 The immutable Run-input evidence foundation is published in
 [PR 268](https://github.com/hazeion/agent-os/pull/268); it adds no executable
-Project route. The owner deliverable storage slice follows with typed garage
-content and retained preview versions. Generated-output promotion, grouped
-review, and the website editor remain necessary before issue 263 is complete.
+Project route. Typed garage content and retained owner preview versions are
+published in [PR 269](https://github.com/hazeion/agent-os/pull/269). The
+Project results website editor follows. Generated-output promotion and
+grouped owner review remain necessary before issue 263 is complete.
 The next Project-execution step is exact owner approval and atomic Run/receipt
 reservation against the retained evidence. The current Kanban adapter has no
 qualified operation binding

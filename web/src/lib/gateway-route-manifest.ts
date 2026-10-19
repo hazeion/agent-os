@@ -99,6 +99,12 @@ export const GATEWAY_ROUTE_MANIFEST: readonly GatewayRouteRule[] = Object.freeze
   rule("POST", "/api/projects/[projectId]/context/revoke", "web/src/app/api/projects/[projectId]/context/revoke/route.ts"),
   rule("POST", "/api/project-context/[contextId]/prune/preview", "web/src/app/api/project-context/[contextId]/prune/preview/route.ts"),
   rule("POST", "/api/project-context/[contextId]/prune", "web/src/app/api/project-context/[contextId]/prune/route.ts"),
+  rule("GET", "/api/projects/[projectId]/deliverables", "web/src/app/api/projects/[projectId]/deliverables/route.ts"),
+  rule("POST", "/api/projects/[projectId]/deliverables", "web/src/app/api/projects/[projectId]/deliverables/route.ts"),
+  rule("GET", "/api/projects/[projectId]/deliverables/[versionId]", "web/src/app/api/projects/[projectId]/deliverables/[versionId]/route.ts"),
+  rule("GET", "/api/deliverables/history", "web/src/app/api/deliverables/history/route.ts"),
+  rule("GET", "/api/deliverables/[versionId]", "web/src/app/api/deliverables/[versionId]/route.ts"),
+  rule("GET", "/api/deliverables/[versionId]/preview", "web/src/app/api/deliverables/[versionId]/preview/route.ts"),
   ...staticRule("/sign-in", "web/src/app/sign-in/page.tsx"),
   ...([ ["POST", "/auth/google/start"], ["GET", "/auth/google/callback"] ] as const).map(([method, path]) => Object.freeze({
     method, path, exposure: "anonymous_auth" as const, csrf: "not_required" as const,

@@ -5,7 +5,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browserTimezone, inputTimestamp, localInputTimestamp, planningTimestamp } from "@/lib/planning-time";
 
 import { ProjectContextEditor, RetiredProjectContextHistory, type ProjectContextDraft } from "./project-context-editor";
+import { ProjectDeliverableEditor, RetiredDeliverableHistory, type DeliverableDraft } from "./project-deliverable-editor";
 import { ProjectTaskInputEditor, RetiredTaskInputHistory, type TaskInputDraft } from "./project-task-input-editor";
+import type { DeliverableSlot } from "@/lib/project-deliverable-contract";
 
 import type { TaskDependencyMapProps } from "./task-dependency-map";
 
@@ -183,6 +185,7 @@ export function ProjectsTasksWorkspace() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshingTaskPages, setRefreshingTaskPages] = useState(false);
   const [contextDrafts, setContextDrafts] = useState<Record<string, ProjectContextDraft | null>>({});
+  const [deliverableDrafts, setDeliverableDrafts] = useState<Record<string, Partial<Record<DeliverableSlot, DeliverableDraft | null>>>>({});
   const [taskInputDrafts, setTaskInputDrafts] = useState<Record<string, TaskInputDraft | null>>({});
   const [agents, setAgents] = useState<PublicAgent[]>([]);
   const [agentsState, setAgentsState] = useState<"loading" | "ready" | "empty" | "unavailable">("loading");
@@ -1014,6 +1017,7 @@ export function ProjectsTasksWorkspace() {
       if (preview.target_kind === "project") setContextDrafts((drafts) => ({ ...drafts, [preview.target_id]: null }));
       if (preview.target_kind === "task") setTaskInputDrafts((drafts) => ({ ...drafts, [preview.target_id]: null }));
       if (preview.target_kind === "project") setTaskInputDrafts((drafts) => Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, draft?.projectId === preview.target_id ? null : draft])));
+      if (preview.target_kind === "project") setDeliverableDrafts((drafts) => ({ ...drafts, [preview.target_id]: {} }));
       clearBrowserTaskReminderSchedules();
       const location = new URL(window.location.href);
       if (preview.target_kind === "task" && location.searchParams.get("task") === preview.target_id) { requestedTaskResolved.current = true; updatePlanningLocation(location.searchParams.get("project"), null, true); }
@@ -1457,6 +1461,7 @@ export function ProjectsTasksWorkspace() {
       <div aria-label="Project visibility" className="saved-view-navigation"><p className="console-kicker">Project view</p>{(["active", "all", "archived"] as const).map((visibility) => <button aria-pressed={projectVisibility === visibility} disabled={busy} key={visibility} onClick={() => selectProjectVisibility(visibility)} type="button">{visibility === "all" ? "All Projects" : visibility === "active" ? "Active Projects" : "Archived Projects"}</button>)}</div>
       {state === "loading" ? <p>Loading Projects…</p> : state === "unavailable" || state === "error" ? <p>Projects are temporarily unavailable.</p> : visibleProjects.length ? <ul>{visibleProjects.map((project) => <li key={project.id}><button aria-current={project.id === selectedProjectId ? "true" : undefined} aria-label={`Select ${project.name} Project`} data-project-id={project.id} disabled={busy} onClick={() => selectProject(project.id)} type="button"><strong>{project.name}</strong><span>{project.status}</span></button></li>)}</ul> : overview?.projects.length ? projectVisibility === "archived" ? <section aria-label="Archived Project recovery"><p>No archived Projects.</p><p>Archived Projects can be restored here when needed.</p><button disabled={busy} onClick={() => selectProjectVisibility("active")} type="button">Show active Projects</button></section> : projectVisibility === "active" ? <section aria-label="Archived Project recovery"><p>No active Projects.</p><p>Open Archived Projects to restore one.</p><button disabled={busy} onClick={() => selectProjectVisibility("archived")} type="button">View archived Projects</button></section> : <p>No Projects match this view.</p> : <p>No Projects yet.</p>}
       <RetiredProjectContextHistory />
+      <RetiredDeliverableHistory />
       <RetiredTaskInputHistory />
       <div className="saved-view-navigation"><p className="console-kicker">Saved view</p>{(["all", "today", "waiting", "review", "someday", "completed"] as const).map((item) => <button aria-pressed={savedView === item} disabled={busy} key={item} onClick={() => setSavedView(item)} type="button">{item === "all" ? "All tasks" : item}</button>)}</div>
       </div>
@@ -1464,7 +1469,8 @@ export function ProjectsTasksWorkspace() {
     <div className="project-tasks-pane planning-task-pane">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2 ref={taskListHeading} tabIndex={-1}>{selectedProject?.name ?? "Tasks"}</h2></div><div className="planning-heading-actions"><button aria-label="Choose Project" className="planning-mobile-jump" onClick={jumpToProjects} type="button">Projects</button><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div></div>
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
-      {selectedProject ? <ProjectContextEditor key={selectedProject.id} projectId={selectedProject.id} agents={agents} draft={contextDrafts[selectedProject.id]} onDraftChange={(update) => setContextDrafts((drafts) => ({ ...drafts, [selectedProject.id]: update(drafts[selectedProject.id] ?? null) }))} /> : null}
+      {selectedProject ? <ProjectContextEditor key={`context:${selectedProject.id}`} projectId={selectedProject.id} agents={agents} draft={contextDrafts[selectedProject.id]} onDraftChange={(update) => setContextDrafts((drafts) => ({ ...drafts, [selectedProject.id]: update(drafts[selectedProject.id] ?? null) }))} /> : null}
+      {selectedProject ? <ProjectDeliverableEditor key={`deliverables:${selectedProject.id}`} projectId={selectedProject.id} drafts={deliverableDrafts[selectedProject.id]} onDraftChange={(slot, update) => setDeliverableDrafts((drafts) => ({ ...drafts, [selectedProject.id]: { ...drafts[selectedProject.id], [slot]: update(drafts[selectedProject.id]?.[slot] ?? null) } }))} /> : null}
       <section aria-label="Search Projects and Tasks" className="planning-navigation-search">
         <label><span>Search Projects and Tasks</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setPlanningSearchQuery(event.target.value); }} placeholder="Find a Project or Task" type="search" value={planningSearchQuery} /></label>
         {planningSearchState === "loading" ? <p aria-live="polite" role="status">Searching Projects and Tasks…</p> : null}
