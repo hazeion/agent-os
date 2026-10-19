@@ -93,9 +93,7 @@ def inspect_elf(data: bytes, *, host_only: bool = False) -> ElfDependencies | No
     for index in range(dynamic[1] // 16):
         tag, value = struct.unpack_from("<qQ", data, dynamic[0] + index * 16)
         if host_only:
-            if tag not in _HOST_DYNAMIC_TAGS or tag != 1 and tag in host_tags:
-                _fail()
-            host_tags.add(tag)
+            _host_dynamic_tag(tag, value, host_tags)
         if tag == 0:
             ended = True
             break
@@ -109,14 +107,6 @@ def inspect_elf(data: bytes, *, host_only: bool = False) -> ElfDependencies | No
             tags[tag] = value
         elif tag in {0x6ffffefb, 0x6ffffefc}:  # DT_DEPAUDIT / DT_AUDIT
             _fail()
-        elif host_only:
-            # These declarations alter lookup or introduce objects outside the
-            # represented DT_NEEDED graph. Do not mistake a partial graph for
-            # a fixed host helper's complete declared loading requirements.
-            if tag == 30 and value & ~(8 | 16):  # NOW / STATIC_TLS only
-                _fail()
-            if tag == 0x6ffffffb and value & ~(1 | 8 | 0x08000000):  # NOW / NODELETE / PIE
-                _fail()
     if not ended:
         _fail()
     if not needed_offsets and not any(tag in tags for tag in (14, 15, 29)) and 5 not in tags and 10 not in tags:
@@ -195,6 +185,17 @@ def inspect_elf(data: bytes, *, host_only: bool = False) -> ElfDependencies | No
     if host_only and (result.rpath or result.runpath):
         _fail()
     return result
+
+
+def _host_dynamic_tag(tag, value, seen):
+    """Unchanged closed ordinary tag/flag rules, shared without an override."""
+    if tag not in _HOST_DYNAMIC_TAGS or tag != 1 and tag in seen:
+        _fail()
+    seen.add(tag)
+    if tag == 30 and value & ~(8 | 16):
+        _fail()
+    if tag == 0x6ffffffb and value & ~(1 | 8 | 0x08000000):
+        _fail()
 
 
 def inspect_host_elf(data: bytes) -> ElfDependencies:
