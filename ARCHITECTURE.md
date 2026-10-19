@@ -221,9 +221,15 @@ the pending row only; codes, tokens and client secrets are never stored there.
 The callback boundary atomically consumes an exact state/browser match and
 clears its pending secrets before invoking the fixed transport once. Replay,
 crash and uncertain results cannot reopen an attempt. Verified exchange is
-followed by an exact owner/configuration recheck and a private receipt; it
-issues no session. Eventual session issuance must atomically claim the receipt
-and recheck browser binding and current authority. Snapshot copies remove all
+followed by an exact owner/configuration recheck and a private receipt.
+Python session completion atomically claims that verified receipt, rechecks
+state/browser binding and current authority, inserts fresh cookie/CSRF digests,
+and deletes the receipt. Duplicate claims cannot retrieve or mint another
+session. The owner-wide 32-session cap rejects excess Google logins without
+eviction; Google sessions have no device identity or fresh reauthentication.
+Exact-session sign-out validates CSRF and current authority, revokes its SSE
+leases and retains bounded history without affecting another browser's session.
+Snapshot copies remove all
 attempts before vacuuming; startup and restore discard them. Future HTTP wiring
 must use an explicit same-origin login start and a Secure, HttpOnly,
 SameSite=Lax `__Host-` browser-binding cookie for the cross-site callback.

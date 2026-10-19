@@ -1,4 +1,4 @@
-"""Private ordinary-login attempts. No routes, enrollment or session issuance."""
+"""Private ordinary-login attempts and session completion. No routes or enrollment."""
 
 from __future__ import annotations
 
@@ -115,8 +115,8 @@ class GoogleLoginTransactions:
     def verify_callback(self, *, state: str, browser_binding: str, code: str, client_secret: str) -> LoginReceipt:
         """Consume first, exchange once, then record exact-owner verification.
 
-        Future session issuance must atomically claim this receipt and recheck
-        the browser binding and complete current owner/configuration snapshot.
+        Session issuance atomically claims this receipt and rechecks the browser
+        binding and complete current owner/configuration snapshot.
         Neither this object nor a provider identity grants session authority.
         """
         connection = None
@@ -148,7 +148,6 @@ class GoogleLoginTransactions:
                 if row is None or row["state"] != "consumed" or row["expires_at"] <= now or not _matches(row, _snapshot(connection)) or not _matches(attempt, _snapshot(connection)):
                     raise OwnerAuthError("invalid")
                 connection.execute("UPDATE mentat_owner_google_transactions SET state='verified',terminal_at=? WHERE transaction_id=?", (now, row["transaction_id"]))
-                self._authority._audit(connection, "authentication_succeeded", "owner", None, now)
                 return LoginReceipt(row["transaction_id"])
         except Exception:
             # Consumption is already committed; failures never re-enable it.
@@ -164,6 +163,11 @@ class GoogleLoginTransactions:
                 attempt["code_verifier"] = attempt["nonce"] = None
             if connection is not None:
                 connection.close()
+
+    def authenticate_callback(self, *, state: str, browser_binding: str, code: str, client_secret: str):
+        """Fixed server-only callback flow; never expose the intermediate receipt."""
+        receipt = self.verify_callback(state=state, browser_binding=browser_binding, code=code, client_secret=client_secret)
+        return self._authority.complete_google_login(transaction_id=receipt.transaction_id, state=state, browser_binding=browser_binding)
 
     def _fail(self, transaction_id: str) -> None:
         connection = None

@@ -74,7 +74,7 @@ class Ceremony:
     public_key_options: Mapping[str, Any]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SessionGrant:
     cookie_value: str
     csrf_value: str
@@ -554,6 +554,41 @@ class OwnerAuthAuthority:
         connection.execute("INSERT INTO mentat_owner_auth_sessions(session_digest, csrf_digest, device_id, state, created_at, reauthenticated_at, last_seen_at, idle_expires_at, absolute_expires_at, owner_generation) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)", (digest, csrf_digest, device_id, now, now if reauthenticated else 0, now, now + SESSION_IDLE_SECONDS, now + SESSION_ABSOLUTE_SECONDS, owner["owner_generation"]))
         return SessionGrant(cookie, csrf, ())
 
+    def complete_google_login(self, *, transaction_id: str, state: str, browser_binding: str) -> SessionGrant:
+        """Atomically claim private verified evidence, never a supplied identity."""
+        from owner_auth_google_transactions import _digest_secret, _matches, _snapshot
+
+        connection = None
+        try:
+            _token_bytes(transaction_id, 24)
+            state_digest = _digest_secret(state)
+            browser_digest = _digest_secret(browser_binding)
+            connection = self._open()
+            with transaction(connection, immediate=True):
+                now = self._clock()
+                self._cleanup(connection, now)
+                row = connection.execute("SELECT * FROM mentat_owner_google_transactions WHERE transaction_id=?", (transaction_id,)).fetchone()
+                if (
+                    row is None or row["state"] != "verified" or row["expires_at"] <= now
+                    or not hmac.compare_digest(bytes(row["state_digest"]), state_digest)
+                    or not hmac.compare_digest(bytes(row["browser_digest"]), browser_digest)
+                    or not _matches(row, _snapshot(connection))
+                ):
+                    raise OwnerAuthError("invalid")
+                if connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state='active'").fetchone()[0] >= MAX_OWNER_SESSIONS:
+                    raise OwnerAuthError("limited")
+                cookie, csrf = _token(32), _token(32)
+                connection.execute("INSERT INTO mentat_owner_auth_sessions(session_digest,csrf_digest,device_id,auth_method,owner_generation,principal_digest,state,created_at,reauthenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) VALUES(?,?,NULL,'google',?,?,'active',?,0,?,?,?)",
+                    (_digest(_token_bytes(cookie, 32)), _digest(_token_bytes(csrf, 32)), row["owner_generation"], row["principal_digest"], now, now, now + SESSION_IDLE_SECONDS, now + SESSION_ABSOLUTE_SECONDS))
+                connection.execute("DELETE FROM mentat_owner_google_transactions WHERE transaction_id=?", (transaction_id,))
+                self._audit(connection, "authentication_succeeded", "owner", None, now)
+                return SessionGrant(cookie, csrf, ())
+        except (ValueError, TypeError, sqlite3.Error):
+            raise OwnerAuthError("invalid") from None
+        finally:
+            if connection is not None:
+                connection.close()
+
     def _new_recovery_codes(self, connection: sqlite3.Connection, generation: int, now: float) -> tuple[str, ...]:
         codes: list[str] = []
         for _ in range(RECOVERY_CODE_COUNT):
@@ -913,6 +948,25 @@ class OwnerAuthAuthority:
                 connection.execute("UPDATE mentat_owner_auth_credentials SET state = 'revoked', revoked_at = ?, revision = revision + 1 WHERE device_id = ? AND state = 'active'", (now, device_id))
                 connection.execute("UPDATE mentat_owner_auth_sessions SET state = 'revoked', revoked_at = ?, revision = revision + 1 WHERE device_id = ? AND state = 'active'", (now, device_id))
                 self._audit(connection, "credential_revoked", "credential", _digest(device_id.encode("ascii")), now)
+                self._cleanup(connection, now)
+        finally:
+            connection.close()
+
+    def sign_out(self, cookie_value: str, csrf_value: str) -> None:
+        """Revoke only the current browser session after exact CSRF validation."""
+        digest = _digest(_token_bytes(cookie_value, 32))
+        if not self._admit_durable("unsafe_request", digest, UNSAFE_REQUEST_LIMIT):
+            raise OwnerAuthError("limited")
+        connection = self._open()
+        try:
+            with transaction(connection, immediate=True):
+                now = self._clock()
+                self._cleanup(connection, now)
+                session = connection.execute("SELECT * FROM mentat_owner_auth_sessions WHERE session_digest=?", (digest,)).fetchone()
+                if session is None or session["state"] != "active" or not _session_method_valid(connection, session, self._state(connection)) or not hmac.compare_digest(bytes(session["csrf_digest"]), _digest(_token_bytes(csrf_value, 32))):
+                    raise OwnerAuthError("invalid")
+                self._revoke_session_digest(connection, digest, now)
+                self._audit(connection, "session_revoked", "session", digest, now)
                 self._cleanup(connection, now)
         finally:
             connection.close()
