@@ -107,6 +107,9 @@ class CurrentProjectSchemaBackupTests(unittest.TestCase):
             b'{"schema_version":true,"runs":[]}',
             b'{"schema_version":3,"runs":[],"extra":0}',
             b'{"schema_version":4,"runs":[]}',
+            '{"schema_version":3,"runs":[]}'.encode("utf-16"),
+            '{"schema_version":3,"runs":[]}'.encode("utf-32"),
+            b'\xef\xbb\xbf{"schema_version":3,"runs":[]}',
         )
         for raw in histories:
             with self.subTest(raw=raw), TemporaryDirectory() as temporary:

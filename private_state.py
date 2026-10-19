@@ -228,7 +228,7 @@ def fresh_console_storage_issue(data_root: Path) -> str | None:
                         raise ValueError("duplicate history key")
                     result[key] = value
                 return result
-            document = json.loads(raw, object_pairs_hook=unique_pairs)
+            document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
             if (not isinstance(document, dict) or set(document) != {"schema_version", "runs"}
                     or type(document["schema_version"]) is not int or document["schema_version"] != 3
                     or document["runs"] != []):
