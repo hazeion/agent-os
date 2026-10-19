@@ -1159,14 +1159,39 @@ owner approval or execution authority; registered-output intake remains gated.
 The private Linux worker-scope component owns launch of one fixed inert
 bootstrap, verifies its process generation and kernel cgroup membership,
 descriptor-pins that generation, and verifies finite effective resource limits.
-Its bootstrap receives only a control socket and deadline; its current commands
-are fixed disposable qualification probes, not Agent execution or Run handoff.
+Its bootstrap initially receives only a control socket and deadline. After
+kernel verification, one private fixed descriptor protocol can hand off a
+prepared namespace; it accepts no caller commands or browser input.
 An independent parent watchdog and held-cgroup local Stop include detached
 descendants. Startup refusal closes control, and unverified cleanup retains
 ownership evidence. Only verified local emptiness permits releasing handles;
 it makes no claim that an external provider stopped. This component adds no
-browser route, Run admission, input/broker grant, durable controller authority,
+browser route, Run admission, durable controller authority,
 or runtime qualification. Project dispatch guards remain intact.
+
+The fixed namespace component seals query/image/code/config bytes and pins
+runtime-root directory descriptors. Runtime inode pinning is not immutable
+release/dependency or model qualification; those remain admission requirements.
+It requires separate user/PID/network/IPC/UTS/cgroup namespaces, disabled nested
+user namespaces, no capabilities, read-only mounts and bounded synthetic
+HOME/tmp/exports. The frontend closes inherited mount-source descriptors,
+keeps its broker/lifecycle sockets private from Hermes children, and runs the
+unchanged stock CLI through supported synthetic config readback. Native images
+retain their exact bytes and validated extension; no caption fallback or
+auxiliary title call is accepted. One namespace-local HTTP frontend forwards
+only bounded completion bodies over its inherited AF_UNIX channel and receives
+only bounded normalized text or fixed failure states. Provider credentials,
+headers and upstream destinations never enter that channel.
+
+Effective resource limits are re-read before irreversible handoff. Absolute
+deadline checks cover readiness, terminal readback, bootstrap exit and verified
+cleanup independently from the watchdog callback. Success requires one exact
+zero-exit terminal matching broker text and empty owned scope. A quota-verified
+read-only export directory descriptor permits fixed-name readback after exit;
+no model-prose path is opened. This private evidence grants no Run completion,
+generated-output registration or proposal Apply authority. The qualified host
+broker must still enforce exact admission/input/policy, output-token limits,
+durable journal and live revocation before any provider submission.
 
 Schema 43 stores immutable Project proposal controller generations and one
 durable inference-call reservation per generation in the private database.
