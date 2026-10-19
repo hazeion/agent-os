@@ -4,6 +4,9 @@ import { pathToFileURL } from 'node:url';
 
 export const CHECKS = Object.freeze(['document_complete','shell_hydrated','shell_runtime_ready','bridge_ready','workspace_exists','heading_correct','viewport_correct','project_selected','project_visible','task_visible','no_js_exceptions']);
 class ProtocolTimeout extends Error {}
+class TransportClosed extends Error {}
+class TransportError extends Error {}
+const emptyTransport = () => ({ sent_requests: 0, text_frames: 0, invalid_frames: 0, matched_responses: 0, pending_calls: 0, socket_closed: false, socket_error: false, close_code: 0, counters_saturated: false });
 export const DIAGNOSTICS = Object.freeze(['project_exists','project_text_matches','project_renderable','project_intersects_viewport','task_exists','task_text_matches','task_renderable','task_intersects_viewport']);
 export function configuration(value) {
   if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'debug_port,elapsed_offset_ms,origin,project_id,remaining_ms,task_id') throw new Error('browser_configuration_invalid');
@@ -78,15 +81,17 @@ export async function observe(input, dependencies = {}) {
   const remaining = () => Math.max(0, deadline - now());
   const pause = () => new Promise(resolve => setTimeout(resolve, Math.min(100, remaining())));
   const checks = Object.fromEntries(CHECKS.map(key => [key, false]));
-  let socket, sequence = 1, exceptions = 0;
+  let socket, sequence = 1, exceptions = 0, closing = false, rejectConnection, connectionTimer;
   const pending = new Map();
   const diagnostics = Object.fromEntries(DIAGNOSTICS.map(key => [key, false]));
   const observation = { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 };
-  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', stage: 'discovery', checks, diagnostics, observation };
+  const transport = emptyTransport();
+  const count = key => { if (transport[key] < 4096) transport[key]++; else transport.counters_saturated = true; };
+  const result = { schema_version: 1, ready: false, code: 'browser_readiness_timeout', stage: 'discovery', checks, diagnostics, observation, transport };
   let progressCount = 0, progressBytes = 0, lastProgress;
   const publish = () => {
-    const progress = { schema_version: 1, event: 'progress', stage: result.stage, checks: { ...checks }, diagnostics: { ...diagnostics }, observation: { ...observation } };
-    const fingerprint = JSON.stringify({ stage: result.stage, checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
+    const progress = { schema_version: 1, event: 'progress', stage: result.stage, checks: { ...checks }, diagnostics: { ...diagnostics }, observation: { ...observation }, transport: { ...transport } };
+    const fingerprint = JSON.stringify({ stage: result.stage, socket_closed: transport.socket_closed, socket_error: transport.socket_error, close_code: transport.close_code, checks, diagnostics, ready_state: observation.ready_state, location_category: observation.location_category });
     const encoded = JSON.stringify(progress);
     const bytes = Buffer.byteLength(encoded) + 1;
     // Reserve 4KiB for the fixed final record within the parent's 16KiB cap.
@@ -96,16 +101,29 @@ export async function observe(input, dependencies = {}) {
     }
   };
   publish();
-  const stage = value => { result.stage = value; publish(); };
+  const stage = value => { result.stage = value; };
+  const rejectPending = error => {
+    const items = [...pending.values()]; pending.clear(); transport.pending_calls = 0;
+    for (const item of items) { clearTimeout(item.timer); item.reject(error); }
+  };
   function call(method, params) {
     if (!['Runtime.enable','Page.enable','Emulation.setFocusEmulationEnabled','Runtime.evaluate','Emulation.setDeviceMetricsOverride','Page.navigate'].includes(method)) throw new Error('browser_protocol_failed');
+    if (transport.socket_error) throw new TransportError();
+    if (transport.socket_closed || socket.readyState !== 1) throw new TransportClosed();
+    const wait = remaining();
+    if (wait <= 0) throw new ProtocolTimeout();
     const id = sequence++;
     return new Promise((resolve, reject) => {
-      const wait = method === 'Page.navigate' ? remaining() : Math.min(500, remaining());
-      if (method === 'Page.navigate' && wait <= 0) { reject(new ProtocolTimeout()); return; }
-      const timer = setTimeout(() => { pending.delete(id); reject(new ProtocolTimeout()); }, Math.max(1, wait));
-      pending.set(id, { resolve, reject, timer });
-      socket.send(JSON.stringify({ id, method, params }));
+      const timer = setTimeout(() => { pending.delete(id); transport.pending_calls = pending.size; reject(new ProtocolTimeout()); }, Math.max(1, wait));
+      pending.set(id, { resolve, reject, timer }); transport.pending_calls = pending.size;
+      try {
+        socket.send(JSON.stringify({ id, method, params })); count('sent_requests');
+      } catch {
+        clearTimeout(timer); pending.delete(id); transport.pending_calls = pending.size;
+        transport.socket_error = true; reject(new TransportError());
+      }
+      // Fixed stage and transport snapshot are emitted before awaiting this reply.
+      publish();
     });
   }
   try {
@@ -133,22 +151,42 @@ export async function observe(input, dependencies = {}) {
       if (!endpoint) await pause();
     }
     if (!endpoint) return result;
-    stage('connect');
+    stage('connect'); publish();
+    if (remaining() <= 0) return result;
     socket = new Socket(endpoint);
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new ProtocolTimeout()), Math.max(1, Math.min(500, remaining())));
-      socket.onopen = () => { clearTimeout(timer); resolve(); };
-      socket.onerror = () => { clearTimeout(timer); reject(new Error('browser_protocol_failed')); };
-    });
+    socket.onerror = () => {
+      if (closing) return;
+      transport.socket_error = true; result.code = 'browser_transport_error';
+      const error = new TransportError(); rejectConnection?.(error); rejectPending(error); publish();
+    };
+    socket.onclose = event => {
+      if (closing) return;
+      transport.socket_closed = true;
+      transport.close_code = Number.isInteger(event?.code) && event.code >= 0 && event.code <= 65535 ? event.code : 0;
+      result.code = 'browser_transport_closed';
+      const error = new TransportClosed(); rejectConnection?.(error); rejectPending(error); publish();
+    };
     socket.onmessage = event => {
-      if (typeof event.data !== 'string' || Buffer.byteLength(event.data) > 65536) { exceptions++; return; }
+      if (closing) return;
+      const data = event?.data;
+      if (typeof data !== 'string' || Buffer.byteLength(data) > 65536) { count('invalid_frames'); exceptions++; return; }
+      count('text_frames');
       let message;
-      try { message = JSON.parse(event.data); } catch { exceptions++; return; }
+      try { message = JSON.parse(data); } catch { count('invalid_frames'); exceptions++; return; }
+      if (!message || typeof message !== 'object' || Array.isArray(message)) { count('invalid_frames'); exceptions++; return; }
       if (pending.has(message.id)) {
-        const item = pending.get(message.id); pending.delete(message.id); clearTimeout(item.timer);
-        if (message.error) item.reject(new Error('browser_protocol_failed')); else item.resolve(message.result || {});
+        const item = pending.get(message.id); pending.delete(message.id); transport.pending_calls = pending.size;
+        clearTimeout(item.timer); count('matched_responses');
+        if (remaining() <= 0) item.reject(new ProtocolTimeout());
+        else if (message.error) item.reject(new Error('browser_protocol_failed'));
+        else item.resolve(message.result || {});
       } else if (message.method === 'Runtime.exceptionThrown') exceptions++;
     };
+    await new Promise((resolve, reject) => {
+      connectionTimer = setTimeout(() => { rejectConnection = undefined; reject(new ProtocolTimeout()); }, Math.max(1, remaining()));
+      rejectConnection = error => { clearTimeout(connectionTimer); rejectConnection = undefined; reject(error); };
+      socket.onopen = () => { clearTimeout(connectionTimer); rejectConnection = undefined; resolve(); };
+    });
     stage('runtime');
     await call('Runtime.enable', {});
     stage('page');
@@ -158,13 +196,16 @@ export async function observe(input, dependencies = {}) {
     stage('viewport');
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     stage('navigation');
-    if (remaining() <= 0) return result;
+    if (remaining() <= 0) { publish(); return result; }
     const navigation = await call('Page.navigate', { url: config.origin + '/tasks' });
     if (navigation.errorText) { result.code = 'browser_navigation_failed'; return result; }
     if (remaining() <= 0) return result;
     stage('evaluation');
     while (remaining() > 0 && socket.readyState === 1) {
       const snapshot = await call('Runtime.evaluate', { expression: expression(config), returnByValue: true, awaitPromise: false, timeout: 250 });
+      if (transport.socket_error) throw new TransportError();
+      if (transport.socket_closed) throw new TransportClosed();
+      if (remaining() <= 0) throw new ProtocolTimeout();
       const { diagnostics: observedDiagnostics, observation: observedObservation, ...observedChecks } = snapshot.result?.value || {};
       const value = { ...observedChecks, no_js_exceptions: exceptions === 0 && !snapshot.exceptionDetails };
       if (!validChecks(value) || !validDiagnostics(observedDiagnostics) || !observedObservation || Object.keys(observedObservation).sort().join(',') !== 'location_category,ready_state' || !['loading','interactive','complete','other'].includes(observedObservation.ready_state) || !['tasks','blank','browser_error','auth','other'].includes(observedObservation.location_category)) { result.code = 'browser_readiness_invalid'; return result; }
@@ -172,12 +213,13 @@ export async function observe(input, dependencies = {}) {
       Object.assign(diagnostics, observedDiagnostics);
       Object.assign(observation, observedObservation, { snapshots: observation.snapshots + 1, observer_elapsed_ms: Math.max(0, Math.min(40000, Math.floor(config.remaining_ms - remaining()))) });
       publish();
-      if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; stage('ready'); return result; }
+      if (CHECKS.every(key => checks[key])) { result.ready = true; result.code = 'ready'; stage('ready'); publish(); return result; }
       if (exceptions) { result.code = 'browser_js_exception'; return result; }
       await pause();
     }
-  } catch (error) { result.code = error instanceof ProtocolTimeout ? 'browser_protocol_timeout' : 'browser_protocol_failed'; }
+  } catch (error) { result.code = error instanceof ProtocolTimeout ? 'browser_protocol_timeout' : error instanceof TransportClosed ? 'browser_transport_closed' : error instanceof TransportError ? 'browser_transport_error' : 'browser_protocol_failed'; }
   finally {
+    closing = true; clearTimeout(connectionTimer);
     for (const item of pending.values()) clearTimeout(item.timer);
     if (socket && [0,1].includes(socket.readyState)) { try { socket.close(); } catch {} }
   }
@@ -194,7 +236,7 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let result;
   try { result = await main(); }
-  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', stage: 'discovery', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])), observation: { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 } }; }
+  catch { result = { schema_version: 1, ready: false, code: 'browser_configuration_invalid', stage: 'discovery', checks: Object.fromEntries(CHECKS.map(key => [key,false])), diagnostics: Object.fromEntries(DIAGNOSTICS.map(key => [key,false])), observation: { ready_state: 'unknown', location_category: 'unknown', snapshots: 0, observer_elapsed_ms: 0 }, transport: emptyTransport() }; }
   // Never wait for a CDP close handshake to release the exact owned helper.
   writeSync(1, JSON.stringify(result) + '\n');
   process.exit(result.ready ? 0 : 1);

@@ -84,6 +84,9 @@ test('fixed protocol reaches readiness and closes without navigating or closing 
   assert.equal(result.observation.location_category, 'tasks');
   assert.equal(result.observation.snapshots, 1);
   assert.equal(result.stage, 'ready');
+  assert.equal(result.transport.sent_requests, 6);
+  assert.equal(result.transport.matched_responses, 6);
+  assert.equal(result.transport.pending_calls, 0);
 });
 test('a foreign debugger endpoint is never connected', async () => {
   let clock = 0, connected = false;
@@ -100,14 +103,14 @@ test('progress is initial and changed-only bounded evidence with reserved final 
     send(raw) {
       const message = JSON.parse(raw); let value;
       if (message.method === 'Runtime.evaluate') {
-        evaluations++; clock += 150;
+        evaluations++; clock += 100;
         value = snapshot({ notHydrated: evaluations % 2 === 0, offscreen: true });
       }
       queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, result: value ? { result: { value } } : {} }) }));
     }
     close() { this.readyState = 3; }
   }
-  const result = await observe({ ...config, remaining_ms: 4000 }, { now: () => clock, WebSocket: Socket,
+  const result = await observe({ ...config, remaining_ms: 1800 }, { now: () => clock, WebSocket: Socket,
     onProgress: value => progress.push(value),
     fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
   assert.equal(result.ready, false);
@@ -238,7 +241,105 @@ test('initial setup exhausting remaining budget cannot send navigation or evalua
   }
   const result = await observe(config, { now: () => clock, WebSocket: Socket,
     fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
-  assert.equal(result.ready, false); assert.equal(result.stage, 'navigation');
+  assert.equal(result.ready, false); assert.equal(result.stage, 'viewport');
   assert.equal(methods.includes('Page.navigate'), false);
   assert.equal(methods.includes('Runtime.evaluate'), false);
+});
+
+test('Runtime setup acknowledgement beyond 500ms shares the existing remaining budget', async () => {
+  for (const remaining of [1500, 550]) {
+  const methods = []; let acknowledgement;
+  class Socket {
+    constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+    send(raw) {
+      const message = JSON.parse(raw); methods.push(message.method);
+      const answer = () => this.onmessage({ data: JSON.stringify({ id: message.id, result: message.method === 'Runtime.evaluate' ? { result: { value: snapshot() } } : {} }) });
+      if (message.method === 'Runtime.enable') acknowledgement = setTimeout(answer, 650);
+      else queueMicrotask(answer);
+    }
+    close() { this.readyState = 3; clearTimeout(acknowledgement); }
+  }
+  const result = await observe({ ...config, remaining_ms: remaining }, { WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+  if (remaining === 1500) {
+    assert.equal(result.ready, true); assert.equal(result.stage, 'ready');
+    assert.ok(CHECKS.every(key => result.checks[key]));
+    assert.equal(methods.filter(method => method === 'Page.navigate').length, 1);
+    assert.equal(result.transport.sent_requests, 6); assert.equal(result.transport.matched_responses, 6);
+  } else {
+    assert.equal(result.ready, false); assert.equal(result.stage, 'runtime');
+    assert.equal(result.code, 'browser_protocol_timeout');
+    assert.equal(methods.includes('Page.navigate'), false); assert.equal(methods.includes('Runtime.evaluate'), false);
+  }
+  }
+});
+test('unexpected close and error reject owned pending waits at their fixed stage', async () => {
+  for (const kind of ['close','error']) for (const when of ['connect','runtime','evaluation-race']) {
+    const methods = [];
+    class Socket {
+      constructor() {
+        this.readyState = 0;
+        queueMicrotask(() => { if (when === 'connect') this.fail(); else { this.readyState = 1; this.onopen(); } });
+      }
+      fail() {
+        if (kind === 'close') { this.readyState = 3; this.onclose({ code: 1006, reason: 'private close reason' }); }
+        else this.onerror({ message: 'private transport error' });
+      }
+      send(raw) {
+        const message = JSON.parse(raw); methods.push(message.method);
+        if (when === 'runtime') { queueMicrotask(() => this.fail()); return; }
+        queueMicrotask(() => {
+          this.onmessage({ data: JSON.stringify({ id: message.id, result: message.method === 'Runtime.evaluate' ? { result: { value: snapshot() } } : {} }) });
+          if (message.method === 'Runtime.evaluate') this.fail();
+        });
+      }
+      close() { this.readyState = 3; }
+    }
+    const result = await observe(config, { now: () => 0, WebSocket: Socket,
+      fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+    assert.equal(result.ready, false);
+    assert.equal(result.code, kind === 'close' ? 'browser_transport_closed' : 'browser_transport_error');
+    assert.equal(result.stage, when === 'evaluation-race' ? 'evaluation' : when);
+    assert.equal(result.transport.pending_calls, 0);
+    assert.equal(result.transport.socket_closed, kind === 'close');
+    assert.equal(result.transport.socket_error, kind === 'error');
+    assert.equal(result.transport.close_code, kind === 'close' ? 1006 : 0);
+    if (when !== 'evaluation-race') assert.equal(methods.includes('Page.navigate'), false);
+    assert.equal(methods.filter(method => method === 'Page.navigate').length, when === 'evaluation-race' ? 1 : 0);
+    assert.equal(JSON.stringify(result).includes('private'), false);
+  }
+});
+test('invalid transport diagnostics cannot create successful readiness', async () => {
+  class Socket {
+    constructor() { this.readyState = 0; queueMicrotask(() => { this.readyState = 1; this.onopen(); }); }
+    send(raw) {
+      const message = JSON.parse(raw);
+      queueMicrotask(() => {
+        if (message.method === 'Runtime.enable') {
+          this.onmessage({ data: new Uint8Array([1]) });
+          for (let index = 0; index < 4100; index++) this.onmessage({ data: 'null' });
+        }
+        this.onmessage({ data: JSON.stringify({ id: message.id, result: message.method === 'Runtime.evaluate' ? { result: { value: snapshot() } } : {} }) });
+      });
+    }
+    close() { this.readyState = 3; }
+  }
+  const result = await observe(config, { now: () => 0, WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+  assert.equal(result.ready, false); assert.equal(result.code, 'browser_js_exception');
+  assert.equal(result.transport.invalid_frames, 4096); assert.equal(result.transport.text_frames, 4096);
+  assert.equal(result.transport.counters_saturated, true);
+  assert.equal(result.transport.matched_responses, 6); assert.equal(result.checks.no_js_exceptions, false);
+});
+
+test('a slow fixed connection shares the same original remaining budget without reconnect', async () => {
+  let opens = 0, timer;
+  class Socket {
+    constructor() { this.readyState = 0; opens++; timer = setTimeout(() => { this.readyState = 1; this.onopen(); }, 650); }
+    send(raw) { const message = JSON.parse(raw); queueMicrotask(() => this.onmessage({ data: JSON.stringify({ id: message.id, result: message.method === 'Runtime.evaluate' ? { result: { value: snapshot() } } : {} }) })); }
+    close() { this.readyState = 3; clearTimeout(timer); }
+  }
+  const result = await observe({ ...config, remaining_ms: 1500 }, { WebSocket: Socket,
+    fetch: async () => ({ ok: true, body: [Buffer.from(JSON.stringify([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${config.debug_port}/devtools/page/owned` }]))] }) });
+  assert.equal(result.ready, true); assert.equal(opens, 1);
 });

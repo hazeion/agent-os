@@ -13,6 +13,7 @@ from scripts import mentat_acceptance as acceptance
 
 
 LISTENER_PROBE = acceptance.listener_closed
+TRANSPORT = {"sent_requests": 0, "text_frames": 0, "invalid_frames": 0, "matched_responses": 0, "pending_calls": 0, "socket_closed": False, "socket_error": False, "close_code": 0, "counters_saturated": False}
 OBSERVATION = {"ready_state": "complete", "location_category": "tasks", "snapshots": 1, "observer_elapsed_ms": 1}
 
 
@@ -305,7 +306,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 helper = unittest.mock.Mock(pid=34567, returncode=0)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 checks["task_visible"] = invalid
-                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION), "stage": "ready"}
+                result = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT), "stage": "ready"}
                 output = unittest.mock.MagicMock()
                 output.__enter__.return_value = output
                 output.read.return_value = (json.dumps(result) + "\n").encode()
@@ -331,7 +332,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
             checks = {name: True for name in acceptance.BROWSER_CHECKS}
             output = unittest.mock.MagicMock()
             output.__enter__.return_value = output
-            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION), "stage": "ready"}) + "\n").encode()
+            output.read.return_value = (json.dumps({"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": {name: True for name in acceptance.BROWSER_DIAGNOSTICS}, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT), "stage": "ready"}) + "\n").encode()
             with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
                 acceptance, "browser_listener_owned", return_value=True
             ), patch.object(acceptance.subprocess, "Popen", side_effect=[browser, helper]), patch.object(
@@ -351,10 +352,10 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
         checks = {name: False for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: False for name in acceptance.BROWSER_DIAGNOSTICS}
         for code, stage in (("browser_protocol_timeout", "navigation"), ("browser_protocol_failed", "focus"),
-                            ("browser_navigation_failed", "navigation")):
+                            ("browser_navigation_failed", "navigation"), ("browser_transport_closed", "runtime"), ("browser_transport_error", "page")):
             with self.subTest(code=code, stage=stage):
                 raw = (json.dumps({"schema_version": 1, "ready": False, "code": code, "stage": stage,
-                                   "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}) + "\n").encode()
+                                   "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT)}) + "\n").encode()
                 browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
                 helper = unittest.mock.Mock(pid=34567, returncode=1); helper.poll.return_value = 1
                 def run(journey, *_args, **_kwargs):
@@ -370,6 +371,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 self.assertEqual(report["code"], "browser_readiness_failed")
                 self.assertEqual(report["browser_helper_code"], code)
                 self.assertEqual(report["browser_stage"], stage)
+                self.assertEqual(report["browser_transport"], TRANSPORT)
                 self.assertTrue(report["owned_state_removed"])
 
     def test_known_but_inconsistent_final_stage_cannot_claim_readiness(self):
@@ -381,7 +383,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
                 raw = (json.dumps({"schema_version": 1, "ready": ready, "code": code, "stage": stage,
-                                   "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION)}) + "\n").encode()
+                                   "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT)}) + "\n").encode()
                 browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None
                 helper = unittest.mock.Mock(pid=34567, returncode=0)
                 with patch.object(acceptance.shutil, "which", return_value="/node"), patch.object(
@@ -398,7 +400,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
     def test_progress_capture_is_bounded_positional_and_never_final_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "evaluation"}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT), "stage": "evaluation"}
         with TemporaryDirectory() as directory, tempfile.TemporaryFile() as output:
             journey = acceptance.Journey(Path(directory))
             self.addCleanup(journey.launch_output.close)
@@ -419,9 +421,9 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
     def test_invalid_framing_diagnostics_and_duplicate_final_refuse_success(self):
         checks = {name: True for name in acceptance.BROWSER_CHECKS}
         diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "ready"}
+        final = {"schema_version": 1, "ready": True, "code": "ready", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT), "stage": "ready"}
         line = (json.dumps(final) + "\n").encode()
-        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "evaluation"}
+        progress = {"schema_version": 1, "event": "progress", "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT), "stage": "evaluation"}
         progress_line = (json.dumps(progress) + "\n").encode()
         for raw in (line + line, line + b"unframed", b"x" * 16385,
                     progress_line * 17,
@@ -432,6 +434,10 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                     line.replace(b'"task_exists": true', b'"task_exists": false, "task_exists": true'),
                     (json.dumps({**final, "stage": "Page.navigate private"}) + "\n").encode(),
                     (json.dumps({**final, "stage": []}) + "\n").encode(),
+                    (json.dumps({**final, "transport": {**TRANSPORT, "raw_frame": "private"}}) + "\n").encode(),
+                    (json.dumps({**final, "transport": {**TRANSPORT, "sent_requests": True}}) + "\n").encode(),
+                    (json.dumps({**final, "transport": {**TRANSPORT, "pending_calls": 2}}) + "\n").encode(),
+                    (json.dumps({**final, "transport": {**TRANSPORT, "close_code": "private reason"}}) + "\n").encode(),
                     (json.dumps({**final, "observation": {**OBSERVATION, "location_category": "http://private.invalid"}}) + "\n").encode(),
                     (json.dumps({**final, "observation": {**OBSERVATION, "ready_state": []}}) + "\n").encode(),
                     (json.dumps({**final, "observation": {**OBSERVATION, "snapshots": True}}) + "\n").encode(),
@@ -452,7 +458,7 @@ class LocalReleaseAcceptanceTests(unittest.TestCase):
                 self.addCleanup(journey.launch_output.close)
                 checks = {name: True for name in acceptance.BROWSER_CHECKS}
                 diagnostics = {name: True for name in acceptance.BROWSER_DIAGNOSTICS}
-                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "stage": "evaluation"}
+                record = {"schema_version": 1, "checks": checks, "diagnostics": diagnostics, "observation": dict(OBSERVATION), "transport": dict(TRANSPORT), "stage": "evaluation"}
                 record.update({"ready": True, "code": "ready", "stage": "ready"} if late else {"event": "progress"})
                 raw = (json.dumps(record) + "\n").encode()
                 browser = unittest.mock.Mock(pid=23456); browser.poll.return_value = None

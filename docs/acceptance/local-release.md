@@ -120,8 +120,12 @@ from protocol rejection, without exposing methods or errors. The timers remain
 unchanged. Success additionally requires the final stage to be `ready`, never
 an earlier stage or a progress record.
 
-The single initial navigation acknowledgement uses only the remaining browser
-budget. Other CDP call/connect ceilings remain 500 ms. An exhausted budget
-cannot send navigation or proceed from acknowledgement to evaluation; there is
-no second navigation or retry. All readiness checks and final receipt must
-still fit the original 40-second parent deadline.
+Fixed CDP connection, setup and response waits share one remaining helper
+budget under the original 40-second parent deadline. Metadata fetch sampling
+remains capped at 500 ms and evaluation CPU time at 250 ms. Exhausted budget
+cannot send a command or proceed to evaluation; there is no reconnect, second
+navigation or retry. All eleven checks and final receipt must still fit the
+original parent deadline. Unexpected socket close/error rejects pending waits
+with a fixed code. Passive transport counts, boolean close/error flags and a
+numeric close code are bounded and never substitute for readiness. Raw frames,
+response IDs, URLs and close/error reasons are omitted.

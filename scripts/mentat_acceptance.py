@@ -142,6 +142,10 @@ def wait_for_reusable_port(port: int, timeout: float = 75) -> None:
     raise AcceptanceFailure("restart_port_not_reusable")
 
 
+BROWSER_TRANSPORT_COUNTS = frozenset({"sent_requests", "text_frames", "invalid_frames", "matched_responses"})
+BROWSER_TRANSPORT_FLAGS = frozenset({"socket_closed", "socket_error", "counters_saturated"})
+
+
 BROWSER_STAGES = frozenset({"discovery", "connect", "runtime", "page", "focus", "viewport", "navigation", "evaluation", "ready"})
 
 
@@ -176,6 +180,7 @@ class Journey:
         self.browser_observation: dict = {}
         self.browser_stage: str | None = None
         self.browser_helper_code: str | None = None
+        self.browser_transport: dict = {}
         self.browser_closure_proof: tuple | None = None
         self.cleanup_observations: dict[str, bool] = {}
         self.launch_output = tempfile.TemporaryFile()
@@ -332,6 +337,7 @@ class Journey:
         diagnostics = None
         observation = None
         stage = None
+        transport = None
         for line in lines:
             try:
                 value = json.loads(line, object_pairs_hook=unique_members)
@@ -344,6 +350,12 @@ class Journey:
                     and isinstance(value.get("diagnostics"), dict) and set(value["diagnostics"]) == BROWSER_DIAGNOSTICS
                     and all(type(item) is bool for item in value["diagnostics"].values()), "browser_output_invalid")
             require(isinstance(value.get("stage"), str) and value["stage"] in BROWSER_STAGES, "browser_output_invalid")
+            transported = value.get("transport")
+            require(isinstance(transported, dict) and set(transported) == BROWSER_TRANSPORT_COUNTS | BROWSER_TRANSPORT_FLAGS | {"pending_calls", "close_code"}
+                    and all(type(transported[key]) is int and 0 <= transported[key] <= 4096 for key in BROWSER_TRANSPORT_COUNTS)
+                    and all(type(transported[key]) is bool for key in BROWSER_TRANSPORT_FLAGS)
+                    and type(transported["pending_calls"]) is int and 0 <= transported["pending_calls"] <= 1
+                    and type(transported["close_code"]) is int and 0 <= transported["close_code"] <= 65535, "browser_output_invalid")
             observed = value.get("observation")
             require(isinstance(observed, dict) and set(observed) == {"ready_state", "location_category", "snapshots", "observer_elapsed_ms"}
                     and isinstance(observed["ready_state"], str) and observed["ready_state"] in {"unknown", "loading", "interactive", "complete", "other"}
@@ -354,13 +366,13 @@ class Journey:
                 progress_count += 1
                 progress_bytes += len(line) + 1
                 require(progress_count <= 16 and progress_bytes <= 12288, "browser_output_limit")
-                require(set(value) == {"schema_version", "event", "stage", "checks", "diagnostics", "observation"}
+                require(set(value) == {"schema_version", "event", "stage", "checks", "diagnostics", "observation", "transport"}
                         and value["event"] == "progress", "browser_output_invalid")
             else:
                 require(len(line) + 1 <= 4096, "browser_output_limit")
-                require(set(value) == {"schema_version", "ready", "code", "stage", "checks", "diagnostics", "observation"}
+                require(set(value) == {"schema_version", "ready", "code", "stage", "checks", "diagnostics", "observation", "transport"}
                         and type(value["ready"]) is bool and isinstance(value["code"], str)
-                        and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed", "browser_protocol_timeout",
+                        and value["code"] in {"ready", "browser_readiness_timeout", "browser_protocol_failed", "browser_protocol_timeout", "browser_transport_closed", "browser_transport_error",
                                              "browser_readiness_invalid", "browser_js_exception", "browser_configuration_invalid", "browser_navigation_failed", "browser_target_ambiguous"},
                         "browser_output_invalid")
                 final = value
@@ -368,12 +380,14 @@ class Journey:
             diagnostics = dict(value["diagnostics"])
             observation = dict(observed)
             stage = value["stage"]
+            transport = dict(transported)
         require(not require_final or final is not None, "browser_final_evidence_missing")
         if latest is not None:
             self.browser_checks = latest
             self.browser_diagnostics = diagnostics
             self.browser_observation = observation
             self.browser_stage = stage
+            self.browser_transport = transport
             if final is not None:
                 self.browser_helper_code = final["code"]
         return final
@@ -560,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
             report["browser_diagnostics"] = journey.browser_diagnostics
             report["browser_observation"] = journey.browser_observation
             report["browser_stage"] = journey.browser_stage
+            report["browser_transport"] = journey.browser_transport
             if journey.browser_helper_code is not None:
                 report["browser_helper_code"] = journey.browser_helper_code
         if not cleaned:
