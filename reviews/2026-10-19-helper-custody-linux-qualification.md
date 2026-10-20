@@ -257,3 +257,40 @@ any tests or scan. A later actual native attempt requires separately reviewed
 fresh source/staging/foreground pins and explicit authorization. Original 13a,
 its PR history, staged copies and held attempt are untouched. No source upload,
 host call, helper execution, provider action or publication occurred here.
+
+## Re-pin verification and exact three-hash user approval
+
+The source-reviewed re-pin at fb26d82 passed its single 28-method portable module
+in 0.037 seconds, without skips, with `-B`, ResourceWarnings as errors and a fresh
+private Hermes directory. The following unchanged tracked-secret gate FAILED on
+exactly three new records: the fixed production commit in tool/test and the
+committed scope blob in the tool. No source, baseline or scanner change occurred
+while either check was live. Complete initial/wait tool results, exits and logs
+are retained under `/private/tmp/mentat-custody-fb26d82-checks/`.
+
+The three records were classified from actual failure lines, detector-core
+PotentialSecret fingerprints and immutable e861743 commit/blob objects. Root and
+independent review confirmed the exact private proposal preserves every original
+444 record and all non-results metadata while adding only those three public
+Git identities. The original failure remains preserved; it is not relabeled as
+a pass. The user explicitly answered:
+
+> Approve the 3 public hashes
+
+That answer applied to the exact reviewed three-record proposal. This commit
+therefore adds only those three `is_secret: false` records, total447. All detector,
+filter, threshold, exclusion and encoding rules remain unchanged. Tool/test bytes
+are still exact fb26d82; no portable repeat is necessary for this baseline/doc
+change. The unchanged final secret gate will run once at this prepared commit,
+and its actual terminal result is recorded separately for final review.
+
+The normal merge of C's evidence-only cc7ff22 preserves both feature histories
+and its exact reviewed production/test bytes. C's production evidence is recorded
+in `reviews/2026-10-19-worker-scope-lazy-ctypes-import.md`; the qualifier's fixed
+production pin remains the exact e861743 source object, not a different graph.
+
+Normal CODEOWNERS/GitHub review and publication authorization remain required;
+no synthetic owner review, forced update or primary/PR330/PR331 change occurred.
+This is not a native retry or cleanup action on the original held session. No
+new staging, host call, helper execution, loader/FUSE/runtime/provider readiness
+or actual Linux positive qualification is claimed by these portable checks.
