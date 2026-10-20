@@ -25,7 +25,16 @@ Each source/input read retains directory descriptors through its bounded read;
 lexical and descriptor identities must still agree. Input inspection is limited
 to the exact 19 names, with at most a twentieth directory entry used to refuse
 extras. Existing compiled sizes/hashes and owner-private metadata apply. No
-source/input bytes are changed. `-B` is mandatory to avoid pycache writes.
+source/input bytes are changed. `-B` is mandatory for the foreground interpreter.
+The unchanged API child uses `-I` without `-B`, so the supervisor must prepare a
+NEW dedicated qualification source copy with read-only files and Python parent
+directories before the first driver observation. It must never chmod a Git
+worktree, original source/input, prepared acceptance archive or existing proof.
+The driver refuses writable source files/directories, project __pycache__, legacy
+bytecode and each interpreter-defined extension-shadow filename, before imports
+and again at final validation. This is a prepared-copy permission requirement;
+Git byte/size pins do not pin those new prepared modes or claim an immutable
+loader. The external supervisor must still verify the entire fresh source copy.
 
 The one component operation is the existing `acquire_fixed_helper_bytes` call.
 It retains its own unchanged 30-second and resource limits. The outer deadline
@@ -74,7 +83,8 @@ The new module covers source pin shape, earliest clock ordering, one-use retaine
 state, unsupported/expired preflight, exact bounded FD enumeration, EBADF versus
 EPERM, independent close attempts, live/reused slot refusal, retained actual owner
 objects, source size refusal, and an explicitly substituted positive candidate.
-Negative candidate cases cover missing seals, wrong trust class and bad bytes.
+Negative candidate cases cover missing seals, wrong trust class and bad bytes,
+and source-layout cases refuse writable parents, caches and extension shadows.
 Every OS/API substitution is explicit. These tests cannot establish real Linux
 signature verification, ancillary transport, seals, worker exit or namespace
 behavior. No compile, test or native qualification command has run at this source
@@ -88,7 +98,8 @@ command that exits after printing a report. Do not provision or connect now.
 
 1. Prepare a new owner-private exact source snapshot and the 19 explicitly staged
    public input files. The supervisor verifies the complete source graph and
-   reviewed tool hash, and the fixed trusted host interpreter. No credentials,
+   reviewed tool hash, and the fixed trusted host interpreter. Make only this new
+   dedicated source copy read-only before qualification, as described above. No credentials,
    owner home scan, network fetch or installer is needed by this tool.
 2. A separately reviewed fixed local launcher owns one foreground Python process
    with `close_fds=True`, only stdin/stdout/stderr inherited and no extra pass_fds.

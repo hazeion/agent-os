@@ -248,3 +248,32 @@ class CustodyQualificationDriverTests(unittest.TestCase):
              patch.object(attempt.lease, 'read', return_value=b'abd'):
             with self.assertRaises(driver.QualificationRefused):
                 attempt._inspect(custody, library, origin)
+
+    def test_writable_prepared_source_directory_refuses(self):
+        attempt = self.attempt()
+        directory = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0)
+        with patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver.Path, 'lstat', return_value=directory):
+            with self.assertRaises(driver.QualificationRefused):
+                attempt._source_layout()
+
+    def test_cache_and_extension_shadow_refuse_without_loading_project_code(self):
+        attempt = self.attempt()
+        directory = SimpleNamespace(st_dev=1, st_ino=1, st_mode=stat.S_IFDIR | 0o555,
+                                    st_uid=1, st_nlink=1, st_size=0, st_mtime_ns=0,
+                                    st_ctime_ns=0, st_file_attributes=0)
+        pins = (('mentat/__init__.py', 1, 'a' * 40),)
+        for suffix in ('__pycache__', '__init__.pyc', '__init__.pyo', '__init__.so', 'mentat.so'):
+            with self.subTest(forbidden=suffix):
+                def details(path):
+                    if path == attempt.source_root / 'mentat':
+                        return directory
+                    if path.name == suffix:
+                        return directory
+                    raise FileNotFoundError()
+                with patch.object(driver, 'SOURCE_BLOBS', pins), \
+                     patch.object(driver.time, 'monotonic', return_value=101), \
+                     patch('importlib.machinery.EXTENSION_SUFFIXES', ['.so']), \
+                     patch.object(driver.Path, 'lstat', details):
+                    with self.assertRaises(driver.QualificationRefused):
+                        attempt._source_layout()

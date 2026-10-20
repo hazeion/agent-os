@@ -302,7 +302,7 @@ class QualificationAttempt:
         if private:
             _require(lexical.st_uid == os.getuid() and stat.S_IMODE(lexical.st_mode) == 0o600)
         else:
-            _require(not stat.S_IMODE(lexical.st_mode) & 0o022)
+            _require(not stat.S_IMODE(lexical.st_mode) & 0o222)
         if expected_size is not None:
             _require(lexical.st_size == expected_size)
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent)
@@ -331,7 +331,36 @@ class QualificationAttempt:
                 self.uncertain_resources.append(('read-close', fd, error))
                 raise
 
+    def _source_layout(self):
+        from importlib.machinery import EXTENSION_SUFFIXES
+        python_paths = [self.source_root / name for name, _size, _blob in SOURCE_BLOBS
+                        if name.endswith('.py')]
+        parents = sorted({path.parent for path in python_paths})
+        layout = []
+        for parent in parents:
+            self._time()
+            value = parent.lstat()
+            _require(stat.S_ISDIR(value.st_mode) and not stat.S_IMODE(value.st_mode) & 0o222
+                     and not getattr(value, 'st_file_attributes', 0) & 0x400)
+            layout.append((str(parent.relative_to(self.source_root)), _identity(value)))
+        forbidden = {parent / '__pycache__' for parent in parents}
+        for path in python_paths:
+            forbidden.update(path.with_suffix(suffix) for suffix in ('.pyc', '.pyo'))
+            forbidden.update(path.with_name(path.stem + suffix) for suffix in EXTENSION_SUFFIXES)
+            if path.name == '__init__.py':
+                forbidden.update(path.parent.with_name(path.parent.name + suffix)
+                                 for suffix in EXTENSION_SUFFIXES)
+        for path in sorted(forbidden):
+            self._time()
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            raise QualificationRefused()
+        return tuple(layout)
+
     def _sources(self):
+        layout = self._source_layout()
         manifest = []
         total = 0
         for relative, size, blob in SOURCE_BLOBS:
@@ -342,7 +371,8 @@ class QualificationAttempt:
             _require(digest == blob)
             manifest.append((relative, identity))
         _require(len(manifest) == len(SOURCE_BLOBS) and bool(manifest))
-        return tuple(manifest)
+        _require(self._source_layout() == layout)
+        return layout, tuple(manifest)
 
     def _inputs(self, library):
         self._time()
