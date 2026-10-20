@@ -541,7 +541,7 @@ def verify_fixed_helper_library_origins(root):
         if not _valid_report(value, started, time.time()):
             value = None
     except Exception:
-        value = None
+        _fail()
     finally:
         if slot is not None:
             # Existing owned-group teardown retains errors/ownership; do not

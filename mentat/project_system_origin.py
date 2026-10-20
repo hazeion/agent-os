@@ -533,7 +533,7 @@ def verify_helpers(root):
         if not _valid_report(candidate, started_at, time.time()):
             _fail()
     except Exception:
-        candidate = None
+        _fail()
     finally:
         if slot is not None:
             slot.close()
