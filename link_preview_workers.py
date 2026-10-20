@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -201,31 +202,63 @@ class _WorkerSlot:
             raise LinkPreviewWorkerError("link_preview.unavailable")
         self._posix_exited_without_reaping(process)
         state["signals_started"] = True
+        denied = False
         try:
             os.killpg(group, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        grace = time.monotonic() + 0.5
-        while not self._posix_exited_without_reaping(process):
-            left = grace - time.monotonic()
-            if left <= 0:
-                break
-            time.sleep(min(0.01, left))
-        # No poll/wait/Popen signal method may precede this last group signal.
-        self._posix_exited_without_reaping(process)
-        state["last_signal_attempted"] = True
-        try:
-            os.killpg(group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        # Reaping and read-only group absence share the existing kill-wait cap.
+        except PermissionError as error:
+            if sys.platform != "darwin" or error.errno != errno.EPERM:
+                raise
+            state["signal_denials"].append(error)
+            state["last_signal_attempted"] = True
+            denied = True
+        if not denied:
+            grace = time.monotonic() + 0.5
+            while not self._posix_exited_without_reaping(process):
+                left = grace - time.monotonic()
+                if left <= 0:
+                    break
+                time.sleep(min(0.01, left))
+            # No reaping operation may precede this last signal attempt.
+            self._posix_exited_without_reaping(process)
+            state["last_signal_attempted"] = True
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                if sys.platform != "darwin" or error.errno != errno.EPERM:
+                    raise
+                state["signal_denials"].append(error)
+        # A Darwin denial is not absence. All signal authority is now retired;
+        # success still requires the exact child reap and timely group absence.
         end = time.monotonic() + 0.5
-        remaining = end - time.monotonic()
-        if remaining <= 0:
+        self._require_default_sigchld()
+        if process.returncode is not None:
             raise LinkPreviewWorkerError("link_preview.unavailable")
-        process.wait(timeout=remaining)
-        if process.returncode is None:
-            raise LinkPreviewWorkerError("link_preview.unavailable")
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise LinkPreviewWorkerError("link_preview.unavailable") from subprocess.TimeoutExpired("fixed worker", 0.5)
+            try:
+                waited, status = os.waitpid(process.pid, os.WNOHANG)
+            except OSError as error:
+                raise LinkPreviewWorkerError("link_preview.unavailable") from error
+            if waited == 0 and status == 0:
+                if time.monotonic() > end:
+                    raise LinkPreviewWorkerError("link_preview.unavailable")
+                time.sleep(min(0.01, max(0, end - time.monotonic())))
+                continue
+            if (type(waited) is not int or waited != process.pid or type(status) is not int
+                    or not (os.WIFEXITED(status) or os.WIFSIGNALED(status))):
+                raise LinkPreviewWorkerError("link_preview.unavailable")
+            # Reaping is irreversible even if its evidence arrived too late.
+            # Prevent Popen finalization from probing a potentially reused PID.
+            process.returncode = os.waitstatus_to_exitcode(status)
+            if time.monotonic() > end:
+                raise LinkPreviewWorkerError("link_preview.unavailable")
+            break
         while True:
             left = end - time.monotonic()
             if left <= 0:
@@ -275,7 +308,7 @@ class _WorkerSlot:
                     streams.append({"stream": stream, "attempted": False, "error": None})
             self._cleanup_state = {"process": process, "streams": streams,
                                    "signals_started": False, "last_signal_attempted": False,
-                                   "failure": None}
+                                   "signal_denials": [], "failure": None}
         state = self._cleanup_state
         if state["process"] is not process:
             raise LinkPreviewWorkerError("link_preview.unavailable")

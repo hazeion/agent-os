@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import queue
@@ -272,6 +273,8 @@ class WorkerCleanupContractTests(unittest.TestCase):
         slot._operation_watchdog_seconds = None
         slot._maximum_line_bytes = None
         slot._spawn = mock.Mock(side_effect=AssertionError("unexpected replacement spawn"))
+        if process is not None:
+            process.cleanup_slot = slot
         return slot
 
     @contextlib.contextmanager
@@ -280,6 +283,13 @@ class WorkerCleanupContractTests(unittest.TestCase):
         def observe(_kind, pid, _options):
             self.assertEqual(pid, process.pid)
             return SimpleNamespace(si_pid=pid)
+        def reap(pid, options):
+            self.assertEqual(pid, process.pid)
+            self.assertTrue(process.cleanup_slot._cleanup_state["last_signal_attempted"],
+                            "reap before final signal authority was consumed")
+            process.events.append(("wait", 0.5))
+            process.reaped = True
+            return pid, 0
         def signal_group(group, kind):
             self.assertEqual(group, process.pid)
             if kind:
@@ -292,7 +302,10 @@ class WorkerCleanupContractTests(unittest.TestCase):
                     raise ProcessLookupError()
         with mock.patch.object(worker_module.os, "name", "posix"), \
              mock.patch.multiple(worker_module.os, waitid=observe if waitid else None,
-                                 P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=16, create=True), \
+                                 P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=16, waitpid=reap,
+                                 WIFEXITED=lambda status: status == 0,
+                                 WIFSIGNALED=lambda status: False,
+                                 waitstatus_to_exitcode=lambda status: 0, create=True), \
              mock.patch.multiple(worker_module.signal, SIGTERM=15, SIGKILL=9,
                                  SIGCHLD=17, SIG_DFL=0, SIG_IGN=1, create=True), \
              mock.patch.object(worker_module.signal, "getsignal", return_value=0, create=True), \
@@ -355,33 +368,131 @@ class WorkerCleanupContractTests(unittest.TestCase):
                 process = self.Process([])
                 slot = self.slot(process)
                 now = [0.0]
-                original_wait = process.wait
-                def wait(*, timeout):
-                    value = original_wait(timeout=timeout)
-                    if phase == "wait":
-                        now[0] = 0.6
-                    return value
-                process.wait = wait
                 with self.posix_effects(process) as control, \
                      mock.patch.object(worker_module.time, "monotonic", side_effect=lambda: now[0]):
+                    original_wait = worker_module.os.waitpid
+                    def wait(pid, options):
+                        value = original_wait(pid, options)
+                        if phase == "wait":
+                            now[0] = 0.6
+                        return value
                     original_control = control.side_effect
                     def probe(group, kind):
                         if kind == 0 and phase == "probe":
                             now[0] = 0.6
                         return original_control(group, kind)
                     control.side_effect = probe
-                    with self.assertRaises(LinkPreviewWorkerError) as caught:
-                        slot.close()
-                    calls = control.call_count
-                    with self.assertRaises(LinkPreviewWorkerError) as again:
-                        slot.close()
-                    self.assertEqual(control.call_count, calls)
+                    with mock.patch.object(worker_module.os, "waitpid", side_effect=wait):
+                        with self.assertRaises(LinkPreviewWorkerError) as caught:
+                            slot.close()
+                        calls = control.call_count
+                        with self.assertRaises(LinkPreviewWorkerError) as again:
+                            slot.close()
+                        self.assertEqual(control.call_count, calls)
                 self.assertIs(again.exception, caught.exception)
                 self.assertIs(slot._process, process)
                 self.assertIs(caught.exception._mentat_worker_owner, slot)
+                self.assertEqual(process.returncode, 0, "late reap must still update Popen bookkeeping")
                 self.assertEqual((process.stdin.close_calls, process.stdout.close_calls), (0, 0))
                 self.assertEqual([event for event in process.events if event[0] == "signal"],
                                  [("signal", 15), ("signal", 9)])
+
+    def test_darwin_signal_denial_requires_owned_reap_and_group_absence(self):
+        for denied_signal in (15, 9):
+            for waitid in (True, False):
+                with self.subTest(denied_signal=denied_signal, waitid=waitid):
+                    process = self.Process([])
+                    slot = self.slot(process)
+                    denial = PermissionError(errno.EPERM, "synthetic denied delivery")
+                    now = [0.0]
+                    with self.posix_effects(process, waitid=waitid) as control, \
+                         mock.patch.object(worker_module.sys, "platform", "darwin"), \
+                         mock.patch.object(worker_module.time, "monotonic", side_effect=lambda: now[0]), \
+                         mock.patch.object(worker_module.time, "sleep", side_effect=lambda delay: now.__setitem__(0, now[0] + delay)):
+                        original_control = control.side_effect
+                        def deny(group, kind):
+                            original_control(group, kind)
+                            if kind == denied_signal:
+                                raise denial
+                        control.side_effect = deny
+                        slot.close()
+                        count = control.call_count
+                        slot.close()
+                        self.assertEqual(control.call_count, count)
+                    self.assertEqual(slot._cleanup_state["signal_denials"], [denial])
+                    self.assertIsNone(slot._process)
+                    self.assertEqual(process.returncode, 0)
+                    self.assertTrue(process.reaped)
+                    self.assertEqual([event[1] for event in process.events if event[0] == "signal"],
+                                     [15] if denied_signal == 15 else [15, 9])
+                    self.assertEqual((process.stdin.close_calls, process.stdout.close_calls), (1, 1))
+
+    def test_darwin_denial_uncertain_postconditions_never_recontrol_or_close(self):
+        for failure in ("live", "echild", "residual", "probe-denied", "late", "close"):
+            with self.subTest(failure=failure):
+                process = self.Process([], fail="after" if failure == "close" else None)
+                slot = self.slot(process)
+                denial = PermissionError(errno.EPERM, "synthetic denied delivery")
+                wait_error = ChildProcessError("synthetic lost child")
+                now = [0.0]
+                with self.posix_effects(process, waitid=False, group_absent=failure != "residual") as control, \
+                     mock.patch.object(worker_module.sys, "platform", "darwin"), \
+                     mock.patch.object(worker_module.time, "monotonic", side_effect=lambda: now[0]), \
+                     mock.patch.object(worker_module.time, "sleep", side_effect=lambda delay: now.__setitem__(0, now[0] + delay)):
+                    original_control = control.side_effect
+                    original_wait = worker_module.os.waitpid
+                    def deny(group, kind):
+                        if kind == 0 and failure == "probe-denied":
+                            raise PermissionError(errno.EPERM, "synthetic probe denied")
+                        original_control(group, kind)
+                        if kind == 15:
+                            raise denial
+                    def wait(pid, options):
+                        if failure == "live":
+                            return 0, 0
+                        if failure == "echild":
+                            raise wait_error
+                        result = original_wait(pid, options)
+                        if failure == "late":
+                            now[0] = 0.6
+                        return result
+                    control.side_effect = deny
+                    with mock.patch.object(worker_module.os, "waitpid", side_effect=wait):
+                        with self.assertRaises(LinkPreviewWorkerError if failure != "probe-denied" else PermissionError) as caught:
+                            slot.close()
+                        calls = control.call_count
+                        with self.assertRaises(type(caught.exception)) as again:
+                            slot.close()
+                        self.assertEqual(control.call_count, calls)
+                    if failure == "echild":
+                        self.assertIs(caught.exception.__cause__, wait_error)
+                    if failure == "live":
+                        self.assertIsInstance(caught.exception.__cause__, worker_module.subprocess.TimeoutExpired)
+                self.assertIs(again.exception, caught.exception)
+                self.assertIs(slot._process, process)
+                self.assertIs(caught.exception._mentat_worker_owner, slot)
+                self.assertEqual(slot._cleanup_state["signal_denials"], [denial])
+                self.assertEqual([event[1] for event in process.events if event[0] == "signal"], [15])
+                self.assertEqual((process.stdin.close_calls, process.stdout.close_calls),
+                                 (1, 1) if failure == "close" else (0, 0))
+
+    def test_nondarwin_signal_denial_remains_a_sticky_failure(self):
+        process = self.Process([])
+        slot = self.slot(process)
+        denial = PermissionError(errno.EPERM, "synthetic denied delivery")
+        with self.posix_effects(process) as control, \
+             mock.patch.object(worker_module.sys, "platform", "linux"):
+            control.side_effect = denial
+            with self.assertRaises(PermissionError) as caught:
+                slot.close()
+            calls = control.call_count
+            with self.assertRaises(PermissionError):
+                slot.close()
+            self.assertEqual(control.call_count, calls)
+        self.assertIs(caught.exception, denial)
+        self.assertFalse(process.reaped)
+        self.assertEqual(slot._cleanup_state["signal_denials"], [])
+        self.assertEqual((process.stdin.close_calls, process.stdout.close_calls), (0, 0))
 
     def test_already_reaped_or_missing_group_never_controls_a_numeric_group(self):
         for condition in ("reaped", "missing"):

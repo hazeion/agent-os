@@ -46,3 +46,21 @@ Windows job handles, independent before/after-close failures and HelperSlot's
 no-reclose behavior. No new skip or timeout increase is proposed. Existing tests
 retain their behavior assertions; fakes will represent cached terminal state,
 and inherited unknown cleanup must remain an error rather than become success.
+
+
+The first focused run on the merged source checkpoint failed: 63 methods,
+seven real-worker final-SIGKILL EPERM errors, one existing Linux skip and
+ResourceWarning markers. That original log is preserved; it is not a pass.
+Apple's published XNU group iteration excludes zombies and can return EPERM
+when no eligible member remains, but that source fact does not establish the
+cause of the actual failed groups or turn permission denial into absence.
+
+The source-only correction records an actual Darwin EPERM and consumes all
+remaining nonzero signal authority. Only exact owned-child terminal/reap and
+read-only group ESRCH within the same half-second cap can then complete cleanup.
+POSIX reap uses checked waitpid(WNOHANG), under the lifecycle lock, because
+Popen.wait can translate ECHILD into a synthetic success. ECHILD and wait timeout
+retain a safe unavailable error with cause. Linux denial remains a failure.
+Portable fixtures cover denied TERM/final KILL, old-macOS observation fallback,
+live/lost child, residual or denied group observation, late evidence and close
+uncertainty. These corrections have not yet been executed or qualified.
