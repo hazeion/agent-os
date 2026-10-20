@@ -13,7 +13,8 @@ stdin request can wait behind initialization. The old test's round-robin normal
 requests also exercised only the unaffected slot, not the replacement.
 
 Only this watchdog test now uses a dedicated fake command emitting a fixed ready
-receipt after initialization. The test consumes exact bytes/PID from that slot's
+binary UTF-8 receipt after initialization, avoiding platform newline translation.
+The test consumes exact bytes/PID from that slot's
 current queue and verifies retained Popen/queue identity and a live process. Both
 initial slots share one setup bound using the existing unmocked 5.25-second
 operation constant; each new replacement has that same bounded fixture setup.

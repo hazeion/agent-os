@@ -124,7 +124,8 @@ class LinkPreviewWorkerTests(unittest.TestCase):
         # assertions; interpreter startup is not a DNS or response operation.
         ready_worker = FAKE_WORKER.replace(
             "for line in sys.stdin:",
-            'print(json.dumps({"type":"fixture_ready","pid":os.getpid()}), flush=True)\n'
+            'sys.stdout.buffer.write((json.dumps({"type":"fixture_ready","pid":os.getpid()}) '
+            '+ "\\n").encode("utf-8")); sys.stdout.buffer.flush()\n'
             "for line in sys.stdin:",
         )
         ready_command = (sys.executable, "-u", "-c", ready_worker)
