@@ -81,3 +81,13 @@ values. Exact IDs, delegation/binding/state, signed-event behavior and all
 authentication negatives/assertions remain unchanged. Frozen fc4 is untouched
 and its full run remains live; no test has run for this source-only fixture
 follow-up yet. The Task production validator and previous commits are unchanged.
+
+After that frozen full run became terminal, root authorized only the full
+webhook route module at exact 5980e82a124fab74ac7a6db7ee423bb2f4686d3d.
+All 20 methods passed in 4.279 seconds, with no skips or ResourceWarnings, using
+ResourceWarnings as errors and a fresh private HERMES_HOME. Exact command/head
+and result: /private/tmp/mentat-task-webhook-598-result.json; log:
+/private/tmp/mentat-task-webhook-598.log. This verifies the complete affected
+module, including signed-event synchronization and authentication negatives.
+It does not replace the failed frozen fc4 result or claim any aggregate pass.
+No other test, package or actual-acceptance operation accompanied this update.
