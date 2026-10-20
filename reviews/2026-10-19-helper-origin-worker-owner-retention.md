@@ -1,6 +1,6 @@
 # Preserve helper-origin failure ownership through the safe exception boundary
 
-Base: `e554be5b3ee6699fbdb563d3dd48102f497f1c40`.
+Base: `e554be5`.
 Branch: `codex/helper-origin-worker-owner-retention`.
 
 `verify_helpers` and `verify_fixed_helper_library_origins` previously caught
@@ -24,16 +24,33 @@ followed by close failure must retain the complete owner-bearing exception chain
 and attempt close exactly once. Existing tests and assertions are unchanged.
 These tests do not launch or control a real worker.
 
-Source checkpoint only. No tests, secret scan, native operation or host call have
-run for this change. Separate nine-input staging/foreground preparation is paused
-pending review of this correction. The earlier custody positive, guarded finish,
-controller retirement and old failed-report history remain separate evidence.
-No qualifier/source pin or baseline entry is changed by this patch; a later final
-source snapshot and any needed pin updates require their own explicit review.
+Focused verification ran once on the reviewed source checkpoint with `-B`,
+ResourceWarnings treated as errors and a fresh private Hermes fixture root. The
+existing system-origin parsing and library-origin classes ran 36 methods in
+0.848 seconds: 35 passed, with one existing Linux-native platform skip. All four
+new ownership regressions passed. The actual Linux class and operator native
+fixture inputs were not enabled.
+
+The separate old-source control used an exact `e554be5` Git archive with only the
+four new methods inserted into its existing test classes. All other 1,141 tracked
+blobs matched the original tree, except those two deliberate test overlays; all
+original test ASTs remained exact. Only the four new methods ran: all four failed
+at the missing exception-context/owner-chain assertions in 0.344 seconds, with
+process exit 1. The fixed-source run returned verified process/tool exit 0; both
+commands recorded their owned Python PIDs before waiting and retained their logs.
+
+No native operation, host call or secret scan ran for this change. The final
+unchanged scan is held until the reviewed documentation base is merged. Separate
+nine-input staging/foreground preparation remains paused pending the final source
+review. The earlier custody positive, guarded finish, controller retirement and
+old failed-report history remain separate evidence. No qualifier/source pin or
+baseline entry is changed by this patch; later final source snapshots and any
+needed pin updates require their own explicit review.
 
 
 The cohesive library-origin follow-up preserves the first system-origin checkpoint
 and applies the identical active-handler correction to its corresponding verifier.
 Its two mirrored ownership regressions cover the same constructor and close-error
 boundaries. No other API, validator, inspector, bounds, pin or cleanup method changes.
-All four regression methods remain source-only pending independent review.
+All four regression methods were independently source-reviewed before the
+focused verification described above.
