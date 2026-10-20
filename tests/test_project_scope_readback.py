@@ -81,7 +81,7 @@ class ReadbackReplyTests(unittest.TestCase):
                 Slot.close_calls += 1
         with patch.object(inspector, "_InspectionSlot", Slot), patch.object(inspector.sys, "platform", "linux"):
             result = inspector.inspect_scope(Path.cwd(), run_id="run_x", generation=GENERATION, expected_revision=1)
-        self.assertIs(type(result), inspector.ScopeObservation)
+        self.assertIs(type(result), readback.ScopeObservation)
         self.assertEqual((result.state, result.reason), ("unknown", "unverified"))
         self.assertEqual(Slot.close_calls, 0)
 
