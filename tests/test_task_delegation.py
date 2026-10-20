@@ -11,7 +11,28 @@ from unittest.mock import patch
 
 import server
 from hermes_kanban import RemoteHermesKanbanAdapter
-from task_repository import ensure_task_sqlite_authority, normalize_legacy_task_collection
+from task_repository import ensure_task_sqlite_authority, normalize_task_collection
+
+
+def _current_task(identifier: str, title: str) -> dict:
+    """Explicit current seed record, not a historical-input conversion."""
+    return {
+        "id": identifier,
+        "title": title,
+        "description": "Compare options",
+        "project": "Mentat",
+        "status": "todo",
+        "priority": "high",
+        "assignee": None,
+        "due_date": None,
+        "source": "test",
+        "tags": [],
+        "review_required": False,
+        "needs_attention": False,
+        "created_at": "2026-07-12T10:00:00-07:00",
+        "updated_at": "2026-07-12T10:00:00-07:00",
+        "completed_at": None,
+    }
 
 
 class FakeKanban:
@@ -74,16 +95,9 @@ class TaskDelegationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        (self.root / "tasks.json").write_text(json.dumps([{
-            "id": "task-1",
-            "title": "Research",
-            "description": "Compare options",
-            "project": "Mentat",
-            "status": "todo",
-            "priority": "high",
-            "created_at": "2026-07-12T10:00:00-07:00",
-            "updated_at": "2026-07-12T10:00:00-07:00",
-        }]), encoding="utf-8")
+        (self.root / "tasks.json").write_text(
+            json.dumps([_current_task("task-1", "Research")]), encoding="utf-8"
+        )
         (self.root / "projects.json").write_text(json.dumps([{"id": "project-1", "name": "Mentat"}]), encoding="utf-8")
         ensure_task_sqlite_authority(self.root, required_source_mode=None)
         self.adapter = FakeKanban()
@@ -107,7 +121,7 @@ class TaskDelegationTests(unittest.TestCase):
         return server.read_json_file("tasks.json", [])
 
     def replace_tasks(self, tasks):
-        normalized = list(normalize_legacy_task_collection(tasks))
+        normalized = list(normalize_task_collection(tasks))
         return server.update_json_file(
             "tasks.json",
             [],
@@ -497,7 +511,7 @@ class TaskDelegationTests(unittest.TestCase):
     def test_preview_blocks_incomplete_dependencies(self):
         tasks = self.read_tasks()
         tasks[0]["depends_on"] = ["task-dependency"]
-        tasks.append({"id": "task-dependency", "title": "Dependency", "status": "todo"})
+        tasks.append(_current_task("task-dependency", "Dependency"))
         self.replace_tasks(tasks)
 
         payload, status = server.preview_task_delegation("task-1", self.intent())
@@ -666,9 +680,9 @@ class TaskDelegationTests(unittest.TestCase):
         for index in range(4):
             tasks.append(
                 {
-                    "id": f"task-{index}",
-                    "title": f"Task {index}",
+                    **_current_task(f"task-{index}", f"Task {index}"),
                     "delegation": {
+                        "profile_id": "legacy-unbound",
                         "connection_binding_id": "b" * 32,
                         "board_id": "default",
                         "kanban_task_id": f"t_remote_{index}",
@@ -678,9 +692,9 @@ class TaskDelegationTests(unittest.TestCase):
             )
         tasks.append(
             {
-                "id": "legacy",
-                "title": "Legacy",
+                **_current_task("legacy", "Legacy"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "board_id": "default",
                     "kanban_task_id": "t_legacy",
                     "state": "running",
@@ -714,9 +728,9 @@ class TaskDelegationTests(unittest.TestCase):
     def test_home_refresh_includes_only_current_local_binding(self):
         tasks = [
             {
-                "id": "local-task",
-                "title": "Local work",
+                **_current_task("local-task", "Local work"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "local-default",
                     "board_id": "default",
                     "kanban_task_id": "t_local",
@@ -724,9 +738,9 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
             {
-                "id": "remote-task",
-                "title": "Remote work",
+                **_current_task("remote-task", "Remote work"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_remote",
@@ -760,9 +774,9 @@ class TaskDelegationTests(unittest.TestCase):
     def test_home_refresh_respects_terminal_and_retry_artifact_states(self):
         tasks = [
             {
-                "id": "unsupported",
-                "title": "Old Hermes",
+                **_current_task("unsupported", "Old Hermes"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_unsupported",
@@ -771,9 +785,9 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
             {
-                "id": "cooldown",
-                "title": "Retry later",
+                **_current_task("cooldown", "Retry later"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_cooldown",
@@ -783,9 +797,9 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
             {
-                "id": "due",
-                "title": "Retry now",
+                **_current_task("due", "Retry now"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_due",
