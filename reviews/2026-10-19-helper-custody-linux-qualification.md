@@ -217,3 +217,43 @@ or publication approval. No baseline addition is a dependency or execution waive
 The foreground launcher and real Linux positive qualification remain separately
 unapproved and unperformed. Immutable loader/FUSE/runtime/provider readiness and
 hostile native qualification cases remain open.
+
+## Source-only re-pin for deferred scope ctypes initialization
+
+The first native attempt at the old 13a source refused BEFORE acquisition: no
+worker/signature/decoder operation started and no lease was returned. Its held
+foreground attempt and original errors remain preserved. Passive inventory found
+one new regular descriptor while all three baseline FIFOs stayed unchanged.
+A separately authorized fresh ctypes-only diagnostic reproduced that descriptor
+class addition without importing project code or calling a custody API. Upstream
+CPython initializes its libffi allocator at ctypes import. This evidence does
+not identify or authorize closing the old unknown descriptor, and no session or
+native retry was performed by this preparation.
+
+The independently reviewed production candidate e861743 defers ctypes import
+until the actual cgroup check or scope constructor needs it. Both existing
+consumers and their width/refusal conditions remain supported. Production
+focused, old-code counterfactual and unchanged scanner evidence are still pending
+at this source-only checkpoint; no later result is assumed.
+
+The qualifier's fixed source graph is re-pinned coherently to that exact
+production candidate. Only SOURCE_COMMIT, the scope file's committed size/blob
+identity, and the test's exact commit assertion change. All 178 tuple paths were
+checked against immutable e861743; the scope row is the only changed tuple and
+all other 177 are exact. The tool remains separately supervisor-pinned. This
+refresh adds no import/FD exception, callback, selector, deadline, retry or owner
+control, and it must not claim the old fc4 graph matches changed production bytes.
+
+All 444 previously approved baseline entries and scanner rules remain unchanged.
+The two new source-commit literals and one new scope-blob literal are expected to
+produce three unreviewed public-hash records, but no scan has run on this new
+checkpoint. The prior human approval covered 180 old values only. Exact new
+classification and any necessary direct human/normal owner approval must precede
+a further baseline change; no encoding or detector workaround is allowed.
+
+Existing portable and secret passes remain evidence only for their original
+heads. This new source preparation requires root and independent review before
+any tests or scan. A later actual native attempt requires separately reviewed
+fresh source/staging/foreground pins and explicit authorization. Original 13a,
+its PR history, staged copies and held attempt are untouched. No source upload,
+host call, helper execution, provider action or publication occurred here.
