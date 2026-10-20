@@ -247,20 +247,6 @@ def _timestamp(value: Any, field: str, *, nullable: bool = False) -> str | None:
     return result
 
 
-def _legacy_timestamp(value: Any) -> Any:
-    """Give shipped timezone-naive Task timestamps one deterministic meaning."""
-
-    if not isinstance(value, str) or ("T" not in value and " " not in value):
-        return value
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return value
-    if parsed.tzinfo is None:
-        return f"{value}+00:00"
-    return value
-
-
 def _due_date(value: Any) -> str | None:
     if value is None:
         return None
@@ -438,52 +424,6 @@ def normalize_task_collection(tasks: Sequence[Mapping[str, Any]]) -> tuple[dict[
     if len(raw) > MAX_EXPORT_BYTES:
         _fail("tasks.too_large")
     return normalized
-
-
-def normalize_legacy_task_collection(
-    tasks: Sequence[Mapping[str, Any]],
-) -> tuple[dict[str, Any], ...]:
-    """Upgrade sparse historical JSON Tasks to the canonical public shape."""
-
-    if not isinstance(tasks, (list, tuple)):
-        _fail("tasks.invalid")
-    fallback_timestamp = "1970-01-01T00:00:00+00:00"
-    upgraded: list[dict[str, Any]] = []
-    for item in tasks:
-        if not isinstance(item, Mapping):
-            _fail("task.invalid")
-        task = dict(item)
-        task.setdefault("description", "")
-        task.setdefault("project", "General")
-        task.setdefault("status", "todo")
-        task.setdefault("priority", "medium")
-        task.setdefault("assignee", None)
-        task.setdefault("due_date", None)
-        task.setdefault("source", "legacy")
-        task.setdefault("tags", [])
-        task.setdefault("review_required", False)
-        task.setdefault("needs_attention", False)
-        task.setdefault("created_at", fallback_timestamp)
-        task.setdefault("updated_at", task["created_at"])
-        task.setdefault("completed_at", None)
-        for field in ("created_at", "updated_at", "completed_at"):
-            if task.get(field) is not None:
-                task[field] = _legacy_timestamp(task[field])
-        if isinstance(task.get("status"), str):
-            task["status"] = task["status"].strip().lower().replace("_", " ")
-            task["status"] = {
-                "open": "todo",
-                "ready": "todo",
-                "done": "completed",
-            }.get(task["status"], task["status"])
-        if isinstance(task.get("priority"), str):
-            task["priority"] = task["priority"].strip().lower()
-        if isinstance(task.get("delegation"), Mapping):
-            delegation = dict(task["delegation"])
-            delegation.setdefault("profile_id", "legacy-unbound")
-            task["delegation"] = delegation
-        upgraded.append(task)
-    return normalize_task_collection(upgraded)
 
 
 def _canonical_json(value: Any) -> str:
@@ -1151,6 +1091,7 @@ def _read_source_snapshot(
     required_mode: int | None,
     cross_process_lock: bool = False,
 ) -> TaskSourceSnapshot:
+    """Read a current canonical seed/recovery document without legacy repair."""
     path = Path(path)
     try:
         with _durable_mutation_lock(
@@ -1220,7 +1161,7 @@ def _read_source_snapshot(
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, list):
             _fail("tasks.invalid")
-        tasks = normalize_legacy_task_collection(payload)
+        tasks = normalize_task_collection(payload)
         return TaskSourceSnapshot(
             raw=raw,
             tasks=tasks,
