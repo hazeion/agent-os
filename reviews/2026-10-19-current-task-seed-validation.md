@@ -72,3 +72,12 @@ skipped. This is not a claim that the original 185-method batch passed in one
 run. Unrelated passing modules did not receive a broad repeat for this
 literal-only fixture correction. No package/security gate or publication has
 been performed for this component yet.
+
+The later frozen fc4 full inventory exposed another incomplete positive seed
+outside that twelve-module batch: signed local Kanban webhook synchronization.
+Only its pre-authority Task literal is ported here: explicit assignee/due_date/
+completed_at nulls and the canonical todo spelling preserve its old normalized
+values. Exact IDs, delegation/binding/state, signed-event behavior and all
+authentication negatives/assertions remain unchanged. Frozen fc4 is untouched
+and its full run remains live; no test has run for this source-only fixture
+follow-up yet. The Task production validator and previous commits are unchanged.
