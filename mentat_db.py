@@ -2683,6 +2683,12 @@ class _CurrentAdmissionResources:
         return self
 
     def __exit__(self, *_error):
+        validation_error = None
+        if _error[0] is None:
+            try:
+                self.validate()
+            except BaseException as exc:
+                validation_error = exc
         failed = False
         descriptors = ([self.main[1]] if self.main is not None else [])
         descriptors += [fd for _path, fd, _private in reversed(self.directories)]
@@ -2701,7 +2707,9 @@ class _CurrentAdmissionResources:
             except OSError:
                 failed = True
         if failed:
-            raise MentatDatabaseError("Mentat current resource cleanup is unverified")
+            raise MentatDatabaseError("Mentat current resource cleanup is unverified") from validation_error
+        if validation_error is not None:
+            raise validation_error
 
     def bind(self, path: Path, identity: tuple[int, int]) -> None:
         try:
@@ -3106,6 +3114,7 @@ def _connect_with_identity_once(
     admitted_identity = _admit_current_database_root(data_dir, resources=resources)
     if admitted_identity is None and legacy_agent_registry_artifacts_present(data_dir):
         raise MentatDatabaseError("Retired Agent registry storage is unsupported")
+    resources.validate()
     private = ensure_private_console_dir(data_dir)
     path = private / DATABASE_NAME
     _validate_database_set(path, private)
@@ -3129,6 +3138,7 @@ def _connect_with_identity_once(
     expected_identity = created_identity if created else admitted_identity
     if expected_identity is None or identities[path] != expected_identity:
         raise MentatDatabaseError("Mentat database file identity changed while opening")
+    resources.validate()
     connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
@@ -3144,6 +3154,7 @@ def _connect_with_identity_once(
             fresh_agent_cutover_at = None
         if _validate_database_set(path, private)[path] != identities[path]:
             raise MentatDatabaseError("Mentat database file identity changed while opening")
+        resources.validate()
         connection.execute("PRAGMA journal_mode = WAL")
         if (
             fresh_agent_cutover_at is not None
@@ -3157,6 +3168,7 @@ def _connect_with_identity_once(
                 raise MentatDatabaseError(
                     "Retired Agent registry state changed during authority claim"
                 )
+        resources.validate()
         _secure_database_files(path)
         verified = _validate_database_set(path, private)
         if identities.get(path) is not None and verified.get(path) != identities[path]:

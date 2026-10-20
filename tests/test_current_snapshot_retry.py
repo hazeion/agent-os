@@ -136,6 +136,43 @@ class CurrentSnapshotRetryTests(unittest.TestCase):
                     self.assertEqual(pause.call_count, 1)
                     self.assertFalse(db.database_path(root).exists())
 
+    @unittest.skipUnless(os.name == 'posix', 'Actual same-inode Console replacement after admission')
+    def test_post_admission_directory_swap_refuses_before_hardening_or_writable_open(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'data'; self.current(root).close()
+            original = db._admit_current_database_root; descriptors = []
+            def admitted(*args, **kwargs):
+                result = original(*args, **kwargs)
+                pins = kwargs['resources']; descriptors.extend([pins.main[1], *(fd for _path,fd,_private in pins.directories)])
+                path = db.database_path(root); identity = path.stat()
+                moved = Path(temporary) / 'old-console'; path.parent.rename(moved); path.parent.mkdir(mode=0o700)
+                for child in list(moved.iterdir()): child.rename(path.parent / child.name)
+                self.assertEqual((identity.st_dev,identity.st_ino),(path.stat().st_dev,path.stat().st_ino))
+                return result
+            with patch.object(db,'_admit_current_database_root',side_effect=admitted), patch.object(db,'ensure_private_console_dir',wraps=db.ensure_private_console_dir) as harden, patch.object(db.time,'sleep') as pause:
+                with self.assertRaises(db.MentatDatabaseError): db.connect(root)
+            harden.assert_not_called(); pause.assert_not_called()
+            for descriptor in descriptors:
+                with self.assertRaises(OSError): os.fstat(descriptor)
+
+    @unittest.skipUnless(os.name == 'posix', 'Actual terminal retained-anchor failure cleanup')
+    def test_success_exit_validation_failure_still_closes_every_owned_resource(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'data'; self.current(root).close()
+            pins = db._CurrentAdmissionResources(); path = db.database_path(root); details = path.stat()
+            attempted = []; original_close = os.close
+            def close(descriptor): attempted.append(descriptor); original_close(descriptor)
+            with patch.object(db.os,'close',side_effect=close):
+                with self.assertRaises(db.MentatDatabaseError):
+                    with pins:
+                        pins.bind(path,(details.st_dev,details.st_ino))
+                        expected = [pins.main[1], *(fd for _path,fd,_private in reversed(pins.directories))]
+                        moved = Path(temporary) / 'old-console'; path.parent.rename(moved); path.parent.mkdir(mode=0o700)
+                        for child in list(moved.iterdir()): child.rename(path.parent / child.name)
+            self.assertEqual(attempted,expected)
+            for descriptor in expected:
+                with self.assertRaises(OSError): os.fstat(descriptor)
+
     def test_safe_content_churn_exhausts_existing_three_attempts_only(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / 'data'
