@@ -728,9 +728,9 @@ class TaskDelegationTests(unittest.TestCase):
     def test_home_refresh_includes_only_current_local_binding(self):
         tasks = [
             {
-                "id": "local-task",
-                "title": "Local work",
+                **_current_task("local-task", "Local work"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "local-default",
                     "board_id": "default",
                     "kanban_task_id": "t_local",
@@ -738,9 +738,9 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
             {
-                "id": "remote-task",
-                "title": "Remote work",
+                **_current_task("remote-task", "Remote work"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_remote",
@@ -774,9 +774,9 @@ class TaskDelegationTests(unittest.TestCase):
     def test_home_refresh_respects_terminal_and_retry_artifact_states(self):
         tasks = [
             {
-                "id": "unsupported",
-                "title": "Old Hermes",
+                **_current_task("unsupported", "Old Hermes"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_unsupported",
@@ -785,9 +785,9 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
             {
-                "id": "cooldown",
-                "title": "Retry later",
+                **_current_task("cooldown", "Retry later"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_cooldown",
@@ -797,9 +797,9 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
             {
-                "id": "due",
-                "title": "Retry now",
+                **_current_task("due", "Retry now"),
                 "delegation": {
+                    "profile_id": "legacy-unbound",
                     "connection_binding_id": "b" * 32,
                     "board_id": "default",
                     "kanban_task_id": "t_due",

@@ -44,3 +44,24 @@ No tests, compilation, package build, security gate or runtime operation has
 run on this checkpoint while frozen aggregate inventory26235 is live. Tests
 and review will follow in a coordinated quiet window. Unsupported input is
 refused; no old data is converted, deleted or silently discarded.
+
+## Composed fixture verification
+
+After the frozen inventory became terminal, both reviewed fixture histories
+were normally merged without conflicts: business fixtures f0d1297 and remote
+artifact fixtures d358854. The exact merged head was
+3a63adf8629d141a770f1e66b8478eb4d6c0eec1; all original commits remain ancestors.
+
+The authorized twelve-module batch used ResourceWarnings as errors and a fresh
+private HERMES_HOME. It ran 185 methods in 74.933 seconds: 182 passed, one existing
+native-Windows reparse skip and two errors. No ResourceWarning occurred.
+The original result/log remain in /private/tmp/mentat-task-seed-focused-result.json
+and /private/tmp/mentat-task-seed-focused.log; this run is not claimed all green.
+
+Both errors were missed sparse replacement fixtures in two delegation home
+refresh methods, before their business operation. Five records now use the
+existing explicit current fixture builder and explicit legacy-unbound profile.
+Their connection bindings, remote identities, state/retry fields and all
+business assertions are unchanged. Production code is unchanged. The affected
+delegation module will be rerun separately; unrelated passing modules do not
+need a broad repeat for this literal-only fixture correction.
