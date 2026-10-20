@@ -60,10 +60,21 @@ class PlanningTaskDelegationServerTests(unittest.TestCase):
         self.temporary = TemporaryDirectory()
         self.root = Path(self.temporary.name)
         (self.root / "tasks.json").write_text(json.dumps([{
-            "id": "task-1", "title": "Research", "project": "Mentat",
-            "status": "todo", "priority": "high",
+            "id": "task-1",
+            "title": "Research",
+            "description": "",
+            "project": "Mentat",
+            "status": "todo",
+            "priority": "high",
+            "assignee": None,
+            "due_date": None,
+            "source": "test",
+            "tags": [],
+            "review_required": False,
+            "needs_attention": False,
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-01T00:00:00Z",
+            "completed_at": None,
         }]), encoding="utf-8")
         ensure_task_sqlite_authority(self.root, required_source_mode=None)
         self.adapter = _FakeKanban()
