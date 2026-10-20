@@ -459,9 +459,12 @@ def _helper_slot_type(base):
         def __init__(self, *args, **kwargs):
             self._unverified_group = None
             self._retained_process = None
+            self._inherited_cleanup_error = None
             super().__init__(*args, **kwargs)
 
         def _terminate_owned(self):
+            if self._inherited_cleanup_error is not None:
+                raise self._inherited_cleanup_error
             if self._unverified_group is None:
                 process = self._process
                 if process is None:
@@ -473,6 +476,7 @@ def _helper_slot_type(base):
                     super()._terminate_owned()
                 except BaseException as error:
                     self._process = process
+                    self._inherited_cleanup_error = error
                     error._mentat_worker_owner = self
                     raise
             # Fixed trusted verifier descendants inherit this owned group.
@@ -481,22 +485,14 @@ def _helper_slot_type(base):
             end = time.monotonic() + 0.5
             try:
                 while True:
-                    # Reap only the exact original leader; never signal again
-                    # after inherited teardown has started or failed.
-                    terminal = self._retained_process.poll() is not None
+                    # Base cleanup owns reaping and each stream close. This
+                    # wrapper only observes already-completed teardown.
+                    terminal = self._retained_process.returncode is not None
                     try:
                         os.killpg(self._unverified_group, 0)
                     except ProcessLookupError:
                         if not terminal:
                             _fail()
-                        for pipe in (self._retained_process.stdin, self._retained_process.stdout):
-                            if pipe is not None:
-                                pipe.close()
-                        reader = self._reader
-                        if reader is not None:
-                            reader.join(timeout=0.5)
-                            if reader.is_alive():
-                                _fail()
                         self._reader = None
                         self._unverified_group = self._retained_process = None
                         self._process = None
