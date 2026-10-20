@@ -22,7 +22,23 @@ a spurious close; an unowned constructor error still returns unknown; owned
 execution followed by close failure preserves the original owner chain and one
 close attempt. All pre-existing assertions and platform skips remain unchanged.
 
-Source checkpoint only: no tests, scans, native operation or host call have run
-for this change. The separate pre-reap group-cleanup work remains on its own
-branch and files. Prior helper-origin and custody evidence remains scoped to its
-recorded source; no native claim, source pin or baseline entry changes here.
+Focused verification on `ac2593c` ran the portable `ReadbackReplyTests` class
+once with `-B`, ResourceWarnings treated as errors and a fresh private Hermes
+fixture root. All eight methods passed in 0.004 seconds, with no skips or
+ResourceWarnings. The three new ownership/unknown cases all passed.
+
+The separate control used an exact `46eab4b` source archive with only the three
+new methods inserted into its existing readback test class. All 1,142 tracked
+paths matched their original blobs except that deliberate test overlay, and all
+old test ASTs were preserved. Only those three new methods ran: the two ownership
+cases failed as expected, while the ordinary-unowned unknown case passed, in
+0.003 seconds. The control returned verified process/tool exit 1; the fixed class
+returned verified exit 0. Both commands recorded their owned Python PIDs before
+waiting and retained separate logs and exit files.
+
+No native operation or host call ran during this focused verification. Publication
+checks are recorded separately against the final PR head. The separate pre-reap
+group-cleanup work remains on its own branch and files; these portable cases do
+not qualify that pending source. Prior helper-origin and custody evidence remains
+scoped to its recorded source. No native claim, source pin or baseline entry
+changes here.
