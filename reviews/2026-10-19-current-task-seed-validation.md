@@ -63,5 +63,12 @@ refresh methods, before their business operation. Five records now use the
 existing explicit current fixture builder and explicit legacy-unbound profile.
 Their connection bindings, remote identities, state/retry fields and all
 business assertions are unchanged. Production code is unchanged. The affected
-delegation module will be rerun separately; unrelated passing modules do not
-need a broad repeat for this literal-only fixture correction.
+delegation module was rerun separately at
+c8245c333c31bd9524f47715885edc82787c0e10: all 24 methods passed in 7.917 seconds,
+with ResourceWarnings as errors, no skips and another fresh private HERMES_HOME.
+Log: /private/tmp/mentat-task-seed-delegation-correction.log. Across both runs,
+184 distinct methods passed and the one existing native-Windows method remained
+skipped. This is not a claim that the original 185-method batch passed in one
+run. Unrelated passing modules did not receive a broad repeat for this
+literal-only fixture correction. No package/security gate or publication has
+been performed for this component yet.
