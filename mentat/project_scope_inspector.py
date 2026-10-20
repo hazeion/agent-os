@@ -98,7 +98,9 @@ def inspect_scope(data_root, *, run_id, generation, expected_revision):
         if time.monotonic()>=deadline or not _valid_result(value,started_at,time.time()):
             raise ValueError()
         candidate=ScopeObservation(value['state'],value['reason'],value['sampled_at'])
-    except Exception:
+    except Exception as error:
+        if getattr(error, '_mentat_worker_owner', None) is not None:
+            raise ValueError('scope_readback.unverified') from error
         candidate=None
     finally:
         if slot is not None:
