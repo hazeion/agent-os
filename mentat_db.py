@@ -3442,6 +3442,8 @@ def _read_existing_database_file(
     try:
         before = os.fstat(descriptor)
         ceiling = min(maximum, remaining_total) if remaining_total is not None else maximum
+        if current_resources is not None:
+            _current_main_metadata(before, identity, ceiling)
         if (
             (int(before.st_dev), int(before.st_ino)) != identity
             or not stat.S_ISREG(before.st_mode)

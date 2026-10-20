@@ -198,6 +198,30 @@ class CurrentSnapshotRetryTests(unittest.TestCase):
                 self.assertNotIsInstance(refused.exception, db._TransientCurrentSnapshotRace)
                 read.assert_not_called(); pause.assert_not_called(); self.assertTrue(swapped)
 
+    @unittest.skipUnless(os.name == 'posix', 'Actual POSIX privacy mutation at saved fstat')
+    def test_unsafe_saved_before_fstat_refuses_before_any_read(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'data'; self.current(root).close()
+            path = db.database_path(root); identity = path.stat()
+            original_stat, original_read = os.fstat, db._read_existing_database_file
+            inside = [False]; main_stats = []
+            def raw(*args, **kwargs):
+                inside[0] = True
+                try: return original_read(*args, **kwargs)
+                finally: inside[0] = False
+            def fstat(descriptor):
+                details = original_stat(descriptor)
+                if inside[0] and (details.st_dev,details.st_ino) == (identity.st_dev,identity.st_ino):
+                    main_stats.append(descriptor)
+                    if len(main_stats) == 2:
+                        path.chmod(0o640)
+                        return original_stat(descriptor)
+                return details
+            with patch.object(db,'_read_existing_database_file',side_effect=raw), patch.object(db.os,'fstat',side_effect=fstat), patch.object(db.os,'read') as read, patch.object(db.time,'sleep') as pause:
+                with self.assertRaises(db.MentatDatabaseError) as refused: db.validate_current_database_root(root)
+            self.assertNotIsInstance(refused.exception,db._TransientCurrentSnapshotRace)
+            self.assertEqual(len(main_stats),2); read.assert_not_called(); pause.assert_not_called()
+
     def test_main_safety_rejects_owner_reparse_size_and_unlinked_metadata(self):
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / 'file'; path.write_bytes(b'x'); path.chmod(0o600); actual = path.stat()
