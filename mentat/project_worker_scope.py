@@ -8,7 +8,6 @@ Local scope termination does not establish an external provider outcome.
 
 from __future__ import annotations
 
-import ctypes
 import errno
 from dataclasses import dataclass
 import os
@@ -89,6 +88,7 @@ def _open_directory(path: Path) -> int:
 
 
 def _require_cgroup2(descriptor: int) -> None:
+    import ctypes
     # Linux statfs starts with a native long filesystem type. These supported
     # 64-bit Linux ABIs fit well inside the deliberately oversized buffer.
     buffer = ctypes.create_string_buffer(256)
@@ -123,6 +123,7 @@ class LinuxWorkerScope:
     """
 
     def __init__(self, limits: WorkerScopeLimits = WorkerScopeLimits()) -> None:
+        import ctypes
         if (not IS_LINUX or not callable(getattr(os, "pidfd_open", None))
                 or not callable(getattr(signal, "pidfd_send_signal", None))
                 or ctypes.sizeof(ctypes.c_long) != 8):

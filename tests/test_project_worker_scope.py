@@ -16,6 +16,49 @@ from mentat import project_worker_scope as scopes
 
 
 class WorkerScopeContractTests(unittest.TestCase):
+    def test_fresh_scope_and_helper_imports_do_not_initialize_ctypes(self):
+        root = Path(__file__).resolve().parents[1]
+        environment = {key: os.environ[key] for key in
+                       ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL")
+                       if key in os.environ}
+        for module in ("mentat.project_worker_scope", "mentat.project_system_origin",
+                       "mentat.project_library_origin", "mentat.project_helper_byte_custody"):
+            source = (
+                "import sys\n"
+                "assert 'ctypes' not in sys.modules and '_ctypes' not in sys.modules\n"
+                "def reject_ffi(event, arguments):\n"
+                "    if event == 'import' and arguments[0] in ('ctypes', '_ctypes'):\n"
+                "        raise AssertionError('unexpected FFI initialization during import')\n"
+                "sys.addaudithook(reject_ffi)\n"
+                f"sys.path.insert(0, {str(root)!r})\n"
+                f"__import__({module!r})\n"
+                "assert 'ctypes' not in sys.modules and '_ctypes' not in sys.modules\n"
+                "print('import-only')\n"
+            )
+            with self.subTest(module=module):
+                result = subprocess.run(
+                    [sys.executable, "-I", "-B", "-S", "-c", source],
+                    cwd=root, env=environment, capture_output=True, text=True,
+                    timeout=15, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "import-only")
+
+    def test_scope_construction_retains_native_long_width_gate(self):
+        ffi = MagicMock()
+        ffi.sizeof.return_value = 4
+        with patch.dict(sys.modules, {"ctypes": ffi}), patch.object(
+            scopes, "IS_LINUX", True
+        ), patch.object(scopes.os, "pidfd_open", create=True), patch.object(
+            scopes.signal, "pidfd_send_signal", create=True
+        ), patch.object(scopes.os, "open") as opened, patch.object(
+            scopes.subprocess, "Popen"
+        ) as spawned, self.assertRaisesRegex(scopes.WorkerScopeError, "worker_scope.unsupported"):
+            scopes.LinuxWorkerScope()
+        ffi.sizeof.assert_called_once_with(ffi.c_long)
+        opened.assert_not_called()
+        spawned.assert_not_called()
+
     def test_limits_refuse_unbounded_noninteger_or_excessive_values(self):
         for field, values in {
             "memory_bytes": [0, -1, True, 512 * 1024 * 1024 + 1],
