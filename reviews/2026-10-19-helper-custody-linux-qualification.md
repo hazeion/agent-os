@@ -164,3 +164,12 @@ observed. The negative swaps later helper/library rows while preserving 13/4,
 so earlier valid rows cannot mask the guard with unrelated FD failures. All
 metadata-declared slots are retained before the first actual fstat/read for
 independent close and post-close absence accounting.
+
+A subsequent self-review found a baseline-accounting gap: recording an unexpected
+live slot and then comparing to that same baseline could label cleanup verified.
+The baseline is now recorded before project imports, after source pinning. A
+non-stdio baseline or failed passive inventory is retained uncertainty, with no
+unknown-slot close. Imports/preflight must preserve the original stdio baseline,
+and final cleanup still compares it. Portable negatives retain the original
+probe exception and require an open foreground session rather than a cleanup
+claim. This follow-up remains source-only and unexecuted.

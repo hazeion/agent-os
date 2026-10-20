@@ -352,3 +352,36 @@ class CustodyQualificationDriverTests(unittest.TestCase):
             modules['codex_runtime'].__spec__.origin = '/installed/codex_runtime.py'
             with self.assertRaises(driver.QualificationRefused):
                 attempt._verify_imported_sources()
+
+    def test_nonstdio_baseline_retains_uncertainty_without_closing_unknown_slots(self):
+        attempt = self.attempt()
+        inventory = {0: ('stdio',), 1: ('stdio',), 2: ('stdio',), 63: ('unknown',)}
+        with patch.object(driver, '_inventory', return_value=inventory), \
+             patch.object(driver.os, 'close') as close:
+            with self.assertRaises(driver.QualificationRefused):
+                attempt._record_baseline()
+        close.assert_not_called()
+        self.assertIs(attempt.baseline, inventory)
+        self.assertEqual(attempt.uncertain_resources[0][0], 'baseline-inventory')
+        with patch.object(driver.sys, 'platform', 'unsupported'), \
+             patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver, '_inventory', return_value=inventory):
+            report = json.loads(attempt.run())
+        self.assertFalse(report['qualification'])
+        self.assertFalse(report['cleanup_verified'])
+        self.assertTrue(report['session_must_remain_open'])
+
+    def test_baseline_inventory_probe_error_retains_actual_error_and_session(self):
+        attempt = self.attempt()
+        error = OSError(errno.EPERM, 'private descriptor probe')
+        with patch.object(driver, '_inventory', side_effect=error), \
+             patch.object(driver.os, 'close') as close:
+            with self.assertRaises(OSError):
+                attempt._record_baseline()
+        close.assert_not_called()
+        self.assertIs(attempt.uncertain_resources[0][2], error)
+        with patch.object(driver.sys, 'platform', 'unsupported'), \
+             patch.object(driver.time, 'monotonic', return_value=101):
+            report = json.loads(attempt.run())
+        self.assertFalse(report['cleanup_verified'])
+        self.assertTrue(report['owner_retained'])

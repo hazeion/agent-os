@@ -579,6 +579,16 @@ class QualificationAttempt:
         finally:
             os.lseek(self.duplicate, old_offset, os.SEEK_SET)
 
+    def _record_baseline(self):
+        try:
+            self.baseline = _inventory()
+            _require(set(self.baseline) == {0, 1, 2})
+        except BaseException as error:
+            # Unknown live slots or a failed passive probe do not grant closure
+            # authority. Retain the foreground context and never close a slot.
+            self.uncertain_resources.append(('baseline-inventory', self.baseline, error))
+            raise
+
     def _close(self):
         if self.duplicate is not None:
             fd, self.duplicate = self.duplicate, None
@@ -616,12 +626,12 @@ class QualificationAttempt:
             soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
             _require(0 < soft <= hard <= 64 and sys.dont_write_bytecode)
             source_manifest = self._sources()
+            self._record_baseline()
             custody, library, origin = self._load_fixed_api()
             _require(custody._supported())
             input_manifest = self._inputs(library)
             self.public_input_digest = hashlib.sha256(json.dumps(sorted(library._expected_inputs().items()), separators=(',', ':')).encode()).hexdigest()
-            self.baseline = _inventory()
-            _require(set(self.baseline) == {0, 1, 2})
+            _require(_inventory() == self.baseline)
             self._time()
             self._verify_imported_sources()
             _require(sys.path[0] == str(self.source_root))
