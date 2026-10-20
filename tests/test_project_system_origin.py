@@ -120,6 +120,62 @@ class SystemOriginParsingTests(unittest.TestCase):
             with self.assertRaises(origin.SystemOriginError): origin.verify_helpers(Path.cwd())
         self.assertTrue(Slot.closed)
 
+    def test_constructor_failure_retains_actual_attached_owner_through_safe_error(self):
+        from mentat import project_scope_inspector
+        created = []
+        startup_error = RuntimeError("private constructor detail")
+        handle = object()
+        class Slot:
+            close_calls = 0
+            def __init__(self, *args, **kwargs):
+                self.handle = handle
+                created.append(self)
+                startup_error._mentat_worker_owner = self
+                raise startup_error
+            def close(self):
+                Slot.close_calls += 1
+        with patch.object(project_scope_inspector, "_InspectionSlot", Slot), patch.object(
+            origin.sys, "platform", "linux"
+        ), self.assertRaises(origin.SystemOriginError) as caught:
+            origin.verify_helpers(Path.cwd())
+        self.assertEqual(caught.exception.args, ("system_origin.unverified",))
+        self.assertNotIn("private constructor detail", str(caught.exception))
+        self.assertIs(caught.exception.__context__, startup_error)
+        self.assertIsNotNone(startup_error.__traceback__)
+        self.assertIs(caught.exception.__context__._mentat_worker_owner, created[0])
+        self.assertIs(caught.exception.__context__._mentat_worker_owner.handle, handle)
+        self.assertEqual(Slot.close_calls, 0)
+
+    def test_close_failure_keeps_execute_error_and_attached_owner_chain(self):
+        from mentat import project_scope_inspector
+        created = []
+        execute_error = RuntimeError("private execute detail")
+        cleanup_error = RuntimeError("private close detail")
+        class Slot:
+            close_calls = 0
+            def __init__(self, *args, **kwargs):
+                created.append(self)
+            def execute(self, **kwargs):
+                execute_error._mentat_worker_owner = self
+                raise execute_error
+            def close(self):
+                Slot.close_calls += 1
+                cleanup_error._mentat_worker_owner = self
+                raise cleanup_error
+        with patch.object(project_scope_inspector, "_InspectionSlot", Slot), patch.object(
+            origin.sys, "platform", "linux"
+        ), self.assertRaises(RuntimeError) as caught:
+            origin.verify_helpers(Path.cwd())
+        self.assertIs(caught.exception, cleanup_error)
+        self.assertIs(caught.exception._mentat_worker_owner, created[0])
+        safe_error = caught.exception.__context__
+        self.assertIs(type(safe_error), origin.SystemOriginError)
+        self.assertEqual(safe_error.args, ("system_origin.unverified",))
+        self.assertIs(safe_error.__context__, execute_error)
+        self.assertIsNotNone(execute_error.__traceback__)
+        self.assertIs(safe_error.__context__._mentat_worker_owner, created[0])
+        self.assertEqual(Slot.close_calls, 1)
+
     def test_worker_duplicate_keys_and_public_entry_refuse_arbitrary_inputs(self):
         with self.assertRaises(ValueError): json.loads('{"root":1,"root":2}',object_pairs_hook=worker._pairs)
         with self.assertRaises(origin.SystemOriginError): origin.verify_helpers('not a trusted absolute Path')
