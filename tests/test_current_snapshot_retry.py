@@ -280,6 +280,41 @@ class CheckedWindowsAcquisitionTests(unittest.TestCase):
                     with self.assertRaises(OSError): data_layout._windows_open_directory_chain(Path('/owned/path'), checked_cleanup=True)
                 close.assert_called_once_with(acquired)
 
+    def test_current_windows_partial_crt_transfer_retains_each_exact_owner(self):
+        # Substitute only the module-local OS boundary; pathlib still uses its
+        # real host, so this exercises the Windows ownership branch portably.
+        path = Path('/owned/private/console/mentat.sqlite3')
+        for failed_index in range(4):
+            for close_fault in ('none', 'descriptor', 'handle'):
+                with self.subTest(failed_index=failed_index, close_fault=close_fault):
+                    converted = []; closed_fds = []; closed_handles = []
+                    def transfer(handle, _flags):
+                        if len(converted) == failed_index: raise OSError('private transfer failure')
+                        converted.append(handle); return 100 + handle
+                    def close_fd(descriptor):
+                        closed_fds.append(descriptor)
+                        if close_fault == 'descriptor' and len(closed_fds) == 1:
+                            raise OSError('private descriptor close failure')
+                    def close_handle(handle):
+                        closed_handles.append(handle)
+                        if close_fault == 'handle' and len(closed_handles) == 1:
+                            raise OSError('private handle close failure')
+                    fake_os = SimpleNamespace(name='nt', O_RDONLY=os.O_RDONLY, close=close_fd)
+                    crt = SimpleNamespace(open_osfhandle=transfer)
+                    pins = db._CurrentAdmissionResources()
+                    with patch.object(db, 'os', fake_os), patch.dict(sys.modules, {'msvcrt': crt}), patch.object(data_layout, '_windows_open_directory_chain', return_value=[10,11,12,13]) as chain, patch.object(data_layout, '_windows_close_handle_checked', side_effect=close_handle), patch.object(pins, 'validate'):
+                        with self.assertRaises(db.MentatDatabaseError) as refused:
+                            with pins: pins.bind(path, (1,2))
+                        self.assertNotIn('private', str(refused.exception))
+                        self.assertEqual(closed_fds, [100 + handle for handle in reversed(converted)])
+                        self.assertEqual(closed_handles, list(reversed([10,11,12,13][failed_index:])))
+                        self.assertEqual(len(set(closed_fds)), len(closed_fds))
+                        self.assertEqual(len(set(closed_handles)), len(closed_handles))
+                        before = (list(closed_fds), list(closed_handles))
+                        pins.__exit__(None,None,None)
+                        self.assertEqual((closed_fds,closed_handles), before)
+                    chain.assert_called_once_with(path.parent, checked_cleanup=True)
+
     def test_failed_crt_transfer_has_checked_single_owner_cleanup(self):
         crt = SimpleNamespace(open_osfhandle=Mock(side_effect=OSError('private transfer failure')))
         with patch.dict(sys.modules, {'msvcrt':crt}), patch.object(data_layout, '_windows_open_handle', return_value=17) as opened, patch.object(data_layout, '_windows_close_handle_checked') as close:
