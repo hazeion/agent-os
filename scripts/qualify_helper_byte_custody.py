@@ -347,6 +347,9 @@ class QualificationAttempt:
         for path in python_paths:
             forbidden.update(path.with_suffix(suffix) for suffix in ('.pyc', '.pyo'))
             forbidden.update(path.with_name(path.stem + suffix) for suffix in EXTENSION_SUFFIXES)
+            if path.name != '__init__.py':
+                # A package directory wins over the same-stem source module.
+                forbidden.add(path.with_suffix(''))
             if path.name == '__init__.py':
                 forbidden.update(path.parent.with_name(path.parent.name + suffix)
                                  for suffix in EXTENSION_SUFFIXES)
@@ -373,6 +376,87 @@ class QualificationAttempt:
         _require(len(manifest) == len(SOURCE_BLOBS) and bool(manifest))
         _require(self._source_layout() == layout)
         return layout, tuple(manifest)
+
+    def _project_modules(self):
+        mapping = {}
+        packages = set()
+        for relative, _size, _blob in SOURCE_BLOBS:
+            path = Path(relative)
+            if path.suffix != '.py':
+                continue
+            parts = path.with_suffix('').parts
+            if parts[-1] == '__init__':
+                parts = parts[:-1]
+                packages.add('.'.join(parts))
+            mapping['.'.join(parts)] = relative
+        return mapping, packages
+
+    def _refuse_preimported_project(self):
+        mapping, packages = self._project_modules()
+        for name, module in tuple(sys.modules.items()):
+            self._time()
+            _require(name not in mapping and not any(name == package or name.startswith(package + '.')
+                                                    for package in packages))
+            filename = getattr(module, '__file__', None)
+            if type(filename) is str:
+                # Also refuse project files imported through an unexpected alias.
+                _require(not Path(filename).is_relative_to(self.source_root)
+                         or filename == __file__ and name == __name__)
+
+    def _verify_imported_sources(self):
+        """Bind project module identities to the already verified fixed source tree."""
+        from importlib.machinery import SourceFileLoader
+        mapping, packages = self._project_modules()
+        observed = set()
+        for name, module in tuple(sys.modules.items()):
+            self._time()
+            filename = getattr(module, '__file__', None)
+            project_name = name in mapping or any(name == package or name.startswith(package + '.')
+                                                 for package in packages)
+            inside = type(filename) is str and Path(filename).is_relative_to(self.source_root)
+            if not project_name and not inside:
+                continue
+            if filename == __file__ and name == __name__:
+                continue  # The supervisor pins this new driver separately.
+            _require(name in mapping)
+            expected = self.source_root / mapping[name]
+            spec = getattr(module, '__spec__', None)
+            loader = getattr(module, '__loader__', None)
+            _require(type(filename) is str and Path(filename) == expected
+                     and getattr(module, '__name__', None) == name
+                     and getattr(spec, 'name', None) == name
+                     and getattr(spec, 'origin', None) == str(expected)
+                     and type(loader) is SourceFileLoader
+                     and getattr(loader, 'path', None) == str(expected)
+                     and getattr(spec, 'loader', None) is loader)
+            if name in packages:
+                _require(tuple(getattr(module, '__path__', ())) == (str(expected.parent),)
+                         and tuple(getattr(spec, 'submodule_search_locations', ()))
+                         == (str(expected.parent),))
+            observed.add(name)
+        _require({'mentat', 'mentat.project_helper_byte_custody',
+                  'mentat.project_library_origin', 'mentat.project_system_origin',
+                  'link_preview_workers', 'codex_runtime'} <= observed)
+        return frozenset(observed)
+
+    def _load_fixed_api(self):
+        # The isolated trusted interpreter/supervisor owns import machinery. This
+        # prefix and the checks below bind ordinary imports; no generic loader or
+        # caller-selected source module is accepted.
+        import importlib
+        self._refuse_preimported_project()
+        prefix = str(self.source_root)
+        sys.path.insert(0, prefix)
+        importlib.invalidate_caches()
+        from mentat import project_helper_byte_custody as custody
+        from mentat import project_library_origin as library
+        from mentat import project_system_origin as origin
+        # Load the acquisition path's fixed lazy project dependency before calling
+        # it, so a different installed module cannot supply the child environment.
+        import link_preview_workers
+        self._verify_imported_sources()
+        _require(sys.path[0] == prefix)
+        return custody, library, origin
 
     def _inputs(self, library):
         self._time()
@@ -417,12 +501,13 @@ class QualificationAttempt:
                  and type(aliases) is tuple and len(aliases) == 10)
         descriptors = lease._descriptors
         _require(type(descriptors) is dict and set(descriptors) == set(custody._CLASSES))
+        _require(all(type(row) is tuple and len(row) == 4 for row in members))
         _require([row[0] for row in members] == sorted(custody._CLASSES))
         _require(sum(row[3] == 'signed-library-archive' for row in members) == 13
                  and sum(row[3] == 'compiled-helper-pin' for row in members) == 4)
         helpers = {'/' + pin.member: (pin.member_size, pin.member_digest) for pin in origin.PINS}
-        identities = set()
-        slots = []
+        # Validate every row and fixed class before touching any descriptor.
+        declared_slots = []
         for row in members:
             self._time()
             _require(type(row) is tuple and len(row) == 4)
@@ -436,8 +521,18 @@ class QualificationAttempt:
             if path in library.plt._PROFILES:
                 profile = library.plt._PROFILES[path]
                 _require((size, digest) == (profile.size, profile.digest))
-            fd, fd_size = descriptors[path]
-            _require(type(fd) is int and 3 <= fd < 64 and fd_size == size)
+            value = descriptors[path]
+            _require(type(value) is tuple and len(value) == 2)
+            fd, fd_size = value
+            _require(type(fd) is int and 3 <= fd < 64 and fd_size == size
+                     and fd not in declared_slots)
+            declared_slots.append(fd)
+        self.former_slots = tuple(declared_slots)
+        identities = set()
+        slots = []
+        for path, size, digest, _trust_class in members:
+            self._time()
+            fd = descriptors[path][0]
             details = os.fstat(fd)
             identity = details.st_dev, details.st_ino
             _require(stat.S_ISREG(details.st_mode) and details.st_size == size
@@ -521,24 +616,20 @@ class QualificationAttempt:
             soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
             _require(0 < soft <= hard <= 64 and sys.dont_write_bytecode)
             source_manifest = self._sources()
-            # An isolated session must not have imported project code before pinning.
-            project_names = {Path(name).stem for name, _size, _blob in SOURCE_BLOBS
-                             if '/' not in name and name.endswith('.py')}
-            _require(not any(name == 'mentat' or name.startswith('mentat.')
-                             or name in project_names for name in sys.modules))
-            from mentat import project_helper_byte_custody as custody
-            from mentat import project_library_origin as library
-            from mentat import project_system_origin as origin
+            custody, library, origin = self._load_fixed_api()
             _require(custody._supported())
             input_manifest = self._inputs(library)
             self.public_input_digest = hashlib.sha256(json.dumps(sorted(library._expected_inputs().items()), separators=(',', ':')).encode()).hexdigest()
             self.baseline = _inventory()
             _require(set(self.baseline) == {0, 1, 2})
             self._time()
+            self._verify_imported_sources()
+            _require(sys.path[0] == str(self.source_root))
             self.acquisition_started = True
             self.lease = custody.acquire_fixed_helper_bytes(self.root)
             self.acquisition_returned = True
             self._time()
+            self._verify_imported_sources()
             self._inspect(custody, library, origin)
             success = True
         except BaseException as error:
@@ -547,6 +638,8 @@ class QualificationAttempt:
             self._close()
         try:
             if success and not self.uncertain_resources:
+                self._verify_imported_sources()
+                _require(sys.path[0] == str(self.source_root))
                 _require(self._sources() == source_manifest)
                 _require(self._inputs(library) == input_manifest)
                 self._time()

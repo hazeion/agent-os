@@ -132,3 +132,35 @@ malformed transport and descendant cases remain separately unqualified. Actual
 immutable loader execution, FUSE privilege/teardown, security currency and
 provider/Run/runtime admission remain open. Helpers have compiled-pin evidence
 here; their independent signed helper-origin gate is not minted by this result.
+
+## Source-binding correction, still source-only
+
+Root and independent review found that byte pins alone did not bind the imported
+API: ordinary imports could use an installed Mentat under ambient sys.path.
+The driver now refuses preimported pinned modules and packages, including deploy,
+then places its fixed verified source root first before the fixed API imports.
+The acquisition path's fixed lazy link-preview dependency is imported and checked
+before acquisition. All actually imported project module names, __file__, spec
+origin/name, exact ordinary SourceFileLoader/path and package search locations
+must bind to the pinned source graph before and after the operation. An alias
+from that source tree or unknown module under a pinned project package refuses.
+The fixed prefix is also rechecked before acquisition and final acceptance.
+This is a binding check inside the already trusted isolated interpreter; it does
+not authenticate arbitrary import machinery or establish immutable execution.
+
+Pinned module-stem package directory shadows now refuse alongside caches and
+extension files. New portable tests use explicit module metadata substitutes to
+exercise correct binding, installed API substitution, later dependency rebinding,
+preimported deploy and same-stem package refusal. They do not execute those fake
+modules. Existing size and class negatives were corrected to isolate their
+intended guards: readonly mode otherwise validates before the wrong-size check;
+a helper/library class swap preserves the 13/4 totals, and fstat/read must never
+be called when the exact path/class guard refuses. No budget or production change
+is part of this correction. Tests and native operations remain unexecuted pending
+exact source review and a root-coordinated window.
+
+The exact-class preflight now covers every member row before any descriptor is
+observed. The negative swaps later helper/library rows while preserving 13/4,
+so earlier valid rows cannot mask the guard with unrelated FD failures. All
+metadata-declared slots are retained before the first actual fstat/read for
+independent close and post-close absence accounting.

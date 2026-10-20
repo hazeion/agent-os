@@ -156,7 +156,7 @@ class CustodyQualificationDriverTests(unittest.TestCase):
 
     def test_source_pin_wrong_size_refuses_before_read(self):
         attempt = self.attempt()
-        value = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_nlink=1,
+        value = SimpleNamespace(st_mode=stat.S_IFREG | 0o444, st_nlink=1,
                                 st_file_attributes=0, st_size=2)
         with patch.object(driver.time, 'monotonic', return_value=101), \
              patch.object(driver.Path, 'lstat', return_value=value), \
@@ -231,13 +231,21 @@ class CustodyQualificationDriverTests(unittest.TestCase):
     def test_wrong_fixed_trust_class_refuses(self):
         attempt, custody, library, origin, fcntl, _seek = self.inspected_candidate()
         rows = list(attempt.lease.members)
-        row = rows[0]
-        rows[0] = row[:3] + ('signed-library-archive',)
+        helper = max(i for i, row in enumerate(rows) if row[3] == 'compiled-helper-pin')
+        library_index = max(i for i, row in enumerate(rows) if row[3] == 'signed-library-archive')
+        rows[helper] = rows[helper][:3] + ('signed-library-archive',)
+        rows[library_index] = rows[library_index][:3] + ('compiled-helper-pin',)
+        self.assertEqual(sum(row[3] == 'signed-library-archive' for row in rows), 13)
+        self.assertEqual(sum(row[3] == 'compiled-helper-pin' for row in rows), 4)
         attempt.lease.members = tuple(rows)
         with patch.dict(sys.modules, {'fcntl': fcntl}), \
-             patch.object(driver.time, 'monotonic', return_value=101):
+             patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver.os, 'fstat') as fstat, \
+             patch.object(attempt.lease, 'read') as read:
             with self.assertRaises(driver.QualificationRefused):
                 attempt._inspect(custody, library, origin)
+        fstat.assert_not_called()
+        read.assert_not_called()
 
     def test_digest_mismatch_refuses(self):
         attempt, custody, library, origin, fcntl, _seek = self.inspected_candidate()
@@ -277,3 +285,70 @@ class CustodyQualificationDriverTests(unittest.TestCase):
                      patch.object(driver.Path, 'lstat', details):
                     with self.assertRaises(driver.QualificationRefused):
                         attempt._source_layout()
+
+    def test_module_stem_package_shadow_refuses_before_any_import(self):
+        attempt = self.attempt()
+        directory = SimpleNamespace(st_dev=1, st_ino=1, st_mode=stat.S_IFDIR | 0o555,
+                                    st_uid=1, st_nlink=1, st_size=0, st_mtime_ns=0,
+                                    st_ctime_ns=0, st_file_attributes=0)
+        shadow = attempt.source_root / 'codex_runtime'
+        def details(path):
+            if path in (attempt.source_root, shadow):
+                return directory
+            raise FileNotFoundError()
+        with patch.object(driver, 'SOURCE_BLOBS', (('codex_runtime.py', 1, 'a' * 40),)), \
+             patch.object(driver.time, 'monotonic', return_value=101), \
+             patch('importlib.machinery.EXTENSION_SUFFIXES', ['.so']), \
+             patch.object(driver.Path, 'lstat', details):
+            with self.assertRaises(driver.QualificationRefused):
+                attempt._source_layout()
+
+    def test_preimported_deploy_refuses_even_when_its_file_is_elsewhere(self):
+        attempt = self.attempt()
+        with patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver, 'sys', SimpleNamespace(modules={'deploy': SimpleNamespace(__file__='/other/deploy/__init__.py')})):
+            with self.assertRaises(driver.QualificationRefused):
+                attempt._refuse_preimported_project()
+
+    def bound_modules(self, attempt):
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import spec_from_loader
+        names = ('mentat', 'mentat.project_helper_byte_custody', 'mentat.project_library_origin',
+                 'mentat.project_system_origin', 'link_preview_workers', 'codex_runtime')
+        mapping, packages = attempt._project_modules()
+        modules = {}
+        for name in names:
+            path = str(attempt.source_root / mapping[name])
+            loader = SourceFileLoader(name, path)
+            spec = spec_from_loader(name, loader, is_package=name in packages)
+            module = SimpleNamespace(__name__=name, __file__=path, __spec__=spec, __loader__=loader)
+            if name in packages:
+                module.__path__ = (str(Path(path).parent),)
+            modules[name] = module
+        return modules
+
+    def test_exact_imported_source_locations_are_accepted_with_explicit_module_substitutes(self):
+        attempt = self.attempt()
+        modules = self.bound_modules(attempt)
+        with patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver, 'sys', SimpleNamespace(modules=modules)):
+            self.assertEqual(attempt._verify_imported_sources(), frozenset(modules))
+
+    def test_other_installed_api_location_refuses_despite_fixed_shape(self):
+        attempt = self.attempt()
+        modules = self.bound_modules(attempt)
+        modules['mentat.project_helper_byte_custody'].__file__ = '/installed/mentat/project_helper_byte_custody.py'
+        with patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver, 'sys', SimpleNamespace(modules=modules)):
+            with self.assertRaises(driver.QualificationRefused):
+                attempt._verify_imported_sources()
+
+    def test_imported_dependency_rebinding_is_detected_on_second_observation(self):
+        attempt = self.attempt()
+        modules = self.bound_modules(attempt)
+        with patch.object(driver.time, 'monotonic', return_value=101), \
+             patch.object(driver, 'sys', SimpleNamespace(modules=modules)):
+            attempt._verify_imported_sources()
+            modules['codex_runtime'].__spec__.origin = '/installed/codex_runtime.py'
+            with self.assertRaises(driver.QualificationRefused):
+                attempt._verify_imported_sources()
