@@ -21,7 +21,7 @@ class CustodyQualificationDriverTests(unittest.TestCase):
             return driver.QualificationAttempt(Path('/fixed-public-inputs'))
 
     def test_fixed_production_pins_exclude_tests_and_reviews(self):
-        self.assertEqual(driver.SOURCE_COMMIT, 'fc4e572b17ea9032fadae867743e6f0b05562aeb')
+        self.assertEqual(driver.SOURCE_COMMIT, 'e861743a2936dd6a0c6d85585c176e18c7440ff1')
         names = [row[0] for row in driver.SOURCE_BLOBS]
         self.assertEqual(len(names), len(set(names)))
         self.assertIn('mentat/project_helper_byte_custody.py', names)

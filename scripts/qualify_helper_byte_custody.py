@@ -16,7 +16,7 @@ import stat
 import sys
 import time
 
-SOURCE_COMMIT = 'fc4e572b17ea9032fadae867743e6f0b05562aeb'
+SOURCE_COMMIT = 'e861743a2936dd6a0c6d85585c176e18c7440ff1'
 # Generated from that immutable Git tree, excluding tests. No supplied manifest.
 SOURCE_BLOBS = (
     ('agent_console_artifacts.py', 40629, '8a38578c3ef26c8000f6a44d43f6a8e09a48d644'),
@@ -119,7 +119,7 @@ SOURCE_BLOBS = (
     ('mentat/project_worker_bootstrap.py', 3237, '4201b382abe4ad62190ca5ce399c4d012fbab78a'),
     ('mentat/project_worker_frontend.py', 16884, '2e77b830b17b366854920b5baf94da393da30bee'),
     ('mentat/project_worker_namespace.py', 21206, '6ff8b590c5121d60634eb8b62736bcdbf99ad827'),
-    ('mentat/project_worker_scope.py', 24010, '037cca512170687a02c11ee5bfabbe9feab67a33'),
+    ('mentat/project_worker_scope.py', 24036, 'ea94ccb6f800772dbe6d286709ffcacc9ba99f09'),
     ('mentat/version.py', 125, '1351babf95089fc0860a9bc465af7f0689f04f1d'),
     ('mentat/web_runtime.py', 24178, 'e65b800e30b6a82705e1b662261e3f5709e5b54c'),
     ('mentat_db.py', 178390, 'deed0ca8b86f59b4cc620b261b69f28da1184d6b'),

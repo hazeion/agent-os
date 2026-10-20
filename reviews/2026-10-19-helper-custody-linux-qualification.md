@@ -217,3 +217,115 @@ or publication approval. No baseline addition is a dependency or execution waive
 The foreground launcher and real Linux positive qualification remain separately
 unapproved and unperformed. Immutable loader/FUSE/runtime/provider readiness and
 hostile native qualification cases remain open.
+
+## Source-only re-pin for deferred scope ctypes initialization
+
+The first native attempt at the old 13a source refused BEFORE acquisition: no
+worker/signature/decoder operation started and no lease was returned. Its held
+foreground attempt and original errors remain preserved. Passive inventory found
+one new regular descriptor while all three baseline FIFOs stayed unchanged.
+A separately authorized fresh ctypes-only diagnostic reproduced that descriptor
+class addition without importing project code or calling a custody API. Upstream
+CPython initializes its libffi allocator at ctypes import. This evidence does
+not identify or authorize closing the old unknown descriptor, and no session or
+native retry was performed by this preparation.
+
+The independently reviewed production candidate e861743 defers ctypes import
+until the actual cgroup check or scope constructor needs it. Both existing
+consumers and their width/refusal conditions remain supported. Production
+focused, old-code counterfactual and unchanged scanner evidence are still pending
+at this source-only checkpoint; no later result is assumed.
+
+The qualifier's fixed source graph is re-pinned coherently to that exact
+production candidate. Only SOURCE_COMMIT, the scope file's committed size/blob
+identity, and the test's exact commit assertion change. All 178 tuple paths were
+checked against immutable e861743; the scope row is the only changed tuple and
+all other 177 are exact. The tool remains separately supervisor-pinned. This
+refresh adds no import/FD exception, callback, selector, deadline, retry or owner
+control, and it must not claim the old fc4 graph matches changed production bytes.
+
+All 444 previously approved baseline entries and scanner rules remain unchanged.
+The two new source-commit literals and one new scope-blob literal are expected to
+produce three unreviewed public-hash records, but no scan has run on this new
+checkpoint. The prior human approval covered 180 old values only. Exact new
+classification and any necessary direct human/normal owner approval must precede
+a further baseline change; no encoding or detector workaround is allowed.
+
+Existing portable and secret passes remain evidence only for their original
+heads. This new source preparation requires root and independent review before
+any tests or scan. A later actual native attempt requires separately reviewed
+fresh source/staging/foreground pins and explicit authorization. Original 13a,
+its PR history, staged copies and held attempt are untouched. No source upload,
+host call, helper execution, provider action or publication occurred here.
+
+## Re-pin verification and exact three-hash user approval
+
+The source-reviewed re-pin at fb26d82 passed its single 28-method portable module
+in 0.037 seconds, without skips, with `-B`, ResourceWarnings as errors and a fresh
+private Hermes directory. The following unchanged tracked-secret gate FAILED on
+exactly three new records: the fixed production commit in tool/test and the
+committed scope blob in the tool. No source, baseline or scanner change occurred
+while either check was live. Complete initial/wait tool results, exits and logs
+are retained under `/private/tmp/mentat-custody-fb26d82-checks/`.
+
+The three records were classified from actual failure lines, detector-core
+PotentialSecret fingerprints and immutable e861743 commit/blob objects. Root and
+independent review confirmed the exact private proposal preserves every original
+444 record and all non-results metadata while adding only those three public
+Git identities. The original failure remains preserved; it is not relabeled as
+a pass. The user explicitly answered:
+
+> Approve the 3 public hashes
+
+That answer applied to the exact reviewed three-record proposal. This commit
+therefore adds only those three `is_secret: false` records, total447. All detector,
+filter, threshold, exclusion and encoding rules remain unchanged. Tool/test bytes
+are still exact fb26d82; no portable repeat is necessary for this baseline/doc
+change. The unchanged final secret gate will run once at this prepared commit,
+and its actual terminal result is recorded separately for final review.
+
+The normal merge of C's evidence-only cc7ff22 preserves both feature histories
+and its exact reviewed production/test bytes. C's production evidence is recorded
+in `reviews/2026-10-19-worker-scope-lazy-ctypes-import.md`; the qualifier's fixed
+production pin remains the exact e861743 source object, not a different graph.
+
+Normal CODEOWNERS/GitHub review and publication authorization remain required;
+no synthetic owner review, forced update or primary/PR330/PR331 change occurred.
+This is not a native retry or cleanup action on the original held session. No
+new staging, host call, helper execution, loader/FUSE/runtime/provider readiness
+or actual Linux positive qualification is claimed by these portable checks.
+
+## Actual Linux nonexecuting custody positive
+
+One authorized run on non-root Ubuntu 26.04 amd64 under WSL2 passed using the
+complete staged e554be5 source snapshot and its compiled e861743 production graph.
+The selected controller interpreter was Python 3.14.4; this does not change the
+separate runtime Python contract. The driver completed in 708 ms and the local
+result capture in 3,522 ms, with timely capture inside the original acceptance
+limit. It observed 17 sealed regular members and ten aliases: thirteen members
+from the signed library archive chain and four compiled-helper-pin members.
+
+The real acquisition, peer-credential checks and descriptor transfer, sealed-byte reads, fixed
+bwrap offset check, source/input rechecks and release completed. The driver
+reported cleanup verified, no retained owner and no need to keep its session
+open. Independent result review preceded the authorized normal finish; the
+finish and exact-child terminal receipts then recorded exit0 and verified
+cleanup. Both controllers completed the reviewed normal finish path.
+
+Private evidence is retained in `mentat-custody-e554-native-first-result.json`,
+`mentat-custody-e554-native-finish-tool-result.json` and
+`mentat-custody-e554-native-terminal.json`, with independent result review. The
+old 13a pre-acquisition refusal remains a failure in preserved evidence; its
+separately authorized retirement does not relabel that attempt as successful.
+
+This evidence binds the actual e554be5 staged snapshot, not an entire later
+Git head. The acceptance update after e554be5 changes this review document only;
+production, qualifier, tests, baseline447 and scanner bytes are unchanged. No
+full, portable or native run was repeated for the documentation update.
+
+Execution, freshness and hostile-case qualification flags all remain false.
+The four helpers retain their compiled-pin classification here; separate helper
+archive-to-installed-byte authentication is not supplied by this result or by
+local nine-input preparation. Immutable loader/helper execution, FUSE privilege
+and teardown, broader isolation, dependency/provider/account qualification and
+production Run admission remain independent gates.
