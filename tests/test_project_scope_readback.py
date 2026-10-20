@@ -46,6 +46,74 @@ class ReadbackReplyTests(unittest.TestCase):
                         {**valid,'state':[]},{**valid,'extra':'no'}):
             self.assertFalse(inspector._valid_result(altered,100,102))
 
+    def test_owner_bearing_constructor_failure_retains_handle_through_safe_error(self):
+        created = []
+        startup_error = RuntimeError("private constructor detail")
+        handle = object()
+        class Slot:
+            close_calls = 0
+            def __init__(self, *args, **kwargs):
+                self.handle = handle
+                created.append(self)
+                startup_error._mentat_worker_owner = self
+                raise startup_error
+            def close(self):
+                Slot.close_calls += 1
+        with patch.object(inspector, "_InspectionSlot", Slot), patch.object(
+            inspector.sys, "platform", "linux"
+        ), self.assertRaises(ValueError) as caught:
+            inspector.inspect_scope(Path.cwd(), run_id="run_x", generation=GENERATION, expected_revision=1)
+        self.assertEqual(caught.exception.args, ("scope_readback.unverified",))
+        self.assertNotIn("private constructor detail", str(caught.exception))
+        self.assertIs(caught.exception.__cause__, startup_error)
+        self.assertIsNotNone(startup_error.__traceback__)
+        self.assertIs(caught.exception.__cause__._mentat_worker_owner, created[0])
+        self.assertIs(caught.exception.__cause__._mentat_worker_owner.handle, handle)
+        self.assertEqual(Slot.close_calls, 0)
+
+    def test_unowned_constructor_failure_still_returns_unknown(self):
+        startup_error = RuntimeError("ordinary unowned failure")
+        class Slot:
+            close_calls = 0
+            def __init__(self, *args, **kwargs):
+                raise startup_error
+            def close(self):
+                Slot.close_calls += 1
+        with patch.object(inspector, "_InspectionSlot", Slot), patch.object(inspector.sys, "platform", "linux"):
+            result = inspector.inspect_scope(Path.cwd(), run_id="run_x", generation=GENERATION, expected_revision=1)
+        self.assertIs(type(result), inspector.ScopeObservation)
+        self.assertEqual((result.state, result.reason), ("unknown", "unverified"))
+        self.assertEqual(Slot.close_calls, 0)
+
+    def test_owned_execute_then_close_failure_preserves_original_owner_chain(self):
+        created = []
+        execute_error = RuntimeError("private execute detail")
+        cleanup_error = RuntimeError("private close detail")
+        class Slot:
+            close_calls = 0
+            def __init__(self, *args, **kwargs):
+                created.append(self)
+            def execute(self, **kwargs):
+                execute_error._mentat_worker_owner = self
+                raise execute_error
+            def close(self):
+                Slot.close_calls += 1
+                cleanup_error._mentat_worker_owner = self
+                raise cleanup_error
+        with patch.object(inspector, "_InspectionSlot", Slot), patch.object(
+            inspector.sys, "platform", "linux"
+        ), self.assertRaises(RuntimeError) as caught:
+            inspector.inspect_scope(Path.cwd(), run_id="run_x", generation=GENERATION, expected_revision=1)
+        self.assertIs(caught.exception, cleanup_error)
+        self.assertIs(caught.exception._mentat_worker_owner, created[0])
+        safe_error = caught.exception.__context__
+        self.assertIs(type(safe_error), ValueError)
+        self.assertEqual(safe_error.args, ("scope_readback.unverified",))
+        self.assertIs(safe_error.__cause__, execute_error)
+        self.assertIs(safe_error.__cause__._mentat_worker_owner, created[0])
+        self.assertIsNotNone(execute_error.__traceback__)
+        self.assertEqual(Slot.close_calls, 1)
+
     def test_late_cleanup_discards_otherwise_matching_candidate(self):
         class Slot:
             closed=False
