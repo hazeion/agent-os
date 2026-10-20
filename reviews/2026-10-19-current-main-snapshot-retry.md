@@ -74,5 +74,10 @@ same real source write during each WAL capture. The fixture now expects current
 admission to exhaust exactly three captures and the original two pauses, then
 refuse with the fixed content-change error. It also requires that an unstable
 capture never reaches private-copy materialization. Production code, source
-mutation, schema checks and all budgets remain unchanged. This source-only
-follow-up has not yet been executed; the failed fc4 run remains recorded.
+mutation, schema checks and all budgets remain unchanged. Root and independent
+peer reviewed exact source `6247d6ac95327871250b308de29276b08307fbf2`.
+The complete current-database module passed all 36 methods in 3.682 s with no
+skips, ResourceWarnings as errors and a fresh private Hermes root. Exact log:
+`/private/tmp/mentat-current-wal-6247-focused.log`; its matching result JSON
+records the immutable head and command. This is focused verification, not a
+replacement full-suite pass. The failed fc4 run remains recorded.
