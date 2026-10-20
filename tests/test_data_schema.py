@@ -473,7 +473,23 @@ class DataSchemaTests(unittest.TestCase):
             )
             selected = target / "tasks.json"
             selected.write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             if os.name == "posix":
@@ -604,7 +620,23 @@ class DataSchemaTests(unittest.TestCase):
                 self.assertIsNone(runtime_config.prepare_data_root_for_startup(self.config(target)))
             approved = data_layout._absolute_without_following(target)
             (target / "tasks.json").write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             if os.name == "posix":
@@ -658,7 +690,23 @@ class DataSchemaTests(unittest.TestCase):
             outside.write_text('[]\n', encoding="utf-8")
             selected = target / "tasks.json"
             selected.write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             task_repository.ensure_task_sqlite_authority(target)
@@ -1567,7 +1615,23 @@ class DataSchemaTests(unittest.TestCase):
             self.write_current_inventory(approved)
             self.write_current_inventory(changed)
             (changed / "tasks.json").write_text(
-                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                json.dumps([{
+                    "id": "operator-task",
+                    "title": "Operator task",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                }]) + "\n",
                 encoding="utf-8",
             )
             if os.name == "posix":

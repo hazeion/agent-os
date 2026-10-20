@@ -2648,8 +2648,136 @@ class MentatDatabaseError(RuntimeError):
     """Raised when Mentat's private database boundary is unsafe."""
 
 
-class _TransientDatabaseSidecarRace(MentatDatabaseError):
+class _TransientCurrentSnapshotRace(MentatDatabaseError):
+    """A safely pinned current capture must be discarded before use."""
+
+
+class _TransientDatabaseMainFileRace(_TransientCurrentSnapshotRace):
+    """Only content changed on the same retained, fully private main file."""
+
+
+class _TransientDatabaseSidecarRace(_TransientCurrentSnapshotRace):
     """A SQLite sidecar disappeared after its initial safe inspection."""
+
+
+def _current_main_metadata(details: os.stat_result, identity: tuple[int, int], maximum: int) -> None:
+    if (
+        (int(details.st_dev), int(details.st_ino)) != identity
+        or not stat.S_ISREG(details.st_mode) or _is_reparse_point(details)
+        or details.st_nlink != 1 or details.st_size > maximum
+        or (os.name == "posix" and
+            (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) != 0o600))
+    ):
+        raise MentatDatabaseError("Mentat current database resource is unsafe")
+
+
+class _CurrentAdmissionResources:
+    """Retain actual owners across the existing retry/yield lifetime, read-only."""
+
+    def __init__(self):
+        self.directories: list[tuple[Path, int, bool]] = []
+        self.main: tuple[Path, int, tuple[int, int]] | None = None
+        self.windows_untransferred: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_error):
+        validation_error = None
+        if _error[0] is None:
+            try:
+                self.validate()
+            except BaseException as exc:
+                validation_error = exc
+        failed = False
+        descriptors = ([self.main[1]] if self.main is not None else [])
+        descriptors += [fd for _path, fd, _private in reversed(self.directories)]
+        self.main = None
+        self.directories = []
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                failed = True
+        handles, self.windows_untransferred = self.windows_untransferred, []
+        if handles:
+            from data_layout import _windows_close_handles_checked
+            try:
+                _windows_close_handles_checked(handles)
+            except OSError:
+                failed = True
+        if failed:
+            raise MentatDatabaseError("Mentat current resource cleanup is unverified") from validation_error
+        if validation_error is not None:
+            raise validation_error
+
+    def bind(self, path: Path, identity: tuple[int, int]) -> None:
+        try:
+            self._bind(path, identity)
+        except OSError as exc:
+            raise MentatDatabaseError("Mentat current database resources are unavailable") from exc
+
+    def _bind(self, path: Path, identity: tuple[int, int]) -> None:
+        if self.main is not None:
+            if self.main[0] != path or self.main[2] != identity:
+                raise MentatDatabaseError("Mentat current database identity changed")
+            self.validate()
+            return
+        # Acquire into this retained owner before any operation that can fail.
+        root = path.parent.parent.parent
+        paths = (root, root / "private", path.parent)
+        if os.name == "nt":
+            import msvcrt
+            from data_layout import _windows_open_directory_chain, _windows_open_file_descriptor
+            self.windows_untransferred = _windows_open_directory_chain(path.parent, checked_cleanup=True)
+            absolute = path.parent
+            chain = [Path(absolute.anchor)]
+            for part in absolute.parts[1:]:
+                chain.append(chain[-1] / part)
+            while self.windows_untransferred:
+                handle = self.windows_untransferred[0]
+                descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+                self.windows_untransferred.pop(0)  # Ownership transferred only on success.
+                directory = chain[len(self.directories)]
+                self.directories.append((directory, descriptor, directory in paths[1:]))
+            descriptor = _windows_open_file_descriptor(path, disposition=3, writable=False, checked_cleanup=True)
+        else:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+            for index, directory in enumerate(paths):
+                descriptor = (os.open(directory, flags) if index == 0 else
+                              os.open(directory.name, flags, dir_fd=self.directories[-1][1]))
+                self.directories.append((directory, descriptor, index > 0))
+                self._directory(self.directories[-1])
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(path.name, flags, dir_fd=self.directories[-1][1])
+        self.main = (path, descriptor, identity)
+        self.validate()
+
+    @staticmethod
+    def _directory(entry) -> None:
+        path, descriptor, private = entry
+        held, lexical = os.fstat(descriptor), path.lstat()
+        for details in (held, lexical):
+            if (not stat.S_ISDIR(details.st_mode) or _is_reparse_point(details)
+                    or (private and os.name == "posix" and
+                        (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) != 0o700))):
+                raise MentatDatabaseError("Mentat current database directory is unsafe")
+        if (held.st_dev, held.st_ino) != (lexical.st_dev, lexical.st_ino):
+            raise MentatDatabaseError("Mentat current database directory changed")
+
+    def validate(self) -> None:
+        try:
+            self._validate()
+        except OSError as exc:
+            raise MentatDatabaseError("Mentat current database resources are unavailable") from exc
+
+    def _validate(self) -> None:
+        for entry in self.directories:
+            self._directory(entry)
+        if self.main is not None:
+            path, descriptor, identity = self.main
+            _current_main_metadata(os.fstat(descriptor), identity, MAX_READONLY_DATABASE_BYTES)
+            _current_main_metadata(path.lstat(), identity, MAX_READONLY_DATABASE_BYTES)
 
 
 def runtime_dir(data_dir: Path) -> Path:
@@ -2955,27 +3083,38 @@ def _remove_exact_fresh_authority_if_unchanged(
 def _connect_with_identity_locked(
     data_dir: Path,
 ) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
-    for attempt in range(DATABASE_OPEN_ATTEMPTS):
-        try:
-            return _connect_with_identity_once(data_dir)
-        except _TransientDatabaseSidecarRace as exc:
-            _pause_or_raise_sidecar_race(attempt, exc)
-    raise AssertionError("database open retry loop exhausted")
+    result = None
+    try:
+        with _CurrentAdmissionResources() as resources:
+            for attempt in range(DATABASE_OPEN_ATTEMPTS):
+                try:
+                    result = _connect_with_identity_once(data_dir, resources=resources)
+                    return result
+                except _TransientCurrentSnapshotRace as exc:
+                    resources.validate()
+                    _pause_or_raise_sidecar_race(attempt, exc)
+        raise AssertionError("database open retry loop exhausted")
+    except BaseException:
+        if result is not None:
+            result[0].close()
+        raise
 
 
-def _pause_or_raise_sidecar_race(attempt: int, error: _TransientDatabaseSidecarRace) -> None:
+def _pause_or_raise_sidecar_race(attempt: int, error: _TransientCurrentSnapshotRace) -> None:
     if attempt + 1 == DATABASE_OPEN_ATTEMPTS:
-        raise MentatDatabaseError("Mentat database sidecar changed during validation") from error
+        kind = "content" if isinstance(error, _TransientDatabaseMainFileRace) else "sidecar"
+        raise MentatDatabaseError(f"Mentat database {kind} changed during validation") from error
     time.sleep(DATABASE_OPEN_RETRY_SECONDS)
 
 
 def _connect_with_identity_once(
-    data_dir: Path,
+    data_dir: Path, *, resources: _CurrentAdmissionResources,
 ) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
     # Admission must precede directory hardening, writable SQLite and WAL setup.
-    admitted_identity = _admit_current_database_root(data_dir)
+    admitted_identity = _admit_current_database_root(data_dir, resources=resources)
     if admitted_identity is None and legacy_agent_registry_artifacts_present(data_dir):
         raise MentatDatabaseError("Retired Agent registry storage is unsupported")
+    resources.validate()
     private = ensure_private_console_dir(data_dir)
     path = private / DATABASE_NAME
     _validate_database_set(path, private)
@@ -2999,6 +3138,7 @@ def _connect_with_identity_once(
     expected_identity = created_identity if created else admitted_identity
     if expected_identity is None or identities[path] != expected_identity:
         raise MentatDatabaseError("Mentat database file identity changed while opening")
+    resources.validate()
     connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
@@ -3014,6 +3154,7 @@ def _connect_with_identity_once(
             fresh_agent_cutover_at = None
         if _validate_database_set(path, private)[path] != identities[path]:
             raise MentatDatabaseError("Mentat database file identity changed while opening")
+        resources.validate()
         connection.execute("PRAGMA journal_mode = WAL")
         if (
             fresh_agent_cutover_at is not None
@@ -3027,6 +3168,7 @@ def _connect_with_identity_once(
                 raise MentatDatabaseError(
                     "Retired Agent registry state changed during authority claim"
                 )
+        resources.validate()
         _secure_database_files(path)
         verified = _validate_database_set(path, private)
         if identities.get(path) is not None and verified.get(path) != identities[path]:
@@ -3060,21 +3202,27 @@ def validate_current_database_root(data_dir: Path) -> bool:
     startup initialization, locking or permission changes to the source root.
     """
 
-    for attempt in range(DATABASE_OPEN_ATTEMPTS):
-        try:
-            return _admit_current_database_root(data_dir) is not None
-        except _TransientDatabaseSidecarRace as exc:
-            _pause_or_raise_sidecar_race(attempt, exc)
+    with _CurrentAdmissionResources() as resources:
+        for attempt in range(DATABASE_OPEN_ATTEMPTS):
+            try:
+                return _admit_current_database_root(data_dir, resources=resources) is not None
+            except _TransientCurrentSnapshotRace as exc:
+                resources.validate()
+                _pause_or_raise_sidecar_race(attempt, exc)
     raise AssertionError("database admission retry loop exhausted")
 
 
-def _admit_current_database_root(data_dir: Path) -> tuple[int, int] | None:
+def _admit_current_database_root(data_dir: Path, *, resources: _CurrentAdmissionResources) -> tuple[int, int] | None:
     with DATABASE_OPEN_BARRIER:
+        resources.validate()
         source = _current_database_files(data_dir)
         if source is None:
+            if resources.main is not None:
+                raise MentatDatabaseError("Mentat current database disappeared")
             return None
         path, identities = source
-        with _current_admission_snapshot(path, identities) as connection:
+        resources.bind(path, identities[path])
+        with _current_admission_snapshot(path, identities, resources=resources) as connection:
             _validate_current_database(connection)
         if _validate_database_file(path, path.parent) != identities[path]:
             raise MentatDatabaseError("Mentat database file identity changed while opening")
@@ -3120,22 +3268,25 @@ def connect_current_readonly(data_dir: Path) -> Iterator[sqlite3.Connection]:
     this context grants no write authority or archival consistency guarantee.
     """
 
-    with DATABASE_OPEN_BARRIER:
+    with DATABASE_OPEN_BARRIER, _CurrentAdmissionResources() as resources:
         yielded = False
         for attempt in range(DATABASE_OPEN_ATTEMPTS):
             try:
+                resources.validate()
                 source = _current_database_files(data_dir)
                 if source is None:
                     raise MentatDatabaseError("Mentat database is unavailable")
                 path, identities = source
-                with _current_admission_snapshot(path, identities) as connection:
+                resources.bind(path, identities[path])
+                with _current_admission_snapshot(path, identities, resources=resources) as connection:
                     _validate_current_database(connection)
                     yielded = True
                     yield connection
                 return
-            except _TransientDatabaseSidecarRace as exc:
+            except _TransientCurrentSnapshotRace as exc:
                 if yielded:
                     raise
+                resources.validate()
                 _pause_or_raise_sidecar_race(attempt, exc)
 
 
@@ -3204,27 +3355,28 @@ def _read_wal_prefix(path: Path, identity: tuple[int, int]) -> bytes:
 def _current_admission_snapshot(
     path: Path,
     identities: dict[Path, tuple[int, int] | None],
+    *, resources: _CurrentAdmissionResources,
 ) -> Iterator[sqlite3.Connection]:
     """Read a pinned committed snapshot without touching source SQLite/SHM.
 
     Source WAL appends are safe: SQLite recovers only the captured prefix in a
-    private copy. A checkpoint changing the main database or a WAL prefix reset
-    fails admission. Source SHM read marks are neither copied nor modified.
+    private copy. Safely pinned main-content changes discard this attempt;
+    a WAL prefix reset still fails admission. Source SHM read marks are neither copied nor modified.
     """
 
     wal = Path(f"{path}-wal")
     try:
-        before = path.stat(follow_symlinks=False)
-        raw = _read_existing_database_file(path, identities[path], MAX_READONLY_DATABASE_BYTES)
+        resources.validate()
+        before = os.fstat(resources.main[1])
+        raw = _read_existing_database_file(path, identities[path], MAX_READONLY_DATABASE_BYTES,
+                                           current_resources=resources)
         wal_raw = _read_wal_prefix(wal, identities[wal]) if identities[wal] is not None else b""
-        after = path.stat(follow_symlinks=False)
-        if (
-            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-            or len(raw) + len(wal_raw) > MAX_READONLY_SNAPSHOT_BYTES
-            or _validate_database_file(path, path.parent) != identities[path]
-        ):
+        resources.validate()
+        after = os.fstat(resources.main[1])
+        if len(raw) + len(wal_raw) > MAX_READONLY_SNAPSHOT_BYTES:
             raise MentatDatabaseError("Mentat database changed while reading")
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise _TransientDatabaseMainFileRace("Mentat database content changed during validation")
         with TemporaryDirectory(prefix="mentat-current-admission-") as temporary:
             copied = Path(temporary) / DATABASE_NAME
             copied.write_bytes(raw)
@@ -3240,8 +3392,7 @@ def _current_admission_snapshot(
                 yield connection
             finally:
                 connection.close()
-        if _validate_database_file(path, path.parent) != identities[path]:
-            raise MentatDatabaseError("Mentat database file identity changed while opening")
+        resources.validate()
     except (OSError, sqlite3.Error) as exc:
         raise MentatDatabaseError("Mentat database is unavailable") from exc
 
@@ -3286,16 +3437,25 @@ def _read_existing_database_file(
     identity: tuple[int, int],
     maximum: int,
     remaining_total: int | None = None,
+    *, current_resources: _CurrentAdmissionResources | None = None,
 ) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    owned = current_resources is None
     try:
-        descriptor = os.open(path, flags)
+        if owned:
+            descriptor = os.open(path, flags)
+        else:
+            current_resources.validate()
+            descriptor = current_resources.main[1]
+            os.lseek(descriptor, 0, os.SEEK_SET)
     except OSError as exc:
         raise MentatDatabaseError("Mentat database is unavailable") from exc
     try:
         before = os.fstat(descriptor)
         ceiling = min(maximum, remaining_total) if remaining_total is not None else maximum
+        if current_resources is not None:
+            _current_main_metadata(before, identity, ceiling)
         if (
             (int(before.st_dev), int(before.st_ino)) != identity
             or not stat.S_ISREG(before.st_mode)
@@ -3315,17 +3475,24 @@ def _read_existing_database_file(
                 raise MentatDatabaseError("Mentat database is unavailable")
         raw = b"".join(chunks)
         after = os.fstat(descriptor)
+        if current_resources is not None:
+            current_resources.validate()
+            _current_main_metadata(before, identity, ceiling)
+            _current_main_metadata(after, identity, ceiling)
         if (
             (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
             != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
             or len(raw) != before.st_size
         ):
+            if current_resources is not None:
+                raise _TransientDatabaseMainFileRace("Mentat database content changed during validation")
             raise MentatDatabaseError("Mentat database file changed while reading")
         return raw
     except OSError as exc:
         raise MentatDatabaseError("Mentat database is unavailable") from exc
     finally:
-        os.close(descriptor)
+        if owned:
+            os.close(descriptor)
 
 
 @contextmanager

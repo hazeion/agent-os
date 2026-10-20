@@ -19,7 +19,7 @@ class TaskDeletionTests(unittest.TestCase):
         try:
             ensure_task_sqlite_authority(root, required_source_mode=None)
         except TaskRepositoryError:
-            # Invalid legacy source tests assert the bounded startup refusal.
+            # Invalid current Task collections assert the bounded startup refusal.
             pass
 
     def test_preview_and_confirmation_delete_only_the_selected_task(self):
@@ -27,13 +27,36 @@ class TaskDeletionTests(unittest.TestCase):
             {
                 "id": "task_keep",
                 "title": "Keep me",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
                 "created_at": "2026-07-11T10:00:00-07:00",
+                "updated_at": "2026-07-11T10:00:00-07:00",
+                "completed_at": None,
             },
             {
                 "id": "task_remove",
                 "title": "Remove me",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
                 "created_at": "2026-07-11T11:00:00-07:00",
                 "updated_at": "2026-07-11T12:00:00-07:00",
+                "completed_at": None,
             },
         ]
         with TemporaryDirectory() as tmpdir:
@@ -61,7 +84,19 @@ class TaskDeletionTests(unittest.TestCase):
         original = {
             "id": "task_review",
             "title": "Original title",
+            "description": "",
+            "project": "General",
+            "status": "todo",
+            "priority": "medium",
+            "assignee": None,
+            "due_date": None,
+            "source": "test",
+            "tags": [],
+            "review_required": False,
+            "needs_attention": False,
+            "created_at": "1970-01-01T00:00:00+00:00",
             "updated_at": "2026-07-11T10:00:00-07:00",
+            "completed_at": None,
         }
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -90,7 +125,23 @@ class TaskDeletionTests(unittest.TestCase):
         task_id = "task@" + ("d" * 155)
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            self.write_tasks(root, [{"id": task_id, "title": "Wide task"}])
+            self.write_tasks(root, [{
+                "id": task_id,
+                "title": "Wide task",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+            }])
             with patch.object(server, "DATA_DIR", root), patch.object(
                 server, "CONFIGURED_DATA_DIR", root
             ):
@@ -121,8 +172,40 @@ class TaskDeletionTests(unittest.TestCase):
 
     def test_duplicate_task_ids_fail_closed_without_deleting_records(self):
         duplicate_tasks = [
-            {"id": "task_duplicate", "title": "First record"},
-            {"id": "task_duplicate", "title": "Second record"},
+            {
+                "id": "task_duplicate",
+                "title": "First record",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+            },
+            {
+                "id": "task_duplicate",
+                "title": "Second record",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+            },
         ]
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -146,8 +229,41 @@ class TaskDeletionTests(unittest.TestCase):
 
     def test_deletion_is_blocked_while_other_tasks_depend_on_target(self):
         tasks = [
-            {"id": "task-parent", "title": "Parent"},
-            {"id": "task-child", "title": "Child", "depends_on": ["task-parent"]},
+            {
+                "id": "task-parent",
+                "title": "Parent",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+            },
+            {
+                "id": "task-child",
+                "title": "Child",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "depends_on": ["task-parent"],
+            },
         ]
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -158,7 +274,23 @@ class TaskDeletionTests(unittest.TestCase):
         self.assertEqual(payload["dependent_task_ids"], ["task-child"])
 
     def test_active_orchestration_run_blocks_preview_and_atomic_delete(self):
-        task = {"id": "task-running", "title": "Still running"}
+        task = {
+            "id": "task-running",
+            "title": "Still running",
+            "description": "",
+            "project": "General",
+            "status": "todo",
+            "priority": "medium",
+            "assignee": None,
+            "due_date": None,
+            "source": "test",
+            "tags": [],
+            "review_required": False,
+            "needs_attention": False,
+            "created_at": "1970-01-01T00:00:00+00:00",
+            "updated_at": "1970-01-01T00:00:00+00:00",
+            "completed_at": None,
+        }
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_tasks(root, [task])

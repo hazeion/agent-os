@@ -39,10 +39,19 @@ class TaskRuntimeCleanupTests(unittest.TestCase):
                 {
                     "id": "task-1",
                     "title": "Authoritative task",
+                    "description": "",
+                    "project": "General",
                     "status": "todo",
                     "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
                     "created_at": "2026-08-21T09:00:00+00:00",
                     "updated_at": "2026-08-21T09:00:00+00:00",
+                    "completed_at": None,
                 }
             ]
             tasks_path.write_text(json.dumps(initial), encoding="utf-8")

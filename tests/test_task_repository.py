@@ -31,7 +31,6 @@ from task_repository import (
     confirm_task_export,
     ensure_task_sqlite_authority,
     export_tasks,
-    normalize_legacy_task_collection,
     normalize_task_collection,
     preview_task_export,
     read_authoritative_tasks,
@@ -168,40 +167,62 @@ def task_with_export_size(size: int) -> dict:
 
 
 class TaskRepositoryTests(unittest.TestCase):
-    def test_legacy_timestamp_eras_upgrade_deterministically(self):
-        fixtures = (
-            ({"id": "sparse", "title": "Sparse"}, "1970-01-01T00:00:00+00:00"),
-            (
-                {
-                    "id": "naive",
-                    "title": "Naive",
-                    "created_at": "2025-02-03T04:05:06",
-                    "updated_at": "2025-02-03 04:06:07",
-                    "completed_at": "2025-02-03T04:07:08.123456",
-                    "status": "done",
-                },
-                "2025-02-03T04:05:06+00:00",
-            ),
-            (
-                {
-                    "id": "aware",
-                    "title": "Aware",
-                    "created_at": "2026-08-18T09:00:00-07:00",
-                    "updated_at": "2026-08-18T09:05:00Z",
-                },
-                "2026-08-18T09:00:00-07:00",
-            ),
-        )
-        for source, expected_created_at in fixtures:
-            with self.subTest(task_id=source["id"]):
-                normalized = normalize_legacy_task_collection([source])[0]
-                self.assertEqual(normalized["created_at"], expected_created_at)
-                self.assertIsNotNone(normalized["updated_at"])
-                if source["id"] == "naive":
-                    self.assertEqual(
-                        normalized["completed_at"],
-                        "2025-02-03T04:07:08.123456+00:00",
-                    )
+    def test_current_seed_preserves_offsets_z_and_current_metadata(self):
+        complete = full_task()
+        complete["created_at"] = "2026-08-18T09:00:00+02:30"
+        complete["updated_at"] = "2026-08-18T09:05:00.123456Z"
+        documents = [task("task_parent"), complete]
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, documents)
+            before = source.read_bytes()
+            receipt = ensure_task_sqlite_authority(root)
+            self.assertEqual(receipt.source_task_count, 2)
+            actual = read_authoritative_tasks(root)
+            self.assertEqual(actual, list(normalize_task_collection(documents)))
+            self.assertEqual(actual[1]["created_at"], complete["created_at"])
+            self.assertEqual(actual[1]["updated_at"], complete["updated_at"])
+            self.assertEqual(actual[1]["delegation"], normalize_task_collection(documents)[1]["delegation"])
+            self.assertEqual(actual[1]["compatibility_note"], complete["compatibility_note"])
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_historical_seed_shapes_refuse_without_task_rows_or_authority(self):
+        sparse = {"id": "sparse", "title": "Sparse"}
+        missing = task("missing")
+        del missing["assignee"]
+        variants = [("sparse", sparse), ("missing-current-core", missing)]
+        for field in ("created_at", "updated_at", "completed_at"):
+            naive = task("naive", status="completed")
+            naive[field] = "2025-02-03T04:05:06"
+            variants.append((field, naive))
+        for alias in ("open", "ready", "done", "TODO", "in_progress"):
+            variants.append((alias, {**task("alias"), "status": alias}))
+        variants.append(("priority-alias", {**task("priority"), "priority": "HIGH"}))
+        delegated = {**task("delegation"), "delegation": deepcopy(full_task()["delegation"])}
+        self.assertEqual(normalize_task_collection([delegated])[0]["delegation"]["profile_id"], "researcher")
+        del delegated["delegation"]["profile_id"]
+        variants.append(("missing-delegation-profile", delegated))
+        for label, document in variants:
+            with self.subTest(shape=label), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                source = write_tasks(root, [document])
+                before = source.read_bytes()
+                connection = connect(root)
+                try:
+                    database_before = connection.serialize()
+                finally:
+                    connection.close()
+                with self.assertRaises(TaskRepositoryValidationError):
+                    ensure_task_sqlite_authority(root)
+                self.assertEqual(source.read_bytes(), before)
+                connection = connect(root)
+                try:
+                    self.assertEqual(connection.serialize(), database_before)
+                    repository = TaskRepository(connection)
+                    self.assertEqual(repository.count(), 0)
+                    self.assertIsNone(repository.authority_receipt())
+                finally:
+                    connection.close()
 
     def test_current_schema_preserves_task_tables_and_refuses_forward_schema(self):
         with TemporaryDirectory() as tmpdir:

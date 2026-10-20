@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -413,9 +414,29 @@ class PrivateArtifactSnapshotTests(unittest.TestCase):
             data_dir.mkdir()
             tasks_path = data_dir / "tasks.json"
             tasks_path.write_text(
-                '[{"id":"task_local","title":"Review","delegation":'
-                '{"connection_binding_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
-                '"board_id":"default","kanban_task_id":"t_12345678"}}]',
+                json.dumps([{
+                    "id": "task_local",
+                    "title": "Review",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "legacy",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                    "delegation": {
+                        "profile_id": "legacy-unbound",
+                        "connection_binding_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "board_id": "default",
+                        "kanban_task_id": "t_12345678",
+                    },
+                }]),
                 encoding="utf-8",
             )
             ensure_task_sqlite_authority(data_dir, required_source_mode=None)
@@ -452,9 +473,29 @@ class PrivateArtifactSnapshotTests(unittest.TestCase):
             data_dir.mkdir()
             tasks_path = data_dir / "tasks.json"
             tasks_path.write_text(
-                '[{"id":"task_local","title":"Review","delegation":'
-                '{"connection_binding_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
-                '"board_id":"default","kanban_task_id":"t_12345678"}}]',
+                json.dumps([{
+                    "id": "task_local",
+                    "title": "Review",
+                    "description": "",
+                    "project": "General",
+                    "status": "todo",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "legacy",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
+                    "delegation": {
+                        "profile_id": "legacy-unbound",
+                        "connection_binding_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "board_id": "default",
+                        "kanban_task_id": "t_12345678",
+                    },
+                }]),
                 encoding="utf-8",
             )
             ensure_task_sqlite_authority(data_dir, required_source_mode=None)

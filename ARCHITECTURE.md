@@ -450,6 +450,11 @@ keys and semantic validation reject missing, self-referential and cyclic
 relationships. Fresh setup validates exact bounded `tasks.json` seed bytes and
 identity, requires an empty repository and commits Tasks with the authority
 receipt in one transaction. Source drift and partial writes fail closed.
+Seed and recovery reads use the same strict current Task validator as SQLite
+writes. Missing core fields, timezone-naive timestamps and historical status or
+priority aliases are refused, without filling defaults or upgrading the source.
+Explicit timezone offsets and `Z` timestamps remain supported; current planning,
+delegation and extension metadata retain their existing validation.
 
 After the receipt exists, all live Task paths use SQLite exclusively, including
 delegation, calendar links, search, recurrence and webhook refresh. A zero-Task
