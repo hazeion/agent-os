@@ -23,8 +23,9 @@ def _fail(code='invalid'):
 def validate_output_reservations_connection(connection):
     """Historical exact graph and future representation charge, no permission."""
     version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    if version < 45:
-        return []
+    from mentat_db import SCHEMA_VERSION
+    if version != SCHEMA_VERSION:
+        _fail('invalid')
     journal.validate_worker_journal_connection(connection)
     rows = connection.execute('SELECT * FROM mentat_project_output_reservations ORDER BY run_id').fetchmany(MAX_RESERVATIONS + 1)
     if len(rows) > MAX_RESERVATIONS:
@@ -64,24 +65,19 @@ def validate_output_reservations_connection(connection):
 def pending_capacity(connection):
     """Return conserved slot/byte charges even after authority rotation."""
     validate_output_reservations_connection(connection)
-    version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    if version < 45:
-        return 0, 0
-    if version >= 46:
-        from project_producers import producer_ids
-        producer_ids(connection,consumed_only=True)
-        return tuple(connection.execute('SELECT COALESCE(SUM(blob_slots),0),COALESCE(SUM(max_bytes),0) '
-            'FROM mentat_project_output_reservations h WHERE NOT EXISTS '
-            '(SELECT 1 FROM mentat_project_producer_outputs o WHERE o.run_id=h.run_id)').fetchone())
+    from project_producers import producer_ids
+    producer_ids(connection,consumed_only=True)
     return tuple(connection.execute('SELECT COALESCE(SUM(blob_slots),0),COALESCE(SUM(max_bytes),0) '
-                                    'FROM mentat_project_output_reservations').fetchone())
+        'FROM mentat_project_output_reservations h WHERE NOT EXISTS '
+        '(SELECT 1 FROM mentat_project_producer_outputs o WHERE o.run_id=h.run_id)').fetchone())
 
 
 def require_output_reservation(connection, run_id, generation):
     """Require current precharged evidence, not a holder or launch grant."""
     validate_output_reservations_connection(connection)
     version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    if version < 45:
+    from mentat_db import SCHEMA_VERSION
+    if version != SCHEMA_VERSION:
         _fail('unavailable')
     row = connection.execute('SELECT * FROM mentat_project_output_reservations WHERE run_id=? AND generation=?',
                              (run_id, generation)).fetchone()
@@ -105,7 +101,8 @@ def reserve_output(connection, *, run_id, generation, now=None):
     journal._validate_shared_graph(connection)
     parent = journal._live_generation(connection, run_id, generation)
     version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    if version < 45:
+    from mentat_db import SCHEMA_VERSION
+    if version != SCHEMA_VERSION:
         _fail('unavailable')
     prior = connection.execute('SELECT * FROM mentat_project_output_reservations WHERE run_id=?', (run_id,)).fetchone()
     if prior is not None:

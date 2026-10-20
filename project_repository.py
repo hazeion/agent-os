@@ -303,8 +303,10 @@ class ProjectRepository:
         self._require_schema()
 
     def _require_schema(self) -> None:
-        row = self.connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
-        if int(row[0] or 0) not in {24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, DATABASE_SCHEMA_VERSION}:
+        versions = [int(row[0]) for row in self.connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        )]
+        if versions != list(range(1, DATABASE_SCHEMA_VERSION + 1)):
             raise ProjectRepositoryError("project_repository.schema_unsupported")
         names = {str(row[0]) for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if not {"mentat_projects", "mentat_project_store_state", "mentat_tasks"}.issubset(names):

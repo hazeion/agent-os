@@ -20,6 +20,7 @@ from agent_registry import (
     CanonicalAgentRecord,
 )
 from mentat_db import (
+    MentatDatabaseError,
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
     connect as connect_database,
 )
@@ -359,44 +360,6 @@ _REQUIRED_SCHEMA_OBJECTS = {
         END
     """,
 }
-
-_PRE_SCHEMA_14_SUBMISSION_INSERT_TRIGGER = """
-    CREATE TRIGGER mentat_conversation_submission_result_insert
-    AFTER INSERT ON mentat_runs
-    WHEN NEW.source = 'console'
-      AND NEW.conversation_id IS NOT NULL
-      AND NEW.turn_id IS NOT NULL
-    BEGIN
-        INSERT INTO mentat_conversation_submission_results (
-            turn_id, run_id, runtime_binding_digest, dispatch_state,
-            status, partial, updated_at
-        ) VALUES (
-            NEW.turn_id, NEW.id, NEW.runtime_binding_digest,
-            NEW.dispatch_state, NEW.status, NEW.partial, NEW.updated_at
-        );
-    END
-"""
-
-_PRE_SCHEMA_13_RUN_IDENTITY_TRIGGER = """
-    CREATE TRIGGER mentat_runs_conversation_identity_immutable
-    BEFORE UPDATE OF conversation_id, turn_id, retry_of_run_id,
-        resume_of_run_id, agent_revision, runtime_config_revision,
-        execution_config_json, execution_config_digest,
-        capacity_scope_digest, admitted_capacity_limit ON mentat_runs
-    WHEN OLD.conversation_id IS NOT NEW.conversation_id
-        OR OLD.turn_id IS NOT NEW.turn_id
-        OR OLD.retry_of_run_id IS NOT NEW.retry_of_run_id
-        OR OLD.resume_of_run_id IS NOT NEW.resume_of_run_id
-        OR OLD.agent_revision IS NOT NEW.agent_revision
-        OR OLD.runtime_config_revision IS NOT NEW.runtime_config_revision
-        OR OLD.execution_config_json IS NOT NEW.execution_config_json
-        OR OLD.execution_config_digest IS NOT NEW.execution_config_digest
-        OR OLD.capacity_scope_digest IS NOT NEW.capacity_scope_digest
-        OR OLD.admitted_capacity_limit IS NOT NEW.admitted_capacity_limit
-    BEGIN
-        SELECT RAISE(ABORT, 'conversation_run_identity_immutable');
-    END
-"""
 
 
 def _normalized_sql(value: object) -> str:
@@ -1156,23 +1119,14 @@ def validate_repository_connection(
     connection: sqlite3.Connection,
     *,
     schema_version: int | None = None,
-    allow_known_legacy_drift: bool = False,
 ) -> int:
-    """Validate current rows or an explicitly selected legacy schema."""
+    """Validate current rows, schema, receipts and their complete relationships."""
 
     try:
         expected_version = (
             DATABASE_SCHEMA_VERSION if schema_version is None else schema_version
         )
-        if expected_version not in {10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, DATABASE_SCHEMA_VERSION}:
-            raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
-        legacy_missing_objects = {
-            ("trigger", "mentat_conversations_agent_immutable"),
-            ("trigger", "mentat_conversation_turns_queue_capacity_insert"),
-            ("trigger", "mentat_conversation_turns_queue_capacity_update"),
-            ("trigger", "mentat_conversation_turns_conversation_immutable"),
-        }
-        if allow_known_legacy_drift and expected_version != 11:
+        if type(expected_version) is not int or expected_version != DATABASE_SCHEMA_VERSION:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         tables = {
             str(row[0])
@@ -1185,66 +1139,21 @@ def validate_repository_connection(
             "mentat_conversation_messages",
             "mentat_conversation_turns",
         }
-        if expected_version >= 11:
-            required.add("mentat_conversation_submission_results")
-        if expected_version >= 14:
-            required.add("mentat_conversation_run_attempts")
-        if expected_version >= 17:
-            required.add("mentat_conversation_planning_context")
+        required.add("mentat_conversation_submission_results")
+        required.add("mentat_conversation_run_attempts")
+        required.add("mentat_conversation_planning_context")
         if not required.issubset(tables):
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
-        version = int(
-            connection.execute(
-                "SELECT MAX(version) FROM schema_migrations"
-            ).fetchone()[0]
-            or 0
-        )
-        if version != expected_version:
+        versions = [int(row[0]) for row in connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        )]
+        if versions != list(range(1, expected_version + 1)):
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         for (object_type, object_name), expected_sql in _REQUIRED_SCHEMA_OBJECTS.items():
-            if expected_version < 17 and object_name in {
-                "idx_mentat_conversation_planning_project",
-                "idx_mentat_conversation_planning_task",
-            }:
-                continue
-            if expected_version < 11 and object_name in {
-                "mentat_conversation_submission_results",
-                "mentat_conversation_submission_result_insert",
-                "mentat_conversation_submission_result_update",
-            }:
-                continue
-            if expected_version < 14 and object_name in {
-                "mentat_conversation_run_attempts",
-                "idx_mentat_conversation_run_attempts_turn",
-                "mentat_conversation_run_attempts_capacity",
-                "mentat_conversation_run_attempt_result_update",
-            }:
-                continue
-            if (
-                expected_version < 14
-                and object_type == "trigger"
-                and object_name == "mentat_conversation_submission_result_insert"
-            ):
-                expected_sql = _PRE_SCHEMA_14_SUBMISSION_INSERT_TRIGGER
-            if (
-                expected_version < 13
-                and object_type == "trigger"
-                and object_name == "mentat_runs_conversation_identity_immutable"
-            ):
-                expected_sql = _PRE_SCHEMA_13_RUN_IDENTITY_TRIGGER
             object_row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
                 (object_type, object_name),
             ).fetchone()
-            if (
-                allow_known_legacy_drift
-                and (object_type, object_name) in legacy_missing_objects
-            ):
-                if object_row is not None:
-                    raise ConversationRepositoryUnavailable(
-                        "conversation.schema_unsupported"
-                    )
-                continue
             if object_row is None or _normalized_sql(object_row["sql"]) != _normalized_sql(expected_sql):
                 raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -1366,37 +1275,36 @@ def validate_repository_connection(
                     raise ConversationRepositoryError("conversation.turn_invalid")
                 latest_run_id = turn["latest_run_id"]
                 result = None
-                if expected_version >= 11:
-                    result = connection.execute(
-                        "SELECT * FROM mentat_conversation_submission_results "
-                        "WHERE turn_id = ?",
-                        (turn_id,),
-                    ).fetchone()
-                    if result is not None and (
-                        not isinstance(result["run_id"], str)
-                        or not re.fullmatch(
-                            r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z",
-                            result["run_id"],
-                        )
-                        or not _SHA256.fullmatch(str(result["runtime_binding_digest"]))
-                        or result["dispatch_state"] not in {
-                            "reserved", "submitting", "accepted", "rejected", "unknown"
-                        }
-                        or result["status"] not in _ACTIVE_RUN_STATUSES
-                        | {"completed", "failed", "cancelled", "stopped", "interrupted"}
-                        or type(result["partial"]) is not int
-                        or result["partial"] not in {0, 1}
-                        or _timestamp(result["updated_at"]) is None
-                    ):
-                        raise ConversationRepositoryError("conversation.turn_invalid")
-                    if (
-                        result is None
-                        and (
-                            latest_run_id is not None
-                            or turn["state"] not in {"pending", "blocked", "cancelled"}
-                        )
-                    ):
-                        raise ConversationRepositoryError("conversation.turn_invalid")
+                result = connection.execute(
+                    "SELECT * FROM mentat_conversation_submission_results "
+                    "WHERE turn_id = ?",
+                    (turn_id,),
+                ).fetchone()
+                if result is not None and (
+                    not isinstance(result["run_id"], str)
+                    or not re.fullmatch(
+                        r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z",
+                        result["run_id"],
+                    )
+                    or not _SHA256.fullmatch(str(result["runtime_binding_digest"]))
+                    or result["dispatch_state"] not in {
+                        "reserved", "submitting", "accepted", "rejected", "unknown"
+                    }
+                    or result["status"] not in _ACTIVE_RUN_STATUSES
+                    | {"completed", "failed", "cancelled", "stopped", "interrupted"}
+                    or type(result["partial"]) is not int
+                    or result["partial"] not in {0, 1}
+                    or _timestamp(result["updated_at"]) is None
+                ):
+                    raise ConversationRepositoryError("conversation.turn_invalid")
+                if (
+                    result is None
+                    and (
+                        latest_run_id is not None
+                        or turn["state"] not in {"pending", "blocked", "cancelled"}
+                    )
+                ):
+                    raise ConversationRepositoryError("conversation.turn_invalid")
                 if latest_run_id is not None:
                     if not isinstance(latest_run_id, str) or not re.fullmatch(
                         r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z", latest_run_id
@@ -1433,7 +1341,7 @@ def validate_repository_connection(
                     "SELECT * FROM mentat_conversation_run_attempts "
                     "WHERE turn_id = ? ORDER BY created_at, run_id",
                     (turn_id,),
-                ).fetchall() if expected_version >= 14 else ()
+                ).fetchall()
                 if len(attempts) > 7:
                     raise ConversationRepositoryError("conversation.turn_invalid")
                 for attempt in attempts:
@@ -1496,17 +1404,16 @@ def validate_repository_connection(
                 raise ConversationRepositoryError("conversation.sequence_invalid")
             if active_turns > MAX_ACTIVE_TURNS:
                 raise ConversationRepositoryLimitError("conversation.turn_capacity")
-        if expected_version >= 17:
-            association_rows = connection.execute(
-                "SELECT * FROM mentat_conversation_planning_context "
-                "ORDER BY conversation_id"
-            ).fetchall()
-            if len(association_rows) > conversation_count:
-                raise ConversationRepositoryError(
-                    "conversation.planning_context_invalid"
-                )
-            for association_row in association_rows:
-                _planning_association_row(association_row)
+        association_rows = connection.execute(
+            "SELECT * FROM mentat_conversation_planning_context "
+            "ORDER BY conversation_id"
+        ).fetchall()
+        if len(association_rows) > conversation_count:
+            raise ConversationRepositoryError(
+                "conversation.planning_context_invalid"
+            )
+        for association_row in association_rows:
+            _planning_association_row(association_row)
         return conversation_count
     except ConversationRepositoryError:
         raise
@@ -1558,6 +1465,10 @@ class ConversationRepository:
             if connection is not None:
                 connection.close()
             raise
+        except MentatDatabaseError as exc:
+            if connection is not None:
+                connection.close()
+            raise ConversationRepositoryUnavailable("conversation.schema_unsupported") from exc
         except (OSError, sqlite3.Error) as exc:
             if connection is not None:
                 connection.close()

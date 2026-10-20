@@ -10,7 +10,6 @@ import unittest
 from unittest.mock import patch
 
 from agent_registry import AgentRegistry
-from agent_registry_migration import preview_agent_registry_migration
 from mentat.cli import main as mentat_cli_main
 from mentat_db import SCHEMA_VERSION, connect, database_path
 from vercel_connections import (
@@ -30,23 +29,6 @@ from vercel_connections import (
 
 
 class VercelConnectionTests(unittest.TestCase):
-    def test_retained_schema_33_validation_does_not_upgrade_or_rewrite_database(self):
-        from private_console_unit import _initialize_database
-
-        with TemporaryDirectory() as temporary:
-            database = Path(temporary) / "mentat.sqlite3"
-            _initialize_database(database, schema_version=33)
-            before = database.read_bytes()
-            connection = sqlite3.connect(database)
-            try:
-                self.assertEqual(validate_provider_connections(connection), ())
-                self.assertEqual(
-                    connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                    33,
-                )
-            finally:
-                connection.close()
-            self.assertEqual(database.read_bytes(), before)
 
     def cli(self, arguments: list[str]) -> tuple[int, dict[str, object]]:
         output = io.StringIO()
@@ -202,9 +184,7 @@ class VercelConnectionTests(unittest.TestCase):
             )
             binding = registry.get_runtime_binding(agent.id)
             self.assertEqual(binding.runtime_agent_ref, VERCEL_CONNECTION_ID)
-            migration = preview_agent_registry_migration(root)
-            self.assertEqual(migration.status, "already_converged")
-            self.assertEqual(migration.destination.agent_count, 1)
+            self.assertEqual(registry.list_agents(), (agent,))
 
             disconnect = preview_disconnect_vercel(root)
             record = confirm_disconnect_vercel(

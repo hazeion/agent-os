@@ -14,7 +14,6 @@ import project_context
 import project_context_access
 import project_worker_journal as journal
 from private_state import private_state_lock, history_path
-from task_repository import _schema5_private_unit
 from run_repository import RunRepository, RunRepositoryError, ensure_run_sqlite_authority
 import run_attention
 from tests import test_project_proposal_input_receipts as receipts
@@ -37,8 +36,8 @@ class ProjectWorkerJournalTests(unittest.TestCase):
         self.root = self.fixture.root
 
     def _prepare(self, *, reserve_output=True):
-        # Temporary historical fixture only: source INSERT guard is restored by
-        # the existing helper. No production Run/admission or model is invoked.
+        # Synthetic inert fixture only: the helper restores the source INSERT
+        # guard. No production Run/admission or model is invoked.
         ensure_run_sqlite_authority(self.root, history_path(self.root))
         with closing(mentat_db.connect(self.root)) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -289,7 +288,7 @@ class ProjectWorkerJournalTests(unittest.TestCase):
         repeated = self._reserve(run_id)
         self.assertEqual((repeated.newly_reserved, repeated.state, repeated.disposition), (False, "failed", "non_text"))
 
-    def test_empty_schema43_backup_restore_and_schema5_projection(self):
+    def test_empty_current_backup_restore_keeps_journal_empty(self):
         unit = private_console_unit.capture_private_console_unit(self.root)
         private_console_unit.validate_private_console_unit(unit)
         with TemporaryDirectory() as temporary:
@@ -300,10 +299,6 @@ class ProjectWorkerJournalTests(unittest.TestCase):
             with closing(mentat_db.connect(target)) as connection:
                 self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
                 self.assertEqual(journal.validate_worker_journal_connection(connection), [[], []])
-            compatible = _schema5_private_unit(unit)
-            with closing(sqlite3.connect(":memory:")) as connection:
-                connection.deserialize(compatible.database_raw)
-                self.assertIsNone(connection.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_calls'").fetchone())
 
     def test_populated_known_journal_survives_validated_restore_without_live_authority(self):
         run_id = self._prepare()
@@ -381,60 +376,18 @@ class ProjectWorkerJournalTests(unittest.TestCase):
                 journal.archival_proposal_ids(connection)
             connection.rollback()
 
-    def test_exact_schema42_upgrade_preserves_closed_dispatch_and_fk_integrity(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=42)
-            with closing(sqlite3.connect(path)) as connection:
-                connection.execute("PRAGMA foreign_keys=ON")
-                mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
-                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-                self.assertEqual(journal.validate_worker_journal_connection(connection), [[], []])
-                with self.assertRaisesRegex(sqlite3.IntegrityError, "proposal_unqualified"):
-                    connection.execute("INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,dispatch_state,created_at,updated_at) "
-                                       "VALUES('run_closed','project_proposal','hermes','[]','reserved','reserved',?,?)",
-                                       (receipts.CREATED, receipts.CREATED))
 
-    def test_schema42_drift_refuses_journal_migration_without_ddl_or_receipt(self):
-        for tamper in ("ALTER TABLE mentat_runs ADD COLUMN injected_drift TEXT",
-                       "DROP TRIGGER mentat_project_proposal_input_receipt_immutable"):
-            with self.subTest(tamper=tamper), TemporaryDirectory() as temporary:
-                path = Path(temporary) / "mentat.sqlite3"
-                private_console_unit._initialize_database(path, schema_version=42)
-                with closing(sqlite3.connect(path)) as connection:
-                    connection.execute(tamper)
-                    connection.commit()
-                    before = list(connection.iterdump())
-                    self.assertEqual(mentat_db.schema_signature_state(connection, 42), "invalid")
-                    with self.assertRaisesRegex(mentat_db.MentatDatabaseError, "schema 42 cannot be safely upgraded"):
-                        mentat_db.migrate(connection)
-                    self.assertEqual(list(connection.iterdump()), before)
-                    self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 42)
-                    self.assertIsNone(connection.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_calls'").fetchone())
-                    self.assertFalse(connection.in_transaction)
 
-    def test_schema43_ddl_failure_rolls_back_exact_schema42_and_receipt(self):
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            private_console_unit._initialize_database(path, schema_version=42)
-            with closing(sqlite3.connect(path)) as connection:
-                before = list(connection.iterdump())
-                execute = mentat_db._execute_script_in_active_transaction
-                def execute_then_fail(active, script):
-                    execute(active, script)
-                    if script == dict(mentat_db.MIGRATIONS)[43]:
-                        self.assertTrue(active.in_transaction)
-                        self.assertIsNotNone(active.execute("SELECT 1 FROM sqlite_master WHERE name='mentat_project_worker_calls'").fetchone())
-                        raise RuntimeError("after journal DDL fixture")
-                with patch.object(mentat_db, "_execute_script_in_active_transaction", side_effect=execute_then_fail):
-                    with self.assertRaisesRegex(RuntimeError, "after journal DDL fixture"):
-                        mentat_db.migrate(connection)
-                self.assertEqual(list(connection.iterdump()), before)
-                self.assertEqual(mentat_db.schema_signature_state(connection, 42), "expected")
-                self.assertFalse(connection.in_transaction)
-                mentat_db.migrate(connection)
-                self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
+
+    def test_current_journal_keeps_dispatch_closed_and_foreign_keys_valid(self):
+        with closing(mentat_db.connect(self.root)) as connection:
+            self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), "expected")
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(journal.validate_worker_journal_connection(connection), [[], []])
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "proposal_unqualified"):
+                connection.execute("INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,dispatch_state,created_at,updated_at) "
+                                   "VALUES('run_closed','project_proposal','hermes','[]','reserved','reserved',?,?)",
+                                   (receipts.CREATED, receipts.CREATED))
 
     def test_real_leased_journal_refuses_archive_without_modifying_source(self):
         run_id = self._prepare()

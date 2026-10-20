@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
+from mentat_db import MentatDatabaseError
 
 from mentat_db import SCHEMA_VERSION, connect, database_path
 from project_repository import (
@@ -110,7 +111,7 @@ class ProjectRepositoryTests(unittest.TestCase):
             self.assertEqual(read_authoritative_projects(root)[0]["name"], "Mentat")
             self.assertEqual(read_authoritative_tasks(root)[0]["project_id"], "project_mentat")
 
-    def test_schema18_refuses_forward_versions_before_a_consumer_can_open_it(self):
+    def test_current_schema_refuses_forward_versions_before_a_consumer_can_open_it(self):
         with TemporaryDirectory() as temporary:
             root = self.root(temporary)
             ensure_project_sqlite_authority(root, required_source_mode=None)
@@ -120,7 +121,7 @@ class ProjectRepositoryTests(unittest.TestCase):
                 raw.commit()
             finally:
                 raw.close()
-            with self.assertRaisesRegex(Exception, "newer"):
+            with self.assertRaisesRegex(MentatDatabaseError, "unsupported"):
                 connect(root)
 
     def test_existing_project_ids_cannot_be_replaced_or_removed_by_collection_mutation(self):

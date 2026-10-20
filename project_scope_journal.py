@@ -92,8 +92,9 @@ def _witness(value, kind):
 def validate_scope_journal_connection(connection):
     """Historical graph and fixed worst-case accounting, not live OS evidence."""
     version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    if version < 44:
-        return []
+    from mentat_db import SCHEMA_VERSION
+    if version != SCHEMA_VERSION:
+        _fail('invalid')
     journal.validate_worker_journal_connection(connection)
     rows = connection.execute('SELECT * FROM mentat_project_worker_scopes ORDER BY run_id').fetchmany(MAX_SCOPES+1)
     if len(rows) > MAX_SCOPES:
@@ -154,8 +155,7 @@ def validate_scope_journal_connection(connection):
 
 def require_archival_scopes(connection):
     validate_scope_journal_connection(connection)
-    version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    if version >= 44 and connection.execute("SELECT 1 FROM mentat_project_worker_scopes WHERE state NOT IN "
+    if connection.execute("SELECT 1 FROM mentat_project_worker_scopes WHERE state NOT IN "
                                            "('prepared','cancelled','stopped') LIMIT 1").fetchone():
         _fail('active_archival')
 

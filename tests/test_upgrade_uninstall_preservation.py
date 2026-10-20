@@ -14,7 +14,10 @@ from agent_console_attachments import (
     get_attachment,
     resolve_blob_path,
 )
-from agent_run_history import load_run_summaries, save_run_summaries
+from tests.test_private_console_state import save_current_run_summaries
+from run_repository import load_authoritative_run_summaries
+from task_repository import ensure_task_sqlite_authority, read_authoritative_tasks
+from project_repository import ensure_project_sqlite_authority
 import data_backup_restore
 from data_layout import SEED_FILE_NAMES
 from json_store import write_json_atomic
@@ -110,9 +113,24 @@ class UpgradeUninstallPreservationTests(unittest.TestCase):
                 {
                     "id": "task-upgrade-preservation",
                     "title": "Keep this task through upgrade",
-                    "status": "in_progress",
+                    "description": "",
+                    "project": "Mentat",
+                    "status": "in progress",
+                    "priority": "medium",
+                    "assignee": None,
+                    "due_date": None,
+                    "source": "test",
+                    "tags": [],
+                    "review_required": False,
+                    "needs_attention": False,
+                    "created_at": "1970-01-01T00:00:00+00:00",
+                    "updated_at": "1970-01-01T00:00:00+00:00",
+                    "completed_at": None,
                 }
             ],
+            "projects.json": [{"id": "project_mentat", "name": "Mentat",
+                               "created_at": "2026-07-18T00:00:00+00:00",
+                               "updated_at": "2026-07-18T00:00:00+00:00"}],
             "dashboard.json": {
                 "theme": "operator-midnight",
                 "planning_view": "today",
@@ -137,6 +155,8 @@ class UpgradeUninstallPreservationTests(unittest.TestCase):
         self.assertEqual(status, 201)
         context_pack = created["context_pack"]
 
+        ensure_task_sqlite_authority(data_root, required_source_mode=None)
+        ensure_project_sqlite_authority(data_root, required_source_mode=None)
         blob_bytes = b"operator attachment retained across application replacement\n"
         attachment = create_attachment(
             data_root,
@@ -151,8 +171,8 @@ class UpgradeUninstallPreservationTests(unittest.TestCase):
             "run_upgrade_preservation",
             now=1_721_260_801,
         )
-        save_run_summaries(
-            history_path(data_root),
+        save_current_run_summaries(
+            data_root,
             [
                 {
                     "id": "run_upgrade_preservation",
@@ -174,7 +194,6 @@ class UpgradeUninstallPreservationTests(unittest.TestCase):
                     "duration_seconds": 1,
                 }
             ],
-            data_root=data_root,
         )
         return bound, blob_bytes, context_pack
 
@@ -197,11 +216,8 @@ class UpgradeUninstallPreservationTests(unittest.TestCase):
         )
         self.assertEqual(get_attachment(data_root, attachment["id"]), attachment)
         self.assertEqual(resolve_blob_path(data_root, attachment["id"]).read_bytes(), blob_bytes)
-        history, recovered = load_run_summaries(
-            history_path(data_root),
-            data_root=data_root,
-        )
-        self.assertFalse(recovered)
+        history = load_authoritative_run_summaries(data_root)
+        self.assertEqual([task["id"] for task in read_authoritative_tasks(data_root)], ["task-upgrade-preservation"])
         self.assertEqual([run["id"] for run in history], ["run_upgrade_preservation"])
         self.assertEqual(
             [item["id"] for item in history[0]["attachments"]],

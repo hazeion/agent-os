@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -116,15 +117,60 @@ class LinkPreviewWorkerTests(unittest.TestCase):
             pool.close()
 
     def test_dns_and_total_watchdogs_replace_stuck_workers(self):
+        from link_preview_workers import OPERATION_WATCHDOG_SECONDS
+
+        # Preparation receipt only: production execute never accepts this frame.
+        # Consume it from each exact generation before applying short operation
+        # assertions; interpreter startup is not a DNS or response operation.
+        ready_worker = FAKE_WORKER.replace(
+            "for line in sys.stdin:",
+            'sys.stdout.buffer.write((json.dumps({"type":"fixture_ready","pid":os.getpid()}) '
+            '+ "\\n").encode("utf-8")); sys.stdout.buffer.flush()\n'
+            "for line in sys.stdin:",
+        )
+        ready_command = (sys.executable, "-u", "-c", ready_worker)
+        setup_watchdog = OPERATION_WATCHDOG_SECONDS
+
+        def await_fixture_ready(slot, deadline):
+            process, messages = slot._process, slot._messages
+            self.assertIsNotNone(process)
+            remaining = deadline - time.monotonic()
+            self.assertGreater(remaining, 0)
+            raw = messages.get(timeout=remaining)
+            expected = json.dumps({"type": "fixture_ready", "pid": process.pid}).encode() + b"\n"
+            self.assertEqual(raw, expected)
+            self.assertLessEqual(time.monotonic(), deadline)
+            self.assertIs(slot._process, process)
+            self.assertIs(slot._messages, messages)
+            self.assertIsNone(process.poll())
+            return process
+
         with mock.patch("link_preview_workers.DNS_WATCHDOG_SECONDS", 0.15), mock.patch("link_preview_workers.OPERATION_WATCHDOG_SECONDS", 0.35):
-            pool = LinkPreviewWorkerPool(command=command(), environ={})
+            pool = LinkPreviewWorkerPool(command=ready_command, environ={})
             try:
-                for mode in ("dns-hang", "total-hang"):
+                setup_deadline = time.monotonic() + setup_watchdog
+                initial = [await_fixture_ready(slot, setup_deadline) for slot in pool._slots]
+                self.assertNotEqual(initial[0].pid, initial[1].pid)
+                for index, mode in enumerate(("dns-hang", "total-hang")):
+                    target, unaffected = pool._slots[index], pool._slots[1 - index]
+                    old, stable = target._process, unaffected._process
                     started = time.monotonic()
                     with self.assertRaises(LinkPreviewWorkerError):
                         pool.execute(kind="page", normalized_url=f"https://python.org/{mode}")
                     self.assertLess(time.monotonic() - started, 1.0)
-                    self.assertEqual(pool.execute(kind="page", normalized_url="https://python.org/normal")["status"], "ready")
+                    self.assertIsNotNone(old.poll())
+                    self.assertIsNot(target._process, old)
+                    self.assertNotEqual(target._process.pid, old.pid)
+                    self.assertIs(unaffected._process, stable)
+                    self.assertIsNone(stable.poll())
+                    replacement = await_fixture_ready(target, time.monotonic() + setup_watchdog)
+                    self.assertNotIn(replacement.pid, {old.pid, stable.pid})
+                    # Round-robin returns unaffected then replacement. Both normal
+                    # calls retain the same patched 0.35-second operation budget.
+                    for expected_process in (stable, replacement):
+                        result = pool.execute(kind="page", normalized_url="https://python.org/normal")
+                        self.assertEqual(result["status"], "ready")
+                        self.assertEqual(result["pid"], expected_process.pid)
             finally:
                 pool.close()
 

@@ -360,6 +360,7 @@ def _windows_open_handle(
     directory: bool,
     disposition: int = 3,
     writable: bool = False,
+    checked_cleanup: bool = False,
 ) -> int:
     """Open one Windows entry without following its final reparse point."""
 
@@ -415,11 +416,17 @@ def _windows_open_handle(
         ctypes.sizeof(info),
     ):
         error = ctypes.get_last_error()
-        kernel32.CloseHandle(handle)
+        if checked_cleanup:
+            _windows_close_handle_checked(handle_value)
+        else:
+            kernel32.CloseHandle(handle)
         raise ctypes.WinError(error)
     is_directory = bool(info.file_attributes & file_attribute_directory)
     if bool(info.file_attributes & file_attribute_reparse_point) or is_directory != directory:
-        kernel32.CloseHandle(handle)
+        if checked_cleanup:
+            _windows_close_handle_checked(handle_value)
+        else:
+            kernel32.CloseHandle(handle)
         raise OSError("unsafe Windows file type or reparse point")
     return handle_value
 
@@ -430,7 +437,26 @@ def _windows_close_handle(handle: int) -> None:
     _windows_kernel32().CloseHandle(wintypes.HANDLE(handle))
 
 
-def _windows_open_directory_chain(path: Path) -> list[int]:
+def _windows_close_handle_checked(handle: int) -> None:
+    """Attempt one owned close; an uncertain numeric handle is never retried."""
+    from ctypes import wintypes
+
+    if not _windows_kernel32().CloseHandle(wintypes.HANDLE(handle)):
+        raise OSError("Windows resource cleanup is unverified")
+
+
+def _windows_close_handles_checked(handles: list[int]) -> None:
+    failed = False
+    for handle in reversed(handles):
+        try:
+            _windows_close_handle_checked(handle)
+        except OSError:
+            failed = True
+    if failed:
+        raise OSError("Windows resource cleanup is unverified")
+
+
+def _windows_open_directory_chain(path: Path, *, checked_cleanup: bool = False) -> list[int]:
     """Pin every existing component and deny rename/delete while held."""
 
     absolute = _absolute_without_following(path)
@@ -443,11 +469,15 @@ def _windows_open_directory_chain(path: Path) -> list[int]:
     handles: list[int] = []
     try:
         for candidate in candidates:
-            handles.append(_windows_open_handle(candidate, directory=True))
+            handles.append(_windows_open_handle(candidate, directory=True, checked_cleanup=True)
+                           if checked_cleanup else _windows_open_handle(candidate, directory=True))
         return handles
     except Exception:
-        for handle in reversed(handles):
-            _windows_close_handle(handle)
+        if checked_cleanup:
+            _windows_close_handles_checked(handles)
+        else:
+            for handle in reversed(handles):
+                _windows_close_handle(handle)
         raise
 
 
@@ -479,20 +509,26 @@ def _windows_open_file_descriptor(
     *,
     disposition: int,
     writable: bool,
+    checked_cleanup: bool = False,
 ) -> int:
     import msvcrt
 
+    options = {"checked_cleanup": True} if checked_cleanup else {}
     handle = _windows_open_handle(
         path,
         directory=False,
         disposition=disposition,
         writable=writable,
+        **options,
     )
     flags = (os.O_RDWR if writable else os.O_RDONLY) | getattr(os, "O_BINARY", 0)
     try:
         return msvcrt.open_osfhandle(handle, flags)
     except Exception:
-        _windows_close_handle(handle)
+        if checked_cleanup:
+            _windows_close_handle_checked(handle)
+        else:
+            _windows_close_handle(handle)
         raise
 
 
@@ -723,9 +759,9 @@ def preflight_data_root(
 
     if legacy_names:
         return DataRootPreflight(
-            status="migration_required",
+            status="unsupported_legacy_storage",
             items=tuple(
-                PreflightItem(name=name, status="migrate" if name in legacy_names else "reserved")
+                PreflightItem(name=name, status="blocked" if name in legacy_names else "reserved")
                 for name in names
             ),
         )

@@ -1,49 +1,18 @@
-from __future__ import annotations
-
+"""Current delegation receipt storage preserves uncertainty and bounded evidence."""
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
-from mentat_db import (
-    MIGRATIONS,
-    MentatDatabaseError,
-    SCHEMA_VERSION,
-    connect,
-    database_path,
-    ensure_private_console_dir,
-    schema_signature_state,
-)
-from private_console_unit import (
-    PrivateConsoleUnitError,
-    _validate_task_delegation_action_receipts,
-)
+from mentat_db import SCHEMA_VERSION, connect, schema_signature_state
+from private_console_unit import PrivateConsoleUnitError, _validate_task_delegation_action_receipts
 
 
 def _digest(character: str) -> str:
     return character * 64
 
 
-class Schema20ForwardMigrationTests(unittest.TestCase):
-    def _schema19(self, root: Path) -> Path:
-        ensure_private_console_dir(root)
-        path = database_path(root)
-        connection = sqlite3.connect(path)
-        try:
-            for version, script in MIGRATIONS:
-                if version > 19:
-                    break
-                connection.executescript(script)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
-                    (version,),
-                )
-            connection.commit()
-        finally:
-            connection.close()
-        path.chmod(0o600)
-        return path
-
+class TaskDelegationReceiptStorageTests(unittest.TestCase):
     @staticmethod
     def _insert_receipt(
         connection: sqlite3.Connection,
@@ -74,13 +43,12 @@ class Schema20ForwardMigrationTests(unittest.TestCase):
             ),
         )
 
-    def test_exact_schema19_upgrades_to_no_foreign_key_receipt_ledger(self):
+    def test_current_ledger_has_no_task_foreign_key_and_retains_lookup_indexes(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._schema19(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 46)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], SCHEMA_VERSION)
                 self.assertEqual(schema_signature_state(connection, SCHEMA_VERSION), "expected")
                 self.assertEqual(
                     connection.execute("PRAGMA foreign_key_list(mentat_task_delegation_action_receipts)").fetchall(),
@@ -149,32 +117,6 @@ class Schema20ForwardMigrationTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_schema19_drift_fails_before_receipt_table_creation(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = self._schema19(root)
-            connection = sqlite3.connect(path, isolation_level=None)
-            try:
-                connection.execute("DROP INDEX idx_mentat_task_execution_reviews_task")
-            finally:
-                connection.close()
-            with self.assertRaisesRegex(MentatDatabaseError, "schema 19 cannot be safely upgraded"):
-                connect(root)
-            check = sqlite3.connect(path)
-            try:
-                self.assertEqual(
-                    check.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                    19,
-                )
-                self.assertIsNone(
-                    check.execute(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE name = 'mentat_task_delegation_action_receipts'"
-                    ).fetchone()
-                )
-            finally:
-                check.close()
-
     def test_private_backup_validation_rejects_a_corrupt_receipt_row(self):
         with TemporaryDirectory() as temporary:
             connection = connect(Path(temporary))
@@ -189,5 +131,5 @@ class Schema20ForwardMigrationTests(unittest.TestCase):
                 connection.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

@@ -231,45 +231,5 @@ class GoogleTransactionTests(unittest.TestCase):
             self.verify(start, state)
 
 
-class GoogleTransactionMigrationTests(unittest.TestCase):
-    def test_schema25_snapshot_compatibility_and_exact_forward_migration(self):
-        connection = methods.schema24()
-        self.addCleanup(connection.close)
-        with patch.object(mentat_db, 'MIGRATIONS', tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 25)):
-            mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, 25), 'expected')
-        # Validate historical schema25 through the real private-unit validators.
-        connection.execute("INSERT INTO mentat_agent_registry_state(singleton,authority,migration_contract,source_kind,source_sha256,source_agent_count,cutover_at) VALUES(1,'sqlite',?,'fresh',?,0,1)", (mentat_db.AGENT_REGISTRY_AUTHORITY_CONTRACT, mentat_db.EMPTY_AGENT_REGISTRY_SOURCE_SHA256))
-        connection.commit()
-        import json
-        from private_console_unit import PrivateConsoleUnit
-        unit = PrivateConsoleUnit(json.dumps({'schema_version': 3, 'runs': []}).encode(), connection.serialize(), None, ())
-        validate_private_console_unit(unit)
-        validate_private_console_unit(sanitize_owner_auth_restore_unit(unit))
-        mentat_db.migrate(connection)
-        self.assertEqual(mentat_db.schema_signature_state(connection, mentat_db.SCHEMA_VERSION), 'expected')
-        self.assertEqual(connection.execute('SELECT COUNT(*) FROM mentat_owner_google_transactions').fetchone()[0], 0)
-        self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
-
-    def test_migration_failure_is_atomic(self):
-        for corrupt in (False, True):
-            with self.subTest(corrupt=corrupt):
-                connection = methods.schema24()
-                self.addCleanup(connection.close)
-                with patch.object(mentat_db, 'MIGRATIONS', tuple(item for item in mentat_db.MIGRATIONS if item[0] <= 25)):
-                    mentat_db.migrate(connection)
-                if corrupt:
-                    connection.execute('CREATE TABLE unexpected(value TEXT)')
-                original = mentat_db._execute_script_in_active_transaction
-                def fail_after_ddl(conn, script):
-                    original(conn, script)
-                    raise sqlite3.OperationalError('simulated interruption')
-                with patch.object(mentat_db, '_execute_script_in_active_transaction', fail_after_ddl):
-                    with self.assertRaises((mentat_db.MentatDatabaseError, sqlite3.OperationalError)):
-                        mentat_db.migrate(connection)
-                self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 25)
-                self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE name='mentat_owner_google_transactions'").fetchone())
-
-
 if __name__ == '__main__':
     unittest.main()

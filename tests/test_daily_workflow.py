@@ -18,8 +18,44 @@ class DailyWorkflowTests(unittest.TestCase):
 
     def test_today_reorder_swaps_planned_rank_atomically(self):
         tasks = [
-            {"id": "task-a", "title": "A", "planned_for_today": True, "manual_rank": 1},
-            {"id": "task-b", "title": "B", "planned_for_today": True, "manual_rank": 2},
+            {
+                "id": "task-a",
+                "title": "A",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "planned_for_today": True,
+                "manual_rank": 1,
+            },
+            {
+                "id": "task-b",
+                "title": "B",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "planned_for_today": True,
+                "manual_rank": 2,
+            },
         ]
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -33,8 +69,43 @@ class DailyWorkflowTests(unittest.TestCase):
 
     def test_today_reorder_treats_zero_as_a_valid_rank(self):
         tasks = [
-            {"id": "task-a", "title": "A", "planned_for_today": True, "manual_rank": 0},
-            {"id": "task-b", "title": "B", "planned_for_today": True},
+            {
+                "id": "task-a",
+                "title": "A",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "planned_for_today": True,
+                "manual_rank": 0,
+            },
+            {
+                "id": "task-b",
+                "title": "B",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "planned_for_today": True,
+            },
         ]
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -49,8 +120,44 @@ class DailyWorkflowTests(unittest.TestCase):
     def test_today_reorder_accepts_the_exact_maximum_length_task_id(self):
         task_id = "task@" + ("r" * 155)
         tasks = [
-            {"id": "task-a", "title": "A", "planned_for_today": True, "manual_rank": 1},
-            {"id": task_id, "title": "Wide", "planned_for_today": True, "manual_rank": 2},
+            {
+                "id": "task-a",
+                "title": "A",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "planned_for_today": True,
+                "manual_rank": 1,
+            },
+            {
+                "id": task_id,
+                "title": "Wide",
+                "description": "",
+                "project": "General",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "planned_for_today": True,
+                "manual_rank": 2,
+            },
         ]
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -99,7 +206,23 @@ class DailyWorkflowTests(unittest.TestCase):
     def test_unified_search_groups_results_without_absolute_note_paths(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            self.write_json(root, "tasks.json", [{"id": "task-1", "title": "Mentat research", "project": "Mentat"}])
+            self.write_json(root, "tasks.json", [{
+                "id": "task-1",
+                "title": "Mentat research",
+                "description": "",
+                "project": "Mentat",
+                "status": "todo",
+                "priority": "medium",
+                "assignee": None,
+                "due_date": None,
+                "source": "test",
+                "tags": [],
+                "review_required": False,
+                "needs_attention": False,
+                "created_at": "1970-01-01T00:00:00+00:00",
+                "updated_at": "1970-01-01T00:00:00+00:00",
+                "completed_at": None,
+            }])
             self.write_json(root, "projects.json", [{"id": "project-1", "name": "Mentat"}])
             self.write_json(root, "calendar.json", [{"id": "event-1", "title": "Mentat review"}])
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "recent_sessions", return_value={"sessions": [{"id": "session-1", "title": "Mentat session"}]}), patch.object(

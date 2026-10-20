@@ -177,7 +177,7 @@ def vercel_binding_is_valid(
     capabilities: Iterable[str],
     provider_ids: Iterable[str],
 ) -> bool:
-    """Validate one schema-9 Agent binding without exposing provider settings."""
+    """Validate one current Agent binding without exposing provider settings."""
 
     return (
         runtime_agent_ref == VERCEL_CONNECTION_ID
@@ -267,7 +267,7 @@ def _schema_version(connection: sqlite3.Connection) -> int:
     if (
         not versions
         or versions != list(range(1, versions[-1] + 1))
-        or versions[-1] not in {9, 10, 11, 12, 13, 14, 15, 16, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, SCHEMA_VERSION}
+        or versions[-1] != SCHEMA_VERSION
     ):
         raise VercelConnectionError("vercel.connection_unsupported")
     return versions[-1]
@@ -276,7 +276,7 @@ def _schema_version(connection: sqlite3.Connection) -> int:
 def validate_provider_connections(
     connection: sqlite3.Connection,
 ) -> tuple[VercelConnection, ...]:
-    """Validate the schema-9 provider rows and return their private records."""
+    """Validate the current provider rows and return their private records."""
 
     _schema_version(connection)
     try:

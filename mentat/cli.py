@@ -91,30 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("backup_file", type=Path)
     restore.add_argument("--confirm", metavar="TOKEN")
 
-    task_migration = commands.add_parser(
-        "task-migration",
-        help="Preview the exact Task cutover or report existing SQLite authority.",
-    )
-    _runtime_arguments(task_migration)
-
     task_export = commands.add_parser(
         "task-export",
-        help="Export authoritative Tasks to tasks.json for an intentional downgrade.",
+        help="Export a current Task recovery snapshot to tasks.json.",
     )
     _runtime_arguments(task_export)
     task_export.add_argument("--confirm", metavar="TOKEN")
-    task_export.add_argument(
-        "--compatible-root",
-        action="store_true",
-        help="Create a schema-5 sibling data root for a pre-cutover Mentat build.",
-    )
-
-    agent_registry_migration = commands.add_parser(
-        "agent-registry-migration",
-        help="Preview or confirm the Agent registry database convergence.",
-    )
-    _runtime_arguments(agent_registry_migration)
-    agent_registry_migration.add_argument("--confirm", metavar="TOKEN")
 
     owner_auth = commands.add_parser(
         "owner-auth",
@@ -406,15 +388,35 @@ def run_doctor(args: argparse.Namespace) -> int:
 
     _module, config = _load_config(args)
     data_status = runtime_config.schema_preflight_status(config.data_dir)
+    from mentat_db import MentatDatabaseError, validate_current_database_root
+    database_status = "unsupported"
+    try:
+        current_database = validate_current_database_root(config.data_dir)
+        database_status = "current" if current_database else "missing"
+    except (MentatDatabaseError, OSError):
+        current_database = False
+    development = (
+        runtime_config._absolute_without_following(config.data_dir)
+        == runtime_config._absolute_without_following(runtime_config.PACKAGED_SEED_DIR)
+    )
+    unversioned_operator_data = data_status == "legacy" and not development and any(
+        os.path.lexists(config.data_dir / name) for name in runtime_config.SEED_FILE_NAMES
+    )
+    supported = (
+        data_status in {"current", "fresh_incomplete", "legacy"}
+        and database_status != "unsupported"
+        and not unversioned_operator_data
+        and (data_status != "current" or current_database)
+    )
     hermes_available = shutil.which("hermes") is not None
     google_calendar_available = importlib.util.find_spec("googleapiclient") is not None
     payload = {
-        "ok": data_status not in {"invalid", "newer"},
+        "ok": supported,
         "version": __version__,
         "python": platform.python_version(),
         "platform": platform.system().lower(),
         "network": "loopback-only",
-        "data": {"status": data_status},
+        "data": {"status": data_status, "database": database_status},
         "optional_integrations": {
             "hermes": "available" if hermes_available else "not detected",
             "google_calendar": "available" if google_calendar_available else "not installed",
@@ -452,24 +454,13 @@ def run_restore(args: argparse.Namespace) -> int:
     return exit_code
 
 
-def run_task_migration(args: argparse.Namespace) -> int:
-    import runtime_config
-
-    forwarded = [*_forward_runtime_arguments(args), "--preview-task-sqlite-migration"]
-    cli_args = runtime_config.parse_cli_args(forwarded)
-    config = runtime_config.load_app_config(cli_args)
-    payload, exit_code = runtime_config.run_task_sqlite_migration_cli(cli_args, config)
-    _print_json(payload)
-    return exit_code
 
 
 def run_task_export(args: argparse.Namespace) -> int:
     from task_repository import (
         TaskRepositoryError,
-        confirm_task_compatible_export,
-        confirm_task_legacy_export,
-        preview_task_compatible_export,
-        preview_task_legacy_export,
+        confirm_task_export,
+        preview_task_export,
     )
 
     runtime_config, config = _load_config(args)
@@ -480,21 +471,14 @@ def run_task_export(args: argparse.Namespace) -> int:
         else 0o600
     )
     try:
-        if args.compatible_root and args.confirm:
-            payload = confirm_task_compatible_export(
-                config.data_dir,
-                args.confirm,
-            )
-        elif args.compatible_root:
-            payload = preview_task_compatible_export(config.data_dir).public_summary()
-        elif args.confirm:
-            payload = confirm_task_legacy_export(
+        if args.confirm:
+            payload = confirm_task_export(
                 config.data_dir,
                 args.confirm,
                 required_destination_mode=required_destination_mode,
             )
         else:
-            payload = preview_task_legacy_export(
+            payload = preview_task_export(
                 config.data_dir,
                 required_destination_mode=required_destination_mode,
             ).public_summary()
@@ -515,41 +499,6 @@ def run_task_export(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_agent_registry_migration(args: argparse.Namespace) -> int:
-    from agent_registry_migration import (
-        AgentRegistryMigrationError,
-        confirm_agent_registry_migration,
-        preview_agent_registry_migration,
-    )
-
-    _runtime_config, config = _load_config(args)
-    try:
-        if args.confirm:
-            payload = confirm_agent_registry_migration(
-                config.data_dir,
-                args.confirm,
-            )
-        else:
-            payload = preview_agent_registry_migration(
-                config.data_dir
-            ).public_summary()
-    except AgentRegistryMigrationError as exc:
-        _print_json(
-            {
-                "ok": False,
-                "status": "blocked" if not exc.writes_performed else "partial",
-                "error_code": exc.code,
-                "writes_performed": exc.writes_performed,
-            }
-        )
-        return 2
-    ok = payload.get("status") in {
-        "ready",
-        "migrated",
-        "already_converged",
-    }
-    _print_json({"ok": ok, **payload})
-    return 0 if ok else 2
 
 
 def run_owner_auth(args: argparse.Namespace) -> int:
@@ -933,9 +882,7 @@ def main(argv: list[str] | None = None) -> int:
         "doctor": run_doctor,
         "backup": run_backup,
         "restore": run_restore,
-        "task-migration": run_task_migration,
         "task-export": run_task_export,
-        "agent-registry-migration": run_agent_registry_migration,
         "owner-auth": run_owner_auth,
         "connection": run_connection,
         "vercel": run_vercel,

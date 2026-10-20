@@ -22,7 +22,6 @@ CONSOLE_DIRECTORY_NAME = "console"
 HISTORY_NAME = "agent-console-runs.json"
 DATABASE_NAME = "mentat.sqlite3"
 BLOB_DIRECTORY_PARTS = ("blobs", "sha256")
-MIGRATION_RECEIPT_NAME = "private-console-migration-v1.json"
 MIGRATION_RESERVATION_NAME = "private-console-migration-v1.reservation.json"
 RESTORE_RESERVATION_NAME = "private-console-restore-v1.reservation.json"
 GENERAL_RESTORE_STATE_NAME = "restore-state-v1.json"
@@ -58,20 +57,12 @@ def blobs_root(data_root: Path) -> Path:
     return path
 
 
-def legacy_history_path(data_root: Path) -> Path:
-    return Path(data_root) / "runtime" / HISTORY_NAME
 
 
-def legacy_database_path(data_root: Path) -> Path:
-    return Path(data_root) / "runtime" / DATABASE_NAME
 
 
-def legacy_blobs_root(data_root: Path) -> Path:
-    return Path(data_root) / "runtime" / "blobs" / "sha256"
 
 
-def migration_receipt_path(data_root: Path) -> Path:
-    return Path(data_root) / "config" / MIGRATION_RECEIPT_NAME
 
 
 def migration_reservation_path(data_root: Path) -> Path:
@@ -143,6 +134,110 @@ def inspect_console_root(
     if resolved_console.parent.parent != resolved_root:
         raise PrivateStateError("Mentat private Console directory escapes the data root")
     return resolved_console, tuple(identities)
+
+
+
+def fresh_console_storage_issue(data_root: Path) -> str | None:
+    """Inspect missing-database storage without creating or hardening anything.
+
+    Only an absent/empty Console or the current empty summary document can be
+    fresh. Existing SQLite authority is outside this helper's contract.
+    """
+    import json
+
+    root = Path(data_root)
+    runtime = root / "runtime"
+    maximum = 4 * 1024 * 1024
+    try:
+        if os.path.lexists(runtime):
+            runtime_details = os.lstat(runtime)
+            if (_is_redirecting_entry(runtime_details) or not stat.S_ISDIR(runtime_details.st_mode)
+                    or (os.name == "posix" and runtime_details.st_uid != os.getuid())):
+                return "private_console_unsafe"
+            with os.scandir(runtime) as entries:
+                if any(entry.name in {DATABASE_NAME, HISTORY_NAME, "blobs", "agent-registry.sqlite3"}
+                       or entry.name.startswith((DATABASE_NAME + "-", "agent-registry.sqlite3-"))
+                       for entry in entries):
+                    return "private_database_unsupported"
+        inspected = inspect_console_root(root, allow_missing=True)
+        if inspected is None:
+            return None
+        source, identity = inspected
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source, flags) if os.name == "posix" else None
+        try:
+            opened = os.fstat(descriptor) if descriptor is not None else os.lstat(source)
+            if (int(opened.st_dev), int(opened.st_ino)) != identity[-1]:
+                return "private_console_changed"
+            def inventory():
+                return tuple(os.listdir(descriptor if descriptor is not None else source))
+            def history_stat():
+                return (os.stat(HISTORY_NAME, dir_fd=descriptor, follow_symlinks=False)
+                        if descriptor is not None else os.lstat(source / HISTORY_NAME))
+            entries = inventory()
+            if not entries:
+                return None if not inventory() and inspect_console_root(root)[1] == identity else "private_console_changed"
+            if entries != (HISTORY_NAME,):
+                return "private_database_missing"
+            def history_safe(details):
+                return (stat.S_ISREG(details.st_mode) and not _is_redirecting_entry(details)
+                        and details.st_nlink == 1 and details.st_size <= maximum
+                        and (os.name != "posix" or (details.st_uid == os.getuid()
+                             and stat.S_IMODE(details.st_mode) == 0o600)))
+            lexical = history_stat()
+            if not history_safe(lexical):
+                return "private_history_invalid"
+            history_flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            history_descriptor = (os.open(HISTORY_NAME, history_flags, dir_fd=descriptor)
+                                  if descriptor is not None else os.open(source / HISTORY_NAME, history_flags))
+            try:
+                before = os.fstat(history_descriptor)
+                if not history_safe(before):
+                    return "private_history_invalid"
+                if (before.st_dev, before.st_ino) != (lexical.st_dev, lexical.st_ino):
+                    return "private_console_changed"
+                raw = bytearray()
+                while len(raw) <= maximum:
+                    chunk = os.read(history_descriptor, min(65536, maximum + 1 - len(raw)))
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+                after = os.fstat(history_descriptor)
+                if not history_safe(after):
+                    return "private_history_invalid"
+                if (len(raw) > maximum or len(raw) != before.st_size
+                        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+                    return "private_console_changed"
+            finally:
+                os.close(history_descriptor)
+            def unique_pairs(items):
+                result = {}
+                for key, value in items:
+                    if key in result:
+                        raise ValueError("duplicate history key")
+                    result[key] = value
+                return result
+            document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
+            if (not isinstance(document, dict) or set(document) != {"schema_version", "runs"}
+                    or type(document["schema_version"]) is not int or document["schema_version"] != 3
+                    or document["runs"] != []):
+                return "private_history_invalid"
+            current = history_stat()
+            if not history_safe(current):
+                return "private_history_invalid"
+            if (inventory() != entries
+                    or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or inspect_console_root(root)[1] != identity):
+                return "private_console_changed"
+            return None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    except (OSError, ValueError, UnicodeError, RecursionError, TypeError):
+        return "private_console_unsafe"
 
 
 def ensure_private_root(data_root: Path) -> Path:
@@ -287,7 +382,7 @@ def private_control_issue(data_root: Path) -> str | None:
 
     root = _absolute_without_following(Path(data_root))
     for path, issue in (
-        (migration_reservation_path(root), "private_migration_incomplete"),
+        (migration_reservation_path(root), "unsupported_legacy_private_storage"),
         (restore_reservation_path(root), "private_restore_incomplete"),
         (root / "config" / GENERAL_RESTORE_STATE_NAME, "private_restore_incomplete"),
     ):
@@ -307,12 +402,28 @@ def private_control_issue(data_root: Path) -> str | None:
                 return "private_control_invalid"
             for entry in os.scandir(private):
                 if entry.name.startswith(".console-migration-"):
-                    return "private_migration_incomplete"
+                    return "unsupported_legacy_private_storage"
                 if entry.name.startswith(".console-restore-"):
                     return "private_restore_incomplete"
     except OSError:
         return "private_control_invalid"
     return None
+
+
+def _require_current_or_fresh_database(data_root: Path) -> None:
+    from mentat_db import (
+        MentatDatabaseError, validate_current_database_root,
+    )
+
+    try:
+        current = validate_current_database_root(data_root)
+    except (MentatDatabaseError, OSError) as exc:
+        raise PrivateStateError("unsupported_or_invalid_current_database") from exc
+    if not current:
+        issue = fresh_console_storage_issue(data_root)
+        if issue is not None:
+            from mentat_db import MentatDatabaseError
+            raise PrivateStateError(issue) from MentatDatabaseError(issue)
 
 
 @contextmanager
@@ -324,6 +435,7 @@ def private_state_lock(
     """Serialize the complete private Console unit with durable root mutation."""
 
     root = _absolute_without_following(Path(data_root))
+    _require_current_or_fresh_database(root)
     if not _secure_directory(root):
         raise PrivateStateError("Mentat data root is unsafe")
     with _durable_mutation_lock(root) as root_descriptor:
@@ -343,16 +455,3 @@ def synchronized_private_state(function: Callable[..., R]) -> Callable[..., R]:
             return function(data_root, *args, **kwargs)
 
     return wrapped
-
-
-def legacy_private_entries(data_root: Path) -> tuple[Path, ...]:
-    """Return only recognized legacy durable Console entries that exist."""
-
-    entries = (
-        legacy_history_path(data_root),
-        legacy_database_path(data_root),
-        Path(f"{legacy_database_path(data_root)}-wal"),
-        Path(f"{legacy_database_path(data_root)}-shm"),
-        legacy_blobs_root(data_root),
-    )
-    return tuple(path for path in entries if os.path.lexists(os.fspath(path)))

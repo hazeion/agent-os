@@ -12,7 +12,6 @@ import unittest
 from unittest.mock import patch
 
 from agent_console_attachments import bind_run_attachment, create_attachment
-from agent_run_history import save_run_summaries
 from agent_runtime import (
     AgentEvent,
     AgentEventType,
@@ -21,7 +20,7 @@ from agent_runtime import (
     SubmissionDisposition,
     SubmissionOutcome,
 )
-from mentat_db import SCHEMA_VERSION, connect
+from mentat_db import SCHEMA_VERSION, connect, database_path
 from private_state import history_path
 from private_console_unit import PrivateConsoleUnitError, capture_private_console_unit
 import run_repository
@@ -30,6 +29,7 @@ from run_repository import (
     RunRepository,
     RunRepositoryConflict,
     RunRepositoryError,
+    RunRepositoryUnavailable,
     RunRepositoryValidationError,
     load_authoritative_run_summaries,
     save_authoritative_run_summaries,
@@ -99,7 +99,25 @@ def task_fixture() -> dict:
     }
 
 
+def save_current_fixture(root: Path, summaries: list[dict]):
+    """Create current SQL authority, then populate its canonical Run API."""
+    ensure_run_sqlite_authority(root, history_path(root))
+    return save_authoritative_run_summaries(root, summaries)
+
+
 class RunRepositoryTests(unittest.TestCase):
+    @staticmethod
+    def storage_snapshot(root: Path):
+        result = {}
+        for path in (root, *sorted(root.rglob("*"))):
+            details = path.lstat()
+            payload = os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None
+            result[str(path.relative_to(root))] = (
+                details.st_dev, details.st_ino, details.st_mode, details.st_nlink,
+                details.st_size, details.st_mtime_ns, payload,
+            )
+        return result
+
     def prepare_dispatch_root(self, root: Path) -> tuple[dict, str]:
         task = task_fixture()
         source = root / "tasks.json"
@@ -203,7 +221,7 @@ class RunRepositoryTests(unittest.TestCase):
                 {**retained_output, "kind": "code"},
                 {**stale_output, "kind": "code"},
             ]
-            save_run_summaries(history_path(root), [run])
+            save_current_fixture(root, [run])
 
             ensure_run_sqlite_authority(root, history_path(root))
             loaded = load_authoritative_run_summaries(root)
@@ -256,7 +274,80 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertEqual(repeated, receipt)
         self.assertEqual(counts, (0, 0, 0))
 
-    def test_valid_legacy_history_imports_once_and_stale_json_is_ignored(self):
+    def test_current_empty_json_claims_zero_run_authority_without_importing(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = history_path(root)
+            path.parent.mkdir(parents=True)
+            raw = b'{"schema_version":3,"runs":[]}'
+            path.write_bytes(raw)
+            path.chmod(0o600)
+            receipt = run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(receipt.source_run_count, 0)
+            self.assertEqual(path.read_bytes(), raw)
+            self.assertEqual(load_authoritative_run_summaries(root), [])
+
+    def test_retired_or_nonempty_history_refuses_before_any_storage_write(self):
+        payloads = (
+            {"schema_version": 1, "runs": []},
+            {"schema_version": 2, "runs": []},
+            {"schema_version": 4, "runs": []},
+            {"schema_version": 3, "runs": [run_fixture("run_retired")]},
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = history_path(root)
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                path.chmod(0o600)
+                before = self.storage_snapshot(root)
+                with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")), patch.object(
+                    run_repository, "private_state_lock", side_effect=AssertionError("lock reached")
+                ):
+                    with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                        run_repository.ensure_run_sqlite_authority(root, path)
+                self.assertEqual(self.storage_snapshot(root), before)
+                self.assertFalse(database_path(root).exists())
+
+    def test_changed_history_before_shared_lock_preserves_run_error_boundary(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = history_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'{"schema_version":3,"runs":[]}')
+            path.chmod(0o600)
+            read = run_repository._read_empty_history
+            changed = []
+            def invalidate_after_read(*args):
+                value = read(*args)
+                path.write_bytes(b"{invalid history")
+                changed.append(self.storage_snapshot(root))
+                return value
+            with patch.object(run_repository, "_read_empty_history", side_effect=invalidate_after_read) as inspect, patch.object(
+                run_repository, "connect", side_effect=AssertionError("writable open reached")
+            ):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$") as rejected:
+                    run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual(len(changed), 1)
+            self.assertEqual(self.storage_snapshot(root), changed[0])
+            self.assertFalse(database_path(root).exists())
+            self.assertIsInstance(rejected.exception.__cause__, run_repository.PrivateStateError)
+
+    def test_current_sql_authority_never_opens_hostile_stale_history(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = history_path(root)
+            receipt = ensure_run_sqlite_authority(root, path)
+            save_authoritative_run_summaries(root, [run_fixture("run_current")])
+            path.write_bytes(b"invalid stale JSON")
+            with patch.object(run_repository, "_read_empty_history", side_effect=AssertionError("stale history read")):
+                self.assertEqual(run_repository.ensure_run_sqlite_authority(root, path), receipt)
+            self.assertEqual([run["id"] for run in load_authoritative_run_summaries(root)], ["run_current"])
+            self.assertEqual(path.read_bytes(), b"invalid stale JSON")
+
+    def test_current_sql_history_ignores_stale_json(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             path = history_path(root)
@@ -275,7 +366,7 @@ class RunRepositoryTests(unittest.TestCase):
                     "data": {},
                 }
             ]
-            save_run_summaries(path, [run])
+            save_current_fixture(root, [run])
 
             receipt = ensure_run_sqlite_authority(root, path)
             path.write_text(
@@ -286,11 +377,11 @@ class RunRepositoryTests(unittest.TestCase):
             loaded = load_authoritative_run_summaries(root)
 
         self.assertEqual(receipt, repeated)
-        self.assertEqual(receipt.source_run_count, 1)
+        self.assertEqual(receipt.source_run_count, 0)
         self.assertEqual([item["id"] for item in loaded], ["run_imported"])
         self.assertEqual(loaded[0]["events"][0]["type"], "complete")
 
-    def test_valid_retained_schema_three_suffix_migrates_without_inventing_events(self):
+    def test_current_retained_suffix_preserves_exact_events(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             path = history_path(root)
@@ -310,7 +401,7 @@ class RunRepositoryTests(unittest.TestCase):
                 }
                 for sequence in range(1, 101)
             ]
-            save_run_summaries(path, [run])
+            save_current_fixture(root, [run])
 
             ensure_run_sqlite_authority(root, path)
             connection = connect(root)
@@ -330,7 +421,7 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertTrue(reset)
         self.assertEqual(cursor, 100)
 
-    def test_schema_three_migrates_every_canonical_event_type_exactly(self):
+    def test_current_sql_preserves_every_canonical_event_type_exactly(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             path = history_path(root)
@@ -351,7 +442,7 @@ class RunRepositoryTests(unittest.TestCase):
                 }
                 for sequence, event_type in enumerate(expected_types, start=1)
             ]
-            save_run_summaries(path, [run])
+            save_current_fixture(root, [run])
 
             ensure_run_sqlite_authority(root, path)
             connection = connect(root)
@@ -366,7 +457,7 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertEqual([event.type for event in events], expected_types)
         self.assertEqual(unit.run_count, 1)
 
-    def test_pinned_binding_event_before_retained_suffix_migrates_exact_suffix(self):
+    def test_current_pinned_binding_event_preserves_exact_retained_suffix(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             path = history_path(root)
@@ -390,7 +481,7 @@ class RunRepositoryTests(unittest.TestCase):
                 }
                 for sequence in range(1, 101)
             ]
-            save_run_summaries(path, [run])
+            save_current_fixture(root, [run])
 
             ensure_run_sqlite_authority(root, path)
             connection = connect(root)
@@ -409,92 +500,6 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertEqual(stored.last_removed_sequence, 61)
         self.assertTrue(reset)
         self.assertEqual(cursor, 100)
-
-    def test_duplicate_legacy_run_ids_fail_before_authority_claim(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            path = history_path(root)
-            duplicate = run_fixture("run_duplicate")
-            save_run_summaries(path, [duplicate, duplicate])
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                repository = RunRepository(connection)
-                self.assertIsNone(repository.authority_receipt())
-                self.assertEqual(repository.list_runs(), ())
-            finally:
-                connection.close()
-
-    def test_legacy_v2_timeline_is_not_synthesized_and_is_marked_truncated(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            path = history_path(root)
-            path.parent.mkdir(parents=True)
-            path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "runs": [
-                            {
-                                "id": "run_legacy_v2",
-                                "status": "completed",
-                                "prompt_excerpt": "hello",
-                                "response_excerpt": "done",
-                                "error_excerpt": "",
-                                "created_at": timestamp(),
-                                "updated_at": timestamp(1),
-                                "completed_at": timestamp(1),
-                                "events": [
-                                    {
-                                        "message": "old event without identity",
-                                        "timestamp": timestamp(),
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            path.chmod(0o600)
-
-            ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                run = RunRepository(connection).get_run("run_legacy_v2")
-                events, reset, cursor = RunRepository(connection).list_events(
-                    "run_legacy_v2"
-                )
-            finally:
-                connection.close()
-
-        self.assertTrue(run.timeline_truncated)
-        self.assertEqual(events, ())
-        self.assertTrue(reset)
-        self.assertEqual(cursor, 0)
-
-    def test_active_legacy_run_becomes_durable_interrupted_not_running(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            path = history_path(root)
-            active = run_fixture("run_legacy_active", status="running")
-            active["completed_at"] = None
-            save_run_summaries(path, [active])
-
-            ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                repository = RunRepository(connection)
-                run = repository.get_run("run_legacy_active")
-                events, _reset, _cursor = repository.list_events(run.id)
-            finally:
-                connection.close()
-
-        self.assertEqual(run.status, "interrupted")
-        self.assertTrue(run.partial)
-        self.assertEqual(events[-1].type, AgentEventType.RUN_INTERRUPTED)
 
     def test_workspace_runs_keep_active_work_ahead_of_newer_terminal_history(self):
         with TemporaryDirectory() as tmpdir:
@@ -532,14 +537,12 @@ class RunRepositoryTests(unittest.TestCase):
             target.write_text('{"schema_version":3,"runs":[]}', encoding="utf-8")
             target.chmod(0o600)
             path.symlink_to(target)
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                self.assertIsNone(RunRepository(connection).authority_receipt())
-            finally:
-                connection.close()
+            before = self.storage_snapshot(root)
+            with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                    run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(self.storage_snapshot(root), before)
+            self.assertFalse(database_path(root).exists())
 
     @unittest.skipIf(os.name == "nt", "POSIX hardlink semantics")
     def test_hardlinked_legacy_history_is_rejected_without_changing_external_inode(self):
@@ -553,12 +556,14 @@ class RunRepositoryTests(unittest.TestCase):
             target.chmod(0o644)
             os.link(target, path)
             before_mode = stat.S_IMODE(target.stat().st_mode)
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-
+            before = self.storage_snapshot(root)
+            with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                    run_repository.ensure_run_sqlite_authority(root, path)
             self.assertEqual(target.read_bytes(), original)
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), before_mode)
+            self.assertEqual(self.storage_snapshot(root), before)
+            self.assertFalse(database_path(root).exists())
 
     def test_malformed_nonempty_history_fails_without_claiming_authority(self):
         with TemporaryDirectory() as tmpdir:
@@ -566,18 +571,13 @@ class RunRepositoryTests(unittest.TestCase):
             path = history_path(root)
             path.parent.mkdir(parents=True)
             path.write_text('{"schema_version":3,"runs":["bad"]}', encoding="utf-8")
-
-            with self.assertRaises(RunRepositoryValidationError):
-                ensure_run_sqlite_authority(root, path)
-            connection = connect(root)
-            try:
-                receipt = RunRepository(connection).authority_receipt()
-                count = connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0]
-            finally:
-                connection.close()
-
-        self.assertIsNone(receipt)
-        self.assertEqual(count, 0)
+            path.chmod(0o600)
+            before = self.storage_snapshot(root)
+            with patch.object(run_repository, "connect", side_effect=AssertionError("writable open reached")):
+                with self.assertRaisesRegex(RunRepositoryUnavailable, "^run_repository.unavailable$"):
+                    run_repository.ensure_run_sqlite_authority(root, path)
+            self.assertEqual(self.storage_snapshot(root), before)
+            self.assertFalse(database_path(root).exists())
 
     def test_summary_sync_round_trips_from_sqlite_without_touching_history(self):
         with TemporaryDirectory() as tmpdir:
@@ -2483,50 +2483,31 @@ class RunRepositoryTests(unittest.TestCase):
 
         self.assertEqual(unit.run_count, 1)
 
-    def test_legacy_event_id_boundary_rolls_back_invalid_authority(self):
+    def test_current_event_id_boundary_rolls_back_invalid_rows(self):
         for length, accepted in ((128, True), (129, False), (160, False)):
             with self.subTest(length=length), TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
-                path = history_path(root)
+                ensure_run_sqlite_authority(root, history_path(root))
                 run = run_fixture(f"run_event_id_{length}")
-                run["events"] = [
-                    {
-                        "id": "e" * length,
-                        "run_id": run["id"],
-                        "sequence": 1,
-                        "cursor": 1,
-                        "type": "complete",
-                        "kind": "complete",
-                        "timestamp": timestamp(1),
-                        "display_text": "Complete",
-                        "message": "Complete",
-                        "data": {},
-                    }
-                ]
-                save_run_summaries(path, [run])
+                run["events"] = [{
+                    "id": "e" * length, "run_id": run["id"],
+                    "sequence": 1, "cursor": 1, "type": "complete", "kind": "complete",
+                    "timestamp": timestamp(1), "display_text": "Complete", "message": "Complete", "data": {},
+                }]
                 if accepted:
-                    ensure_run_sqlite_authority(root, path)
+                    save_authoritative_run_summaries(root, [run])
                 else:
-                    with self.assertRaisesRegex(
-                        RunRepositoryValidationError, "run_migration.source_invalid"
-                    ):
-                        ensure_run_sqlite_authority(root, path)
+                    with self.assertRaises(RunRepositoryValidationError):
+                        save_authoritative_run_summaries(root, [run])
                 connection = connect(root)
                 try:
                     repository = RunRepository(connection)
-                    receipt = repository.authority_receipt()
-                    counts = tuple(
-                        connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                        for table in ("mentat_runs", "mentat_agent_events")
-                    )
+                    self.assertIsNotNone(repository.authority_receipt())
+                    counts = tuple(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                                   for table in ("mentat_runs", "mentat_agent_events"))
+                    self.assertEqual(counts, (1, 1) if accepted else (0, 0))
                 finally:
                     connection.close()
-                if accepted:
-                    self.assertIsNotNone(receipt)
-                    self.assertEqual(counts, (1, 1))
-                else:
-                    self.assertIsNone(receipt)
-                    self.assertEqual(counts, (0, 0))
 
     def test_validation_rejects_run_reservation_and_head_timestamp_corruption(self):
         corruptions = (
