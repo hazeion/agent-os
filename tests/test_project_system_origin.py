@@ -184,7 +184,8 @@ class SystemOriginParsingTests(unittest.TestCase):
         class Process:
             _mentat_process_group=1234
             stdin=stdout=None
-            def poll(self): return 0
+            returncode=0
+            def poll(self): raise AssertionError('helper wrapper must not reap')
         class Base:
             def __init__(self):
                 self._process=Process()
@@ -211,7 +212,8 @@ class SystemOriginParsingTests(unittest.TestCase):
         class Process:
             _mentat_process_group=1234
             stdin=stdout=None
-            def poll(self): return 0
+            returncode=0
+            def poll(self): raise AssertionError('helper wrapper must not reap')
         class Base:
             def __init__(self):
                 self._process=Process()
@@ -224,16 +226,38 @@ class SystemOriginParsingTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught: slot._terminate_owned()
         self.assertIs(caught.exception._mentat_worker_owner,slot)
         self.assertIsNotNone(slot._process)
-        with patch.object(origin.os,'killpg',side_effect=ProcessLookupError(),create=True) as observe:
+        for _ in range(2):
+            with patch.object(origin.os,'killpg',side_effect=ProcessLookupError(),create=True) as observe:
+                with self.assertRaises(RuntimeError) as repeated:
+                    slot._terminate_owned()
+            self.assertIs(repeated.exception,caught.exception)
+            self.assertEqual(slot.terminations,1)
+            self.assertIsNotNone(slot._process)
+            observe.assert_not_called()
+
+    def test_helper_does_not_close_streams_again_after_verified_base_cleanup(self):
+        class Pipe:
+            calls=0
+            def close(self):
+                self.calls+=1
+                if self.calls!=1: raise AssertionError('duplicate stream close')
+        class Process:
+            _mentat_process_group=1234
+            returncode=0
+            def __init__(self): self.stdin,self.stdout=Pipe(),Pipe()
+            def poll(self): raise AssertionError('helper wrapper must not reap')
+        class Base:
+            def __init__(self):
+                self._process=Process();self._reader=None
+            def _terminate_owned(self):
+                self._process.stdin.close();self._process.stdout.close()
+                self._process=None
+        slot=origin._helper_slot_type(Base)();process=slot._process
+        with patch.object(origin.os,'killpg',side_effect=ProcessLookupError(),create=True):
             slot._terminate_owned()
-        observe.assert_called_once_with(1234,0)
-        self.assertEqual(slot.terminations,1)
-        self.assertIsNone(slot._process)
-        with patch.object(origin.os,'killpg',side_effect=ProcessLookupError(),create=True) as observe:
             slot._terminate_owned()
-        self.assertEqual(slot.terminations,1)
+        self.assertEqual((process.stdin.calls,process.stdout.calls),(1,1))
         self.assertIsNone(slot._process)
-        observe.assert_not_called()
 
     def test_exact_unreaped_child_is_retained_until_poll_verifies_it(self):
         class Child:

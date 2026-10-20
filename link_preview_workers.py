@@ -76,6 +76,7 @@ class _WorkerSlot:
         self._reader: threading.Thread | None = None
         self._shutdown = False
         self._output_failed = threading.Event()
+        self._cleanup_state = None
         self._start()
 
     def _start(self) -> None:
@@ -98,12 +99,16 @@ class _WorkerSlot:
     def _spawn(self) -> None:
         if self._shutdown:
             return
+        if self._process is not None:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        self._cleanup_state = None
         self._messages = queue.Queue(maxsize=16)
         self._output_failed = threading.Event()
         options: dict[str, object] = {}
         if os.name == "nt":
             options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
+            self._require_default_sigchld()
             options["start_new_session"] = True
         self._process = subprocess.Popen(
             self._command,
@@ -161,20 +166,86 @@ class _WorkerSlot:
                 cleanup_error._mentat_worker_owner = self
                 raise
 
-    def _terminate_owned(self) -> None:
-        process = self._process
-        if process is None:
-            return
-        process_group = getattr(process, "_mentat_process_group", None)
+    @staticmethod
+    def _require_default_sigchld() -> None:
+        # Custom handlers/SIG_IGN can reap without updating Popen.returncode.
+        # Slot ownership requires the default disposition and exclusive waits.
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+
+    def _posix_exited_without_reaping(self, process) -> bool:
+        self._require_default_sigchld()
+        # Every caller holds the lifecycle lock. A cached return code means
+        # somebody already reaped the leader and numeric signal authority ended.
+        if process.returncode is not None:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        names = ("P_PID", "WEXITED", "WNOHANG", "WNOWAIT")
+        if not callable(getattr(os, "waitid", None)) or not all(hasattr(os, name) for name in names):
+            # macOS Python 3.11/3.12 has no waitid binding. EOF/write/watchdog
+            # detects failed work; cleanup retains the child through its grace.
+            return False
+        try:
+            status = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except OSError as error:
+            raise LinkPreviewWorkerError("link_preview.unavailable") from error
+        if status is not None and status.si_pid != process.pid:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        return status is not None
+
+    def _terminate_posix(self, process, state) -> None:
+        if state["signals_started"]:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        group = getattr(process, "_mentat_process_group", None)
+        if (type(process.pid) is not int or process.pid <= 1
+                or type(group) is not int or group != process.pid):
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        self._posix_exited_without_reaping(process)
+        state["signals_started"] = True
+        try:
+            os.killpg(group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        grace = time.monotonic() + 0.5
+        while not self._posix_exited_without_reaping(process):
+            left = grace - time.monotonic()
+            if left <= 0:
+                break
+            time.sleep(min(0.01, left))
+        # No poll/wait/Popen signal method may precede this last group signal.
+        self._posix_exited_without_reaping(process)
+        state["last_signal_attempted"] = True
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # Reaping and read-only group absence share the existing kill-wait cap.
+        end = time.monotonic() + 0.5
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        process.wait(timeout=remaining)
+        if process.returncode is None:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        while True:
+            left = end - time.monotonic()
+            if left <= 0:
+                raise LinkPreviewWorkerError("link_preview.unavailable")
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                if time.monotonic() > end:
+                    raise LinkPreviewWorkerError("link_preview.unavailable")
+                break
+            left = end - time.monotonic()
+            if left <= 0:
+                raise LinkPreviewWorkerError("link_preview.unavailable")
+            time.sleep(min(0.01, left))
+
+    def _terminate_windows(self, process) -> None:
         windows_job = getattr(process, "_mentat_windows_job", None)
-        if os.name == "nt" and windows_job is not None:
+        if windows_job is not None:
             process._mentat_windows_job = None
             _close_windows_job(windows_job)
-        elif type(process_group) is int and process_group > 1:
-            try:
-                os.killpg(process_group, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
         elif process.poll() is None:
             process.terminate()
         if process.poll() is None:
@@ -185,34 +256,88 @@ class _WorkerSlot:
                 try:
                     process.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
-                    self._shutdown = True
                     raise LinkPreviewWorkerError("link_preview.unavailable") from None
         if process.poll() is None:
-            self._shutdown = True
             raise LinkPreviewWorkerError("link_preview.unavailable")
-        if os.name != "nt" and type(process_group) is int and process_group > 1:
-            try:
-                os.killpg(process_group, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
-        for pipe in (process.stdin, process.stdout):
-            try:
-                if pipe is not None:
-                    pipe.close()
-            except Exception:
-                pass
-        reader = self._reader
-        if reader is threading.current_thread():
-            # The output thread is returning immediately after this call.
-            # Retain ownership until its parent verifies the join.
+
+    def _terminate_owned(self) -> None:
+        with self._lifecycle_lock:
+            self._terminate_owned_locked()
+
+    def _terminate_owned_locked(self) -> None:
+        process = self._process
+        if process is None:
             return
-        if reader is not None and reader.ident is not None:
-            reader.join(timeout=0.5)
-            if reader.is_alive():
+        if self._cleanup_state is None:
+            streams = []
+            for stream in (process.stdin, process.stdout):
+                if stream is not None and not any(row["stream"] is stream for row in streams):
+                    streams.append({"stream": stream, "attempted": False, "error": None})
+            self._cleanup_state = {"process": process, "streams": streams,
+                                   "signals_started": False, "last_signal_attempted": False,
+                                   "failure": None}
+        state = self._cleanup_state
+        if state["process"] is not process:
+            raise LinkPreviewWorkerError("link_preview.unavailable")
+        if state["failure"] is not None:
+            raise state["failure"]
+        try:
+            if os.name == "nt":
+                self._terminate_windows(process)
+            else:
+                self._terminate_posix(process, state)
+            failures = []
+            for row in state["streams"]:
+                if row["attempted"]:
+                    if row["error"] is not None:
+                        failures.append(row["error"])
+                    continue
+                try:
+                    row["attempted"] = True  # Retire retry authority before close.
+                    row["stream"].close()
+                except BaseException as error:
+                    row["error"] = error
+                    failures.append(error)
+            reader = self._reader
+            if reader is threading.current_thread():
+                failures.append(LinkPreviewWorkerError("link_preview.unavailable"))
+            elif reader is not None and reader.ident is not None:
+                try:
+                    reader.join(timeout=0.5)
+                    if reader.is_alive():
+                        failures.append(LinkPreviewWorkerError("link_preview.unavailable"))
+                except BaseException as error:
+                    failures.append(error)
+            if failures:
+                failure = LinkPreviewWorkerError("link_preview.unavailable")
+                failure._mentat_worker_close_errors = tuple(failures)
+                raise failure from failures[0]
+            self._reader = None
+            self._process = None
+        except BaseException as error:
+            state["failure"] = error
+            raise
+
+    def _process_for_request(self):
+        with self._lifecycle_lock:
+            try:
+                if self._shutdown:
+                    raise LinkPreviewWorkerError("link_preview.unavailable")
+                process = self._process
+                stopped = (process is None or process.stdin is None)
+                if not stopped:
+                    stopped = (process.poll() is not None if os.name == "nt"
+                               else self._posix_exited_without_reaping(process))
+                if stopped:
+                    self.replace()
+                    process = self._process
+                if self._shutdown or process is None or process.stdin is None:
+                    raise LinkPreviewWorkerError("link_preview.unavailable")
+                return process
+            except BaseException as error:
                 self._shutdown = True
-                raise LinkPreviewWorkerError("link_preview.unavailable")
-        self._reader = None
-        self._process = None
+                error._mentat_worker_owner = self
+                raise
 
     def replace(self) -> None:
         with self._lifecycle_lock:
@@ -229,14 +354,7 @@ class _WorkerSlot:
 
     def execute(self, *, kind: str, url: str) -> dict[str, object]:
         with self._lock:
-            if self._shutdown:
-                raise LinkPreviewWorkerError("link_preview.unavailable")
-            process = self._process
-            if process is None or process.poll() is not None or process.stdin is None:
-                self.replace()
-                process = self._process
-            if process is None or process.stdin is None:
-                raise LinkPreviewWorkerError("link_preview.unavailable")
+            process = self._process_for_request()
             request_id = secrets.token_hex(16)
             body = json.dumps({"id": request_id, "kind": kind, "url": url}, separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
             if len(body) > 4 * 1024:
@@ -244,7 +362,7 @@ class _WorkerSlot:
             try:
                 process.stdin.write(body)
                 process.stdin.flush()
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError, ValueError):
                 self.replace()
                 raise LinkPreviewWorkerError("link_preview.unavailable")
             started = self._clock()
