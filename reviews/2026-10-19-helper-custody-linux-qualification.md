@@ -294,3 +294,38 @@ no synthetic owner review, forced update or primary/PR330/PR331 change occurred.
 This is not a native retry or cleanup action on the original held session. No
 new staging, host call, helper execution, loader/FUSE/runtime/provider readiness
 or actual Linux positive qualification is claimed by these portable checks.
+
+## Actual Linux nonexecuting custody positive
+
+One authorized run on non-root Ubuntu 26.04 amd64 under WSL2 passed using the
+complete staged e554be5 source snapshot and its compiled e861743 production graph.
+The selected controller interpreter was Python 3.14.4; this does not change the
+separate runtime Python contract. The driver completed in 708 ms and the local
+result capture in 3,522 ms, with timely capture inside the original acceptance
+limit. It observed 17 sealed regular members and ten aliases: thirteen members
+from the signed library archive chain and four compiled-helper-pin members.
+
+The real acquisition, peer-credential checks and descriptor transfer, sealed-byte reads, fixed
+bwrap offset check, source/input rechecks and release completed. The driver
+reported cleanup verified, no retained owner and no need to keep its session
+open. Independent result review preceded the authorized normal finish; the
+finish and exact-child terminal receipts then recorded exit0 and verified
+cleanup. Both controllers completed the reviewed normal finish path.
+
+Private evidence is retained in `mentat-custody-e554-native-first-result.json`,
+`mentat-custody-e554-native-finish-tool-result.json` and
+`mentat-custody-e554-native-terminal.json`, with independent result review. The
+old 13a pre-acquisition refusal remains a failure in preserved evidence; its
+separately authorized retirement does not relabel that attempt as successful.
+
+This evidence binds the actual e554be5 staged snapshot, not an entire later
+Git head. The acceptance update after e554be5 changes this review document only;
+production, qualifier, tests, baseline447 and scanner bytes are unchanged. No
+full, portable or native run was repeated for the documentation update.
+
+Execution, freshness and hostile-case qualification flags all remain false.
+The four helpers retain their compiled-pin classification here; separate helper
+archive-to-installed-byte authentication is not supplied by this result or by
+local nine-input preparation. Immutable loader/helper execution, FUSE privilege
+and teardown, broader isolation, dependency/provider/account qualification and
+production Run admission remain independent gates.
