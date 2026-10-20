@@ -181,7 +181,7 @@ class CurrentSnapshotRetryTests(unittest.TestCase):
                 def unstable(path, *args, **kwargs):
                     raw = original(path, *args, **kwargs)
                     resources = kwargs['current_resources']; self.assertIsNotNone(resources.main)
-                    details = path.stat(); os.utime(path, ns=(details.st_atime_ns, details.st_mtime_ns + 1))
+                    details = path.stat(); os.utime(path, ns=(details.st_atime_ns, details.st_mtime_ns + 2_000_000_000))
                     captures.append(resources.main[1]); return raw
                 with patch.object(db, '_read_existing_database_file', side_effect=unstable), patch.object(db.time, 'sleep') as pause:
                     with self.assertRaisesRegex(db.MentatDatabaseError, 'content changed'): db.validate_current_database_root(root)
