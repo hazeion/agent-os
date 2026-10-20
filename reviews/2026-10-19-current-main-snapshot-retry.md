@@ -67,3 +67,12 @@ These local results do not qualify native Windows resources, Linux namespace
 isolation, a later full aggregate, packaging or actual UI acceptance. The old
 QA262 failure remains recorded. No actual app/browser/provider launch is part
 of this change. Final full-suite and native-platform gates remain separate.
+
+The later full fc4 inventory also found one pre-existing current-WAL regression
+asserting the retired generic immediate-change error. Its mutation remains the
+same real source write during each WAL capture. The fixture now expects current
+admission to exhaust exactly three captures and the original two pauses, then
+refuse with the fixed content-change error. It also requires that an unstable
+capture never reaches private-copy materialization. Production code, source
+mutation, schema checks and all budgets remain unchanged. This source-only
+follow-up has not yet been executed; the failed fc4 run remains recorded.

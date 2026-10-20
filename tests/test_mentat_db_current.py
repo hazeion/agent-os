@@ -326,9 +326,14 @@ class MentatDatabaseCurrentTests(unittest.TestCase):
                     target.seek(-1, os.SEEK_END)
                     target.write(b'!')
                 return result
-            with patch.object(mentat_db, '_read_wal_prefix', side_effect=changed_main):
-                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'changed while reading'):
+            with patch.object(mentat_db, '_read_wal_prefix', side_effect=changed_main) as captures, \
+                    patch.object(mentat_db.time, 'sleep') as pause, \
+                    patch.object(mentat_db, 'TemporaryDirectory', side_effect=AssertionError('unstable capture materialized')) as copies:
+                with self.assertRaisesRegex(mentat_db.MentatDatabaseError, 'content changed during validation'):
                     mentat_db.validate_current_database_root(self.root)
+            self.assertEqual(captures.call_count, 3)
+            self.assertEqual(pause.call_args_list, [unittest.mock.call(mentat_db.DATABASE_OPEN_RETRY_SECONDS)] * 2)
+            copies.assert_not_called()
 
     def test_unsupported_wal_and_absent_shm_do_not_create_or_modify_source(self):
         for version in (45, 47):
