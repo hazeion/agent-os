@@ -173,3 +173,47 @@ unknown-slot close. Imports/preflight must preserve the original stdio baseline,
 and final cleanup still compares it. Portable negatives retain the original
 probe exception and require an open foreground session rather than a cleanup
 claim. This follow-up remains source-only and unexecuted.
+
+## Portable verification and explicitly approved public-hash baseline
+
+The single authorized portable module at source checkpoint fa231d5 passed all
+28 methods in 0.072 seconds, with no skips, using the existing private Python
+environment, `-B` and ResourceWarnings as errors. OS/API/module substitutions are
+explicit. Log: `/private/tmp/mentat-helper-custody-driver-fa231-portable.log`.
+No real Linux custody, host contact, helper execution or limit change occurred.
+
+The unchanged tracked-secret gate first FAILED with 180 new Hex High Entropy
+rows. That failure remains preserved in
+`/private/tmp/mentat-helper-custody-driver-fa231-secret.log`; it is not rewritten
+as a pass. Root and two independent reviewers classified every row: 178 fixed
+public fc4 Git blob identities, the public source commit and its repeated test
+literal. Each path, size, object ID and detector fingerprint was checked against
+immutable Git data and the exact reviewed source. There were no unclassified
+values. The classification and additive application proofs are retained at:
+
+- `/private/tmp/mentat-helper-custody-driver-fa231-public-hash-proof.json`
+- `/private/tmp/mentat-helper-custody-fa231-independent-public-hash-proof.json`
+- `/private/tmp/mentat-helper-custody-baseline-application-proof.json`
+
+Automatic approval review initially rejected applying baseline exemptions without
+explicit human authorization. No rejected command executed, and the clean source,
+original baseline and failure log were preserved. The user subsequently gave
+this exact approval:
+
+> I approve adding the 180 verified public Git hashes to the secret-scan baseline.
+> Keep the scanner rules unchanged and continue with anything we can finish while
+> I get the Linux host ready.
+
+Only the exact reviewed proposal is applied: all 264 original records and all
+non-results metadata remain unchanged; exactly 180 reviewed `is_secret: false`
+records bring the total to 444. Tool/test bytes remain exact fa231d5. No detector,
+filter, threshold, exclusion, encoding, production or package change accompanies
+this baseline update. The unchanged gate will run once on this prepared commit;
+its terminal result must be recorded separately from the original failure.
+
+CODEOWNERS `@hazeion` normal GitHub review policy remains in effect. The explicit
+user permission to prepare this change is not a fabricated GitHub review, merge
+or publication approval. No baseline addition is a dependency or execution waiver.
+The foreground launcher and real Linux positive qualification remain separately
+unapproved and unperformed. Immutable loader/FUSE/runtime/provider readiness and
+hostile native qualification cases remain open.
