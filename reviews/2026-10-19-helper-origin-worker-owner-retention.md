@@ -39,8 +39,9 @@ at the missing exception-context/owner-chain assertions in 0.344 seconds, with
 process exit 1. The fixed-source run returned verified process/tool exit 0; both
 commands recorded their owned Python PIDs before waiting and retained their logs.
 
-No native operation, host call or secret scan ran for this change. The final
-unchanged scan is held until the reviewed documentation base is merged. Separate
+No native operation or host call ran during this focused verification. Final
+publication checks run after the documentation base is merged and are recorded
+against that final PR head. Separate
 nine-input staging/foreground preparation remains paused pending the final source
 review. The earlier custody positive, guarded finish, controller retirement and
 old failed-report history remain separate evidence. No qualifier/source pin or
