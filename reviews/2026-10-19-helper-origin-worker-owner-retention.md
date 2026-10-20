@@ -32,8 +32,8 @@ new ownership regressions passed. The actual Linux class and operator native
 fixture inputs were not enabled.
 
 The separate old-source control used an exact `e554be5` Git archive with only the
-four new methods inserted into its existing test classes. All other 1,141 tracked
-blobs matched the original tree, except those two deliberate test overlays; all
+four new methods inserted into its existing test classes. All 1,141 tracked paths
+matched their original blobs except those two deliberate test overlays; all
 original test ASTs remained exact. Only the four new methods ran: all four failed
 at the missing exception-context/owner-chain assertions in 0.344 seconds, with
 process exit 1. The fixed-source run returned verified process/tool exit 0; both
