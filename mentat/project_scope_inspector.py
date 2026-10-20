@@ -9,7 +9,6 @@ import threading
 import time
 
 from link_preview_workers import _WorkerSlot, minimal_worker_environment
-from mentat.project_scope_readback import ScopeObservation
 
 _REASONS = {
     'matching_populated': {'launcher_matching', 'launcher_unverified'},
@@ -75,6 +74,8 @@ def _command():
 
 def inspect_scope(data_root, *, run_id, generation, expected_revision):
     """Observe exact private committed state, never execute/recover a Run."""
+    from mentat.project_scope_readback import ScopeObservation
+
     if (sys.platform!='linux' or not isinstance(data_root,Path) or not data_root.is_absolute()
             or len(str(data_root).encode())>1024 or not isinstance(run_id,str)
             or re.fullmatch(r'run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}',run_id) is None
