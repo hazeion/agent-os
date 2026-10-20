@@ -27,7 +27,31 @@ Another regression substitutes the invocation-local FFI module and verifies that
 a four-byte native long still refuses before file or process operations. Existing
 Linux ordinary-directory `fstatfs` refusal and scope behavior tests are unchanged.
 
-Source checkpoint only: no test, native operation, host call, new custody attempt,
-original-session reconciliation or staging overwrite has been performed for this
-change. The qualification tool's fixed source pins and baseline fingerprints stay
-at their existing values; a later reviewed candidate requires explicit repinning.
+Verification on the reviewed source checkpoint:
+
+- The focused `WorkerScopeContractTests` class passed all six methods in 1.083
+  seconds, with no skips and ResourceWarnings treated as errors. Its four isolated
+  import subcases and constructor width refusal all passed.
+- The exact old-source archive ran only the unchanged new fresh-import method.
+  All four module subcases failed specifically at the old global `import ctypes`,
+  with process exit 1. All 1,140 original tracked blobs were verified unchanged
+  except the intentionally replaced test file; the constructor mock was not run
+  against the old implementation.
+- The unchanged tracked-secret gate passed with process exit 0 and the existing
+  444-entry baseline unchanged.
+
+The initial focused run's log recorded six passing methods, but its tool session
+handle and wrapper exit were not retained. That exit remains unverified. After
+root independently established that the original process and wrapper were absent,
+root authorized one controlled confirmation solely to resolve this evidence gap.
+The confirmation recorded its owned Python PID before waiting, persisted exit 0,
+and returned authoritative tool exit 0. It was not a timeout or test-failure retry.
+The original log, separate confirmation log, old-source failures and scan evidence
+remain preserved.
+
+These are portable focused checks, not native Linux qualification. The original
+retained session remains blocked before acquisition, with its original uncertainty
+and report unchanged. No new custody attempt, host call, reconciliation or staging
+overwrite was performed for this change. The qualification tool's fixed source
+pins and baseline fingerprints stay at their existing values; a separately
+reviewed qualifier repin is still pending. GitHub CI and merge are outstanding.
