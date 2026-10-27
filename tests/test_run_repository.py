@@ -36,7 +36,11 @@ from run_repository import (
     runtime_binding_digest,
 )
 from task_repository import TaskRepository, TaskRepositoryConflict
-from tests.sqlite_authority_support import ensure_run_sqlite_authority
+from tests.sqlite_authority_support import (
+    THREAD_TIMEOUT,
+    drain_workers,
+    ensure_run_sqlite_authority,
+)
 
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
@@ -706,7 +710,7 @@ class RunRepositoryTests(unittest.TestCase):
             def append():
                 connection = connect(root)
                 try:
-                    barrier.wait(timeout=5)
+                    barrier.wait(timeout=THREAD_TIMEOUT)
                     results.append(RunRepository(connection).append_event(event))
                 except Exception as exc:  # pragma: no cover - surfaced below
                     errors.append(exc)
@@ -714,11 +718,13 @@ class RunRepositoryTests(unittest.TestCase):
                     connection.close()
 
             workers = [threading.Thread(target=append) for _ in range(2)]
-            for worker in workers:
-                worker.start()
-            barrier.wait(timeout=5)
-            for worker in workers:
-                worker.join(timeout=5)
+            with drain_workers(workers):
+                for worker in workers:
+                    worker.start()
+                barrier.wait(timeout=THREAD_TIMEOUT)
+                for worker in workers:
+                    worker.join(timeout=THREAD_TIMEOUT)
+                self.assertTrue(all(not worker.is_alive() for worker in workers))
             connection = connect(root)
             try:
                 repository = RunRepository(connection)
@@ -727,7 +733,6 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertTrue(all(not worker.is_alive() for worker in workers))
         self.assertEqual(errors, [])
         self.assertCountEqual(results, [True, False])
         self.assertEqual(len(events), 1)
@@ -1681,7 +1686,7 @@ class RunRepositoryTests(unittest.TestCase):
                         (task["id"],),
                     )
                     mutation_ready.set()
-                    if not release_mutation.wait(timeout=5):
+                    if not release_mutation.wait(timeout=THREAD_TIMEOUT):
                         raise TimeoutError("mutation release timed out")
                     mutation_connection.commit()
                 except Exception as exc:  # pragma: no cover - surfaced below
@@ -1707,22 +1712,22 @@ class RunRepositoryTests(unittest.TestCase):
 
             mutator = threading.Thread(target=mutate_task)
             claimant = threading.Thread(target=claim_dispatch)
-            mutator.start()
-            self.assertTrue(mutation_ready.wait(timeout=5))
-            claimant.start()
-            self.assertTrue(claim_started.wait(timeout=5))
-            release_mutation.set()
-            mutator.join(timeout=5)
-            claimant.join(timeout=5)
+            with drain_workers([mutator, claimant], release_mutation):
+                mutator.start()
+                self.assertTrue(mutation_ready.wait(timeout=THREAD_TIMEOUT))
+                claimant.start()
+                self.assertTrue(claim_started.wait(timeout=THREAD_TIMEOUT))
+                release_mutation.set()
+                mutator.join(timeout=THREAD_TIMEOUT)
+                claimant.join(timeout=THREAD_TIMEOUT)
 
+                self.assertTrue(all(not worker.is_alive() for worker in [mutator, claimant]))
             connection = connect(root)
             try:
                 stored = RunRepository(connection).get_run(reservation.run_id)
             finally:
                 connection.close()
 
-        self.assertFalse(mutator.is_alive())
-        self.assertFalse(claimant.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(stored.status, "reserved")
 
