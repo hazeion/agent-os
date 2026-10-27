@@ -249,24 +249,35 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
 
     def test_simultaneous_http_duplicates_accept_exactly_once(self):
-        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        class DuplicateHTTPServer(server.ThreadingHTTPServer):
+            # Eight simultaneous clients must not test the OS listen backlog.
+            request_queue_size = 16
+            daemon_threads = False
+            block_on_close = True
+
+        httpd = DuplicateHTTPServer(("127.0.0.1", 0), server.Handler)
         thread = Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         body, headers = self.request(delivery="concurrent-http")
 
+        barrier = threading.Barrier(8)
+
         def deliver(_):
-            connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=5)
-            connection.request(
-                "POST",
-                "/api/integrations/hermes/webhooks/v1/local-default",
-                body,
-                headers,
-            )
-            response = connection.getresponse()
-            status = response.status
-            response.read()
-            connection.close()
-            return status
+            connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=60)
+            try:
+                barrier.wait(timeout=60)
+                connection.request(
+                    "POST",
+                    "/api/integrations/hermes/webhooks/v1/local-default",
+                    body,
+                    headers,
+                )
+                response = connection.getresponse()
+                status = response.status
+                response.read()
+                return status
+            finally:
+                connection.close()
 
         try:
             with patch.dict(
@@ -283,7 +294,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
-            thread.join(timeout=3)
+            thread.join()
 
     def test_rate_limit_returns_429_without_deduplicating_retry(self):
         server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter(
