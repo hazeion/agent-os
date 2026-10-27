@@ -910,6 +910,7 @@ button {
 .planning-review-actions > div,
 .planning-run-once-confirmation > div,
 .planning-review-actions form > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.planning-run-once-confirmation > .planning-run-objective { display: block; min-width: 0; max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); font-size: .8rem; }
 .planning-review-actions form { display: grid; gap: 6px; }
 .planning-review-actions label { display: grid; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
 .planning-review-actions textarea { width: 100%; min-height: 72px; resize: vertical; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
