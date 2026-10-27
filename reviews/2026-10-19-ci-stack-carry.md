@@ -13,6 +13,7 @@ passing ancestor as current-head acceptance.
 | 245 | `6e223ab` | `4cd6b44` | Same dependency-only conflict resolution. Preserve responsive Task inspection and transcript changes. Carry the existing reviewed header-only bridge-refusal fixture and urllib3 2.8.0 locks; the historical security failure is the old 2.7.0 lock audit, not a secret finding. All 57 Node-contract and complete bridge route-class tests pass. |
 | 247 | `dcd1516` | `c387bc3` | Dependency-only conflict resolution; verifier code/tests/artifact rules unchanged. Recover missing parent Caddy drain, auth window, orchestration worker cleanup and bridge-refusal fixtures. Two independent carry reviews clear. All 13 identity/Node tests and all 122 Caddy/orchestration/auth tests pass with original deadlines and assertions. |
 | 249 | `305ed65` | `0461b93` | Same guarded dependency-only resolution; fixed-host transport, worker and identity implementations unchanged. Inherited fixtures match the reviewed parent. All 24 token/JWK transport, identity and Node-contract tests pass without credentials or owner services. |
+| 252 | `0e73d84` | `a50605f` | Guarded dependency-only conflicts; all other inherited changes are the reviewed shared repair/fixtures. Original feature code unchanged. 44 targeted Node/feature tests pass; no skips. Hosted and integrated acceptance remain pending. |
 
 The foundation's two independent reviews, 371 web tests, production build,
 32 registry/Node tests, fresh zero-vulnerability npm audit and tracked-secret
