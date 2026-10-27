@@ -92,30 +92,161 @@ Existing earlier repairs
   a reason to suppress Windows cleanup errors. Other workers still needed their
   own explicit ownership, as the reproduced reconciler failure demonstrates.
 
-Remaining high-risk scan findings
+Round 2 fixes
 
-- test_orchestration_service: test_preacceptance_partial_completion_blocks_fifo_successor
-  and test_concurrent_duplicate_and_competing_dispatches_invoke_runtime_once retain
-  five-second gate/join assumptions and lack the new finally drain. The shutdown
-  continuation test releases its gate in finally but does not join there.
-- test_run_repository: test_concurrent_identical_event_append_commits_once and
-  test_concurrent_task_commit_wins_before_claim_and_blocks_stale_attempt use short
-  barrier/join budgets and inspect liveness after leaving the temporary root.
-- test_link_preview_service.test_cache_clear_linearizes_after_a_final_store_and_removes_it
-  has two-second event waits and a clear thread joined only on its success path.
-- Five other Vercel transport checks still use 500 ms elapsed assertions; the
-  Hermes refresh coordinator also has a 250 ms assertion. Keep their deadline
-  properties, but consider controlled clocks or explicit interruption evidence.
-- Several namespace HTTP fixtures use two-second sockets/joins. They deserve
-  Windows/slow-host scrutiny, though many are platform-gated.
-- A search found no remaining plain `with connect(...)` or `with sqlite3.connect(...)`
-  test contexts that mistake SQLite transaction exit for closing a connection.
-  Sampled inspection connections use closing, finally-close or LIFO addCleanup.
-  An AST scan of direct sqlite3.connect assignments found one ownership-returning
-  helper, test_project_proposal_source_guards._current_with_runs: callers close
-  its returned connection, but an exception during fixture SQL before the return
-  has no local close. This is a remaining failure-path cleanup risk.
-  This is a targeted scan, not proof that every connection in tests is closed.
+Round 2 continues in /tmp/aos-ci-flaky on ci-investigate/flaky. All work remains
+local. No GitHub requests, pushes, PR edits, Actions triggers or workflow changes
+were made in this round. Product code is unchanged.
+
+- Moved the round-1 drain_workers context and THREAD_TIMEOUT into the existing
+  tests/sqlite_authority_support.py helper. The partial preacceptance, duplicate
+  task dispatch and shutdown continuation fixtures now release their gates and
+  join started workers on every exit before temporary-root cleanup. Shutdown
+  drains inside the patched runtime/global context before restoring it. The
+  ordering-failure regression now covers these three call sites as well as the
+  original two, with liveness observed before cleanup and a rescue drain.
+- Both concurrent Run repository fixtures use 60-second coordination watchdogs,
+  retain their barriers and gate ordering, assert liveness inside the temporary
+  root, and unconditionally drain started workers before cleanup. Event commit
+  counts, stale-task rejection and stored-state assertions remain.
+- The link-preview final-store/cache-clear fixture retains the linearization,
+  empty-cache and unavailable-preview assertions. Its coordination watchdogs are
+  60 seconds, and finally releases both gates and joins any started clear thread
+  before closing the service and removing its root.
+- The five remaining Vercel elapsed assertions now inspect deadline budgets and
+  interruption. DNS must wait exactly its 20 ms phase budget and return while
+  resolution is still blocked, without constructing a connection. Its resolver
+  is released and joined on all exits. TLS, write, headers and both body ownership
+  variants fix the setup clock and require a real Timer with exactly the original
+  50 ms absolute budget. Their blocking operations require verified closure to
+  return. The existing timeout, detached-socket and secret-redaction assertions
+  remain. The round-1 advancing-clock connect test still verifies budget consumed
+  by DNS/setup is subtracted. No deadline is replaced with a longer product budget.
+- Hermes refresh shutdown observes an exact join(0.05), requires stop to report
+  False while the refresh worker is still blocked, then releases and stops it in
+  finally. Restart reconciliation assertions remain. Scheduling delays no longer
+  turn a valid 50 ms shutdown request into a failed 250 ms performance assertion.
+- _current_with_runs closes its new connection if fixture SQL or commit raises.
+  A regression injects both failure modes and requires one close plus propagation
+  of the original error.
+- The three namespace HTTP fixtures that run on macOS and Windows now own clients
+  through ExitStack plus closing, use 60-second socket/fixture watchdogs, retain
+  timed liveness assertions and finally drain server/broker workers. The broker
+  endpoints are shut down before closing to interrupt blocked socket reads on
+  failure. Route rejection, no broker bytes, SSE output, exact request bytes,
+  image validation and response assertions remain. LinuxNamespaceTests is already
+  class-gated on IS_LINUX; its separate two-second namespace broker join remains
+  unchanged. No skips were added.
+
+Round 2 verification
+
+Validation uses /tmp/aos-ci-round2-venv, CPython 3.13.14, with all requirements.txt
+dependencies installed, including argon2-cffi. No venv was created in the repo.
+Fresh TestCase instances and private roots are created on every stress repetition.
+Two stress processes overlap the complete touched-module run, and the extended
+cleanup/namespace stress overlaps the slower worker group.
+
+Implementation commits: dccf983, test: harden remaining CI fixture ownership and
+deadline checks; 0e086b5, test: assert deadline interruption outside transport
+exception handling.
+
+- Worker group: six tests, 30 repetitions each, 180/180 passed in 223.742 s.
+- Transport, refresh, HTTP namespace and connection-close group: nine tests,
+  30 repetitions each, 270/270 passed in 60.089 s.
+- Final expanded ordering-failure regression and final namespace fixtures:
+  four tests, 30 repetitions each, 120/120 passed in 239.948 s. Each cleanup
+  regression repetition covers five injected call-site failures.
+- Final DNS resolver ownership: another 30/30 passed in 1.194 s.
+- Final transport review strengthened interruption checks again: each fake
+  blocked operation records its wait result, and the test asserts the exact
+  successful-interruption list outside product exception handling. An assertion
+  raised inside a fake transport could otherwise be caught by production code.
+  These three tests passed another 90/90 executions in 8.828 s, followed by the
+  full Vercel module, 17/17 passed in 0.410 s.
+- Total reported stress executions: 690/690 passed, no errors or skips.
+- Complete touched-module run: 248 tests in 259.132 s, 237 passed and 11 existing
+  Linux-only namespace checks skipped. The strengthened ordering regression,
+  final namespace join assertions and final DNS drain were also stressed after
+  that run loaded its modules. Full discovery below loaded dccf983; the extra
+  interruption assertions in 0e086b5 were validated separately by the final
+  90-execution stress run and complete Vercel module.
+- In-memory mutations: increasing the Vercel timer budget fails the TLS,
+  write/header and body tests; increasing DNS wait fails its budget assertion;
+  doubling refresh shutdown join fails its exact-budget assertion. Removing the
+  shared drain fails all five ordering-cleanup subtests. No mutated file was
+  written to the repository.
+- Compilation of all eight changed Python files and git diff --check passed.
+
+The initial development smoke run had four failures and four errors among
+62 tests, with 11 existing skips. Three errors came from using HTTPConnection
+as a context manager instead of wrapping it in closing; one came from missing
+argon2 in the system Python before the venv was ready. Four failures showed
+that real SSL setup could consume the short transport budget before its test
+phase. Those fixtures were corrected. A following transport-only development
+run had one failed DNS-observation assertion because it observed the wrong
+Event; that was corrected to inspect the exact timed wait and its 20 ms phase
+budget. These were development/test-environment failures, not pre-existing
+product failures. Subsequent venv runs passed.
+
+The requested full discovery was run once:
+
+    /tmp/aos-ci-round2-venv/bin/python -m unittest discover -s tests
+
+It completed 2,793 tests in 1,467.550 s with 16 failures, 19 errors and 131
+existing skips. The subprocess wall time, including collection/import, was
+1,478.559 s. This was not a green full-suite run.
+
+Every failure/error record was reproduced on the round-1 commit, 1cc4bd2,
+using a clean tracked-source snapshot, the same venv, and matching ambient
+private-root state. Three baseline runs covered 164 tests and reproduced the
+same 16 failure and 19 error records. Comparing the normalized record lists,
+including subtest labels, found 35 identical records and no unmatched record.
+The breakdown is:
+
+- Eleven failures depended on a zero-byte ignored database at
+  data/private/console/mentat.sqlite3. Affected cases were cron inventory;
+  four Dashboard Agent Console validation/dispatch cases; profile-creation/run
+  exclusion; legacy runtime routing; local-unavailable validation order;
+  two Local Bridge startup/lifecycle cases; and remote continuation validation.
+  Storage correctly failed closed, changing the response/status these tests
+  expected. The same ambient file also caused eleven error records in the
+  Hermes refresh server-adapter tests, including their malformed-input subtests.
+  The clean baseline refresh module passed 21/21 without the file and reproduced
+  all eleven errors after matching the zero-byte file. No private database was
+  removed or rewritten in the implementation worktree to hide these results.
+- Five failures and seven errors in test_project_runtime_dependencies came from
+  missing development tooling: packaging and the fixed pip-audit 2.10.1 auditor
+  are not installed by requirements.txt. The same 12 records reproduced on the
+  baseline. After installing packaging 26.2 and pip-audit 2.10.1 in the external
+  venv, the complete dependency module passed 18/18 in 1.780 s. pip check passed.
+  Runtime requirements and repository dependency files were not changed.
+- One error was test_run_stop_control.RunStopControlTests.
+  test_confirm_reconciles_the_exact_run_when_adapter_does_not_write_sqlite,
+  raising run.stop_partial. It reproduced on the baseline under the same
+  conditions. Its underlying cause was not isolated further in this round.
+
+The baseline comparisons used the complete refresh module, six modules covering
+cron/Dashboard/profile-deletion/skills/transport/Local Bridge, and a final run of
+the remaining four exact cases plus the dependency module. Full discovery was
+not rerun after these comparisons. The final Vercel assertion-only follow-up is
+covered by its separate final stress and complete-module run above.
+
+No failure in the requested hardened test methods was observed in final
+validation, and no product race requiring a production change was established.
+
+Remaining risks
+
+Windows and Linux were not available for this round. Existing Linux-only namespace
+checks remain gated and unverified here. The retained Linux two-second join and
+other short waits outside the requested scan remain follow-up candidates.
+The full-suite results also expose tests that depend on ambient private-root
+state, missing development-tool setup when only requirements.txt is installed,
+and the baseline run.stop_partial error. These need separate follow-up; the
+full suite must not be described as green.
+The shared final drain intentionally has no short timeout, so a true deadlock
+needs an outer process watchdog rather than deleting in-use fixture resources.
+These changes address fixture ownership and deadline measurement; they do not
+resolve the independent historical shard/backup runtime issues described below.
 
 CI configuration
 
