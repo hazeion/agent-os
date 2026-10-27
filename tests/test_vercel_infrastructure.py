@@ -647,6 +647,7 @@ class VercelInfrastructureTests(unittest.TestCase):
         self.assertNotIn(AUTHORIZATION_SECRET_CANARY, exception_graph_text(error))
 
     def test_transport_publishes_tls_socket_before_blocking_handshake(self):
+        interruptions = []
         raw_sockets = []
         tls_sockets = []
 
@@ -668,7 +669,7 @@ class VercelInfrastructureTests(unittest.TestCase):
                 return None
 
             def do_handshake(self):
-                assert self.closed.wait(60), "deadline did not close transport"
+                interruptions.append(self.closed.wait(60))
                 raise OSError(AUTHORIZATION_SECRET_CANARY)
 
             def shutdown(self, _how):
@@ -738,8 +739,10 @@ class VercelInfrastructureTests(unittest.TestCase):
         self.assertFalse(context.assertions["do_handshake_on_connect"])
         self.assertEqual(context.assertions["server_hostname"], "api.vercel.com")
         self.assertNotIn(AUTHORIZATION_SECRET_CANARY, exception_graph_text(error))
+        self.assertEqual(interruptions, [True])
 
     def test_transport_write_and_header_phases_obey_the_absolute_deadline(self):
+        interruptions = []
         class SocketStub:
             def settimeout(self, _value):
                 return None
@@ -756,11 +759,11 @@ class VercelInfrastructureTests(unittest.TestCase):
 
                     def request(self, *_args, **_kwargs):
                         if phase == "write":
-                            assert self.closed.wait(60), "deadline did not close transport"
+                            interruptions.append(self.closed.wait(60))
                             raise OSError(AUTHORIZATION_SECRET_CANARY)
 
                     def getresponse(self):
-                        assert self.closed.wait(60), "deadline did not close transport"
+                        interruptions.append(self.closed.wait(60))
                         raise OSError(AUTHORIZATION_SECRET_CANARY)
 
                     def close(self):
@@ -793,8 +796,10 @@ class VercelInfrastructureTests(unittest.TestCase):
                     AUTHORIZATION_SECRET_CANARY,
                     exception_graph_text(error),
                 )
+        self.assertEqual(interruptions, [True, True])
 
     def test_transport_body_phase_obeys_deadline_and_errors_drop_secret_locals(self):
+        interruptions = []
         class SlowResponse:
             status = 200
             headers = {
@@ -806,7 +811,7 @@ class VercelInfrastructureTests(unittest.TestCase):
                 self.closed = closed
 
             def read(self, _size):
-                assert self.closed.wait(60), "deadline did not close transport"
+                interruptions.append(self.closed.wait(60))
                 raise OSError(AUTHORIZATION_SECRET_CANARY)
 
             def close(self):
@@ -879,7 +884,7 @@ class VercelInfrastructureTests(unittest.TestCase):
                 self.transport = transport
 
             def read(self, _size):
-                assert self.transport.closed.wait(60), "deadline did not close detached transport"
+                interruptions.append(self.transport.closed.wait(60))
                 raise OSError(AUTHORIZATION_SECRET_CANARY)
 
             def close(self):
@@ -1006,6 +1011,7 @@ class VercelInfrastructureTests(unittest.TestCase):
         sandbox_graph = exception_graph_text(sandbox_error)
         self.assertNotIn(RAW_PROVIDER_SECRET_CANARY, sandbox_graph)
         self.assertNotIn(MANAGEMENT_SECRET_CANARY, sandbox_graph)
+        self.assertEqual(interruptions, [True, True])
 
 
 if __name__ == "__main__":
