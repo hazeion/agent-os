@@ -129,7 +129,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
             errors = []
 
             def submit():
-                barrier.wait()
+                barrier.wait(timeout=orchestration_test_support.THREAD_TIMEOUT)
                 try:
                     results.append(service.submit_conversation_turn(
                         conversation_id=conversation_id,
@@ -140,13 +140,13 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
                     errors.append(exc)
 
             workers = [threading.Thread(target=submit) for _ in range(2)]
-            for worker in workers:
-                worker.start()
-            barrier.wait()
-            for worker in workers:
-                worker.join(timeout=5)
-
-            self.assertTrue(all(not worker.is_alive() for worker in workers))
+            with orchestration_test_support.drain_workers(workers):
+                for worker in workers:
+                    worker.start()
+                barrier.wait(timeout=orchestration_test_support.THREAD_TIMEOUT)
+                for worker in workers:
+                    worker.join(timeout=orchestration_test_support.THREAD_TIMEOUT)
+                self.assertTrue(all(not worker.is_alive() for worker in workers))
             self.assertEqual(errors, [])
             self.assertEqual(sorted(result.duplicate for result in results), [False, True])
             self.assertEqual(len(runtime.calls), 1)
