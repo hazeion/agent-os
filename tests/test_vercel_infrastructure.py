@@ -475,28 +475,62 @@ class VercelInfrastructureTests(unittest.TestCase):
         self.assertNotIn(AUTHORIZATION_SECRET_CANARY, exception_graph_text(error))
 
     def test_transport_connect_phase_obeys_the_absolute_deadline(self):
+        now = [100.0]
+        timers = []
+        connections = []
+
+        class DeadlineTimer:
+            def __init__(self, interval, callback):
+                self.interval = interval
+                self.callback = callback
+                self.started = False
+                self.cancelled = False
+                timers.append(self)
+
+            def start(self):
+                self.started = True
+
+            def cancel(self):
+                self.cancelled = True
+
         class SlowConnection:
             def __init__(self, *_args, **_kwargs):
                 self.sock = None
-                self.closed = threading.Event()
+                self.closed = False
+                connections.append(self)
+                # DNS and connection setup consume the original total budget.
+                now[0] += 0.01
 
             def connect(self):
-                self.closed.wait(1)
+                timer = timers[0]
+                if not timer.started:
+                    raise AssertionError("deadline timer must start before connect")
+                now[0] += timer.interval
+                timer.callback()
+                if not self.closed:
+                    raise AssertionError("deadline must interrupt the connection")
                 raise OSError(AUTHORIZATION_SECRET_CANARY)
 
             def request(self, *_args, **_kwargs):
                 raise AssertionError("credentials must not be sent before connect")
 
             def close(self):
-                self.closed.set()
+                self.closed = True
 
-        started = time.monotonic()
+        def resolve(*_args, **_kwargs):
+            now[0] += 0.01
+            return TEST_ADDRESSES, None
+
         with patch(
-            "vercel_infrastructure.http.client.HTTPSConnection",
-            SlowConnection,
+            "vercel_infrastructure.http.client.HTTPSConnection", SlowConnection,
         ), patch(
-            "vercel_infrastructure._resolve_before_deadline",
-            return_value=(TEST_ADDRESSES, None),
+            "vercel_infrastructure._resolve_before_deadline", side_effect=resolve,
+        ), patch(
+            "vercel_infrastructure.time.monotonic", side_effect=lambda: now[0],
+        ), patch(
+            "vercel_infrastructure.threading.Timer", DeadlineTimer,
+        ), patch(
+            "vercel_infrastructure.ssl.create_default_context", return_value=object(),
         ):
             error = capture_vercel_error(
                 lambda: fixed_https_request(
@@ -512,7 +546,12 @@ class VercelInfrastructureTests(unittest.TestCase):
                 )
             )
         self.assertEqual(error.code, "vercel.request_timeout")
-        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(len(timers), 1)
+        self.assertAlmostEqual(timers[0].interval, 0.03)
+        self.assertAlmostEqual(now[0], 100.05)
+        self.assertTrue(timers[0].cancelled)
+        self.assertEqual(len(connections), 1)
+        self.assertTrue(connections[0].closed)
         self.assertNotIn(AUTHORIZATION_SECRET_CANARY, exception_graph_text(error))
 
     def test_expired_timer_overrides_connect_unknown_classification(self):
