@@ -68,10 +68,7 @@ def candidate_fixture(*, source_requirements=(), wheel_requirements=None):
         yield root, artifacts, document, original_load, path
 
 
-AUDIT_PLATFORM = os.name == "posix" and all(
-    hasattr(os, name)
-    for name in ("waitid", "WNOWAIT", "WEXITED", "WNOHANG", "P_PID", "CLD_EXITED")
-)
+AUDIT_PLATFORM = dependencies.audit_platform_supported()
 
 
 @contextmanager

@@ -5,6 +5,7 @@ import http.client
 import json
 import socket
 import ssl
+from tests.sqlite_authority_support import drain_workers
 import threading
 import time
 import unittest
@@ -37,7 +38,7 @@ def observed_deadline_timer(test):
     """Fix setup time; require a real timer to interrupt at the 50 ms budget."""
     with patch("vercel_infrastructure.time.monotonic", return_value=100.0), patch(
         "vercel_infrastructure.ssl.create_default_context", return_value=object()
-    ), patch("vercel_infrastructure.threading.Timer", wraps=threading.Timer) as timer:
+    ), patch("vercel_infrastructure.Timer", wraps=threading.Timer) as timer:
         yield
     test.assertEqual(timer.call_count, 1)
     interval = timer.call_args.args[0]
@@ -475,11 +476,11 @@ class VercelInfrastructureTests(unittest.TestCase):
                     waits.append(timeout)
                 return super().wait(timeout)
 
-        try:
+        with drain_workers(workers, release):
             with patch("vercel_infrastructure.time.monotonic", return_value=100.0), patch(
-                "vercel_infrastructure.threading.Event", ObservedEvent
+                "vercel_infrastructure.Event", ObservedEvent
             ), patch(
-                "vercel_infrastructure.threading.Thread", side_effect=track_thread
+                "vercel_infrastructure.Thread", side_effect=track_thread
             ), patch.object(
                 socket, "getaddrinfo", side_effect=slow_dns
             ), patch(
@@ -500,14 +501,8 @@ class VercelInfrastructureTests(unittest.TestCase):
                     )
                 )
                 self.assertFalse(resolved.is_set())
-        finally:
             release.set()
-            try:
-                self.assertTrue(resolved.wait(60))
-            finally:
-                for worker in workers:
-                    if worker.ident is not None:
-                        worker.join()
+            self.assertTrue(resolved.wait(60))
         self.assertEqual(error.code, "vercel.request_timeout")
         self.assertEqual(len(waits), 1)
         self.assertAlmostEqual(waits[0], 0.02)
@@ -568,7 +563,7 @@ class VercelInfrastructureTests(unittest.TestCase):
         ), patch(
             "vercel_infrastructure.time.monotonic", side_effect=lambda: now[0],
         ), patch(
-            "vercel_infrastructure.threading.Timer", DeadlineTimer,
+            "vercel_infrastructure.Timer", DeadlineTimer,
         ), patch(
             "vercel_infrastructure.ssl.create_default_context", return_value=object(),
         ):
@@ -621,7 +616,7 @@ class VercelInfrastructureTests(unittest.TestCase):
             "vercel_infrastructure.http.client.HTTPSConnection",
             InterruptedConnection,
         ), patch(
-            "vercel_infrastructure.threading.Timer",
+            "vercel_infrastructure.Timer",
             ImmediateTimer,
         ), patch(
             "vercel_infrastructure._resolve_before_deadline",

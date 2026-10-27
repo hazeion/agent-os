@@ -6,7 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
-from tempfile import TemporaryDirectory
+from tests.sqlite_authority_support import TemporaryDirectory
 import threading
 import unittest
 from unittest.mock import patch

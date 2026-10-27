@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import traceback
-from tempfile import TemporaryDirectory
+from tests.sqlite_authority_support import TemporaryDirectory
 import threading
 import time
 from types import SimpleNamespace
@@ -3591,7 +3591,8 @@ class OrchestrationServiceTests(unittest.TestCase):
                     with patch.object(
                         sys.modules[__name__], "TemporaryDirectory", ObservedTemporaryDirectory,
                     ), patch.object(
-                        threading, "Thread", side_effect=track_thread,
+                        sys.modules[__name__], "threading",
+                        SimpleNamespace(Thread=track_thread, Event=threading.Event),
                     ), patch.object(
                         self, prepare_method, side_effect=track_prepare,
                     ), patch.object(

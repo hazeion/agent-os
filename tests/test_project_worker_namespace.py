@@ -14,7 +14,7 @@ import socket
 import struct
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tests.sqlite_authority_support import TemporaryDirectory
 import threading
 import time
 import unittest

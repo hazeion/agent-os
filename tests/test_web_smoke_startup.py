@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -15,7 +16,11 @@ class WebSmokeStartupTests(unittest.TestCase):
             chrome = root / "chrome"
             chrome.write_text("#!/bin/sh\necho 'synthetic Chrome startup refusal' >&2\nexit 23\n")
             chrome.chmod(0o700)
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                debug_port = listener.getsockname()[1]
             environment = dict(os.environ, CHROME_PATH=str(chrome),
+                               MENTAT_WEB_BROWSER_DEBUG_PORT=str(debug_port),
                                MENTAT_WEB_BROWSER_RUNTIME_DIR=str(root / "web-foundation-smoke-runtime"))
             result = subprocess.run([shutil.which("node"), "scripts/web_foundation_smoke.mjs"],
                                     cwd=Path(__file__).resolve().parents[1], env=environment,
@@ -23,5 +28,6 @@ class WebSmokeStartupTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Chrome exited before debug readiness (code=23", result.stderr)
             self.assertIn("synthetic Chrome startup refusal", result.stderr)
+            self.assertEqual(result.stderr.count("synthetic Chrome startup refusal"), 1)
             self.assertNotIn("Timed out waiting", result.stderr)
             self.assertFalse(any((root / "web-foundation-smoke-runtime").glob("run-*")))

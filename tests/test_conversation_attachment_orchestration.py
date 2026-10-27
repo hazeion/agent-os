@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tests.sqlite_authority_support import TemporaryDirectory
 import threading
 import unittest
 

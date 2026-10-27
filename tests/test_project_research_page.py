@@ -181,12 +181,15 @@ class PublicResearchWorkerTests(unittest.TestCase):
                 process.group_absent_checks += 1
                 raise ProcessLookupError()
 
-        with (patch.object(workers.os, "waitid", side_effect=observe, create=True),
-              patch.object(workers.os, "P_PID", 1, create=True),
-              patch.object(workers.os, "WEXITED", 4, create=True),
-              patch.object(workers.os, "WNOWAIT", 16, create=True),
-              patch.object(workers.os, "waitpid", side_effect=reap),
-              patch.object(workers.os, "killpg", side_effect=killpg) as signalled):
+        # Replace this module's os reference, never process-wide os functions.
+        local_os = SimpleNamespace(**vars(os))
+        with (patch.object(workers, "os", local_os),
+              patch.object(local_os, "waitid", side_effect=observe, create=True),
+              patch.object(local_os, "P_PID", 1, create=True),
+              patch.object(local_os, "WEXITED", 4, create=True),
+              patch.object(local_os, "WNOWAIT", 16, create=True),
+              patch.object(local_os, "waitpid", side_effect=reap),
+              patch.object(local_os, "killpg", side_effect=killpg) as signalled):
             yield signalled
 
     def test_raw_close_failure_attempts_every_slot_and_retains_pool_for_retry(self):
