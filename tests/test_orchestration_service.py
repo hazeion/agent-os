@@ -3560,6 +3560,52 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertIsNone(competing.run)
         self.assertEqual(len(runtime.calls), 1)
 
+    def test_conversation_ordering_assertion_failures_drain_before_root_cleanup(self):
+        for method in (
+            "test_concurrent_conversation_replay_and_competing_key_call_runtime_once",
+            "test_preacceptance_completion_waits_for_finalized_event_before_fifo",
+        ):
+            with self.subTest(method=method):
+                workers, runtimes, cleanup_liveness = [], [], []
+                original_thread = threading.Thread
+                original_temporary = TemporaryDirectory
+                original_prepare = self.prepare_conversation
+
+                def track_thread(*args, **kwargs):
+                    worker = original_thread(*args, **kwargs)
+                    workers.append(worker)
+                    return worker
+
+                def track_prepare(root, runtime):
+                    runtimes.append(runtime)
+                    return original_prepare(root, runtime)
+
+                class ObservedTemporaryDirectory(original_temporary):
+                    def __exit__(temporary, *args):
+                        cleanup_liveness.append(any(w.is_alive() for w in workers))
+                        # Observe first, then rescue the fixture if cleanup
+                        # regresses, so this regression cannot leak its own root.
+                        for runtime in runtimes:
+                            runtime.submit_release.set()
+                        for worker in workers:
+                            if worker.ident is not None:
+                                worker.join()
+                        return super().__exit__(*args)
+
+                with self.assertRaisesRegex(AssertionError, "injected ordering failure"):
+                    with patch.object(
+                        sys.modules[__name__], "TemporaryDirectory", ObservedTemporaryDirectory,
+                    ), patch.object(
+                        threading, "Thread", side_effect=track_thread,
+                    ), patch.object(
+                        self, "prepare_conversation", side_effect=track_prepare,
+                    ), patch.object(
+                        self, "assertTrue", side_effect=AssertionError("injected ordering failure"),
+                    ):
+                        getattr(self, method)()
+                self.assertEqual(len(workers), 1)
+                self.assertEqual(cleanup_liveness, [False])
+
     def test_conversation_restart_recovery_distinguishes_unattempted_and_uncertain(self):
         for claimed, expected_status, expected_dispatch in (
             (False, "interrupted", "rejected"),
