@@ -1,0 +1,2 @@
+# Offline artifact metadata inspection in runtime dependency qualification tests.
+packaging==26.2

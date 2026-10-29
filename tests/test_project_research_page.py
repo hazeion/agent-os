@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import gzip
 import io
 import json
 import os
+import signal
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -11,6 +13,7 @@ import time
 import subprocess
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from unittest.mock import Mock
 
@@ -132,6 +135,63 @@ class PublicResearchTransportTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "linux", "Linux credential-free research workers")
 class PublicResearchWorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.mock_processes = {}
+
+    def mock_process(self, pid):
+        process = Mock(pid=pid, returncode=None)
+        process.stdin, process.stdout = io.BytesIO(), io.BytesIO()
+        process.signals = []
+        process.reap_calls = 0
+        process.group_absent_checks = 0
+        process.unreapable = False
+        process.poll.side_effect = lambda: process.returncode
+        process.wait.side_effect = AssertionError("POSIX cleanup must use exact waitpid")
+        self.mock_processes[pid] = process
+        return process
+
+    @contextlib.contextmanager
+    def process_signals(self):
+        # Model an exited but unreaped leader: WNOWAIT preserves signal authority
+        # until SIGKILL, then exact waitpid consumes it before group absence.
+        def observe(kind, pid, options):
+            process = self.mock_processes[pid]
+            self.assertIsNone(process.returncode)
+            self.assertEqual(kind, workers.os.P_PID)
+            self.assertEqual(options, workers.os.WEXITED | workers.os.WNOHANG | workers.os.WNOWAIT)
+            return SimpleNamespace(si_pid=pid) if process.signals else None
+
+        def reap(pid, options):
+            process = self.mock_processes[pid]
+            self.assertIsNone(process.returncode)
+            self.assertEqual(options, os.WNOHANG)
+            self.assertEqual(process.signals, [signal.SIGTERM, signal.SIGKILL])
+            process.reap_calls += 1
+            if not process.unreapable:
+                self.assertEqual(process.reap_calls, 1, "leader reaped more than once")
+            return (0, 0) if process.unreapable else (pid, int(signal.SIGTERM))
+
+        def killpg(pid, sig):
+            process = self.mock_processes[pid]
+            if sig:
+                self.assertIsNone(process.returncode, "signal authority ended at reap")
+                process.signals.append(sig)
+            else:
+                self.assertEqual(process.returncode, -signal.SIGTERM)
+                process.group_absent_checks += 1
+                raise ProcessLookupError()
+
+        # Replace this module's os reference, never process-wide os functions.
+        local_os = SimpleNamespace(**vars(os))
+        with (patch.object(workers, "os", local_os),
+              patch.object(local_os, "waitid", side_effect=observe, create=True),
+              patch.object(local_os, "P_PID", 1, create=True),
+              patch.object(local_os, "WEXITED", 4, create=True),
+              patch.object(local_os, "WNOWAIT", 16, create=True),
+              patch.object(local_os, "waitpid", side_effect=reap),
+              patch.object(local_os, "killpg", side_effect=killpg) as signalled):
+            yield signalled
+
     def test_raw_close_failure_attempts_every_slot_and_retains_pool_for_retry(self):
         for kind in ("research", "preview"):
             first, second = Mock(), Mock()
@@ -181,21 +241,14 @@ class PublicResearchWorkerTests(unittest.TestCase):
 
     def test_buffered_slot_result_cannot_cross_completed_close(self):
         queued, release = threading.Event(), threading.Event()
-        process = Mock()
-        process.pid = 40000
-        process.stdin, process.stdout = io.BytesIO(), io.BytesIO()
-        process.poll.return_value = None
-        def reaped(*args, **kwargs):
-            process.poll.return_value = -15
-            return -15
-        process.wait.side_effect = reaped
+        process = self.mock_process(40000)
         reader_thread = Mock(ident=None)
         reader_thread.is_alive.return_value = False
         real_thread = threading.Thread
         outcomes = []
         with (patch.object(workers.subprocess, "Popen", return_value=process),
               patch.object(workers.threading, "Thread", return_value=reader_thread),
-              patch.object(workers.os, "killpg"), patch.object(workers.secrets, "token_hex", return_value="a" * 32)):
+              self.process_signals(), patch.object(workers.secrets, "token_hex", return_value="a" * 32)):
             slot = workers._WorkerSlot(("fixed",), clock=time.monotonic, environment={})
             def buffered(*args, **kwargs):
                 queued.set()
@@ -253,14 +306,7 @@ class PublicResearchWorkerTests(unittest.TestCase):
         processes = []
         errors = []
         def create(*args, **kwargs):
-            process = Mock()
-            process.pid = 40000 + len(processes)
-            process.stdin, process.stdout = io.BytesIO(), io.BytesIO()
-            process.poll.return_value = None
-            def reaped(*args, **kwargs):
-                process.poll.return_value = -15
-                return -15
-            process.wait.side_effect = reaped
+            process = self.mock_process(40000 + len(processes))
             processes.append(process)
             if len(processes) == 2:
                 entered.set()
@@ -271,7 +317,7 @@ class PublicResearchWorkerTests(unittest.TestCase):
         reader_thread.is_alive.return_value = False
         with (patch.object(workers.subprocess, "Popen", side_effect=create) as spawned,
               patch.object(workers.threading, "Thread", return_value=reader_thread),
-              patch.object(workers.os, "killpg")):
+              self.process_signals()):
             slot = workers._WorkerSlot(("fixed",), clock=time.monotonic, environment={})
             def replacing():
                 try:
@@ -308,14 +354,7 @@ class PublicResearchWorkerTests(unittest.TestCase):
     def test_replacement_thread_failure_uses_same_cleanup_and_fences_slot(self):
         processes, threads = [], []
         def create(*args, **kwargs):
-            process = Mock()
-            process.pid = 40000 + len(processes)
-            process.stdin, process.stdout = io.BytesIO(), io.BytesIO()
-            process.poll.return_value = None
-            def reaped(*args, **kwargs):
-                process.poll.return_value = -15
-                return -15
-            process.wait.side_effect = reaped
+            process = self.mock_process(40000 + len(processes))
             processes.append(process)
             return process
         def thread(*args, **kwargs):
@@ -326,7 +365,7 @@ class PublicResearchWorkerTests(unittest.TestCase):
                 value.start.side_effect = RuntimeError("replacement startup failure")
             return value
         with (patch.object(workers.subprocess, "Popen", side_effect=create),
-              patch.object(workers.threading, "Thread", side_effect=thread), patch.object(workers.os, "killpg")):
+              patch.object(workers.threading, "Thread", side_effect=thread), self.process_signals()):
             slot = workers._WorkerSlot(("fixed",), clock=time.monotonic, environment={})
             with self.assertRaisesRegex(RuntimeError, "replacement startup failure"):
                 slot.replace()
@@ -337,23 +376,14 @@ class PublicResearchWorkerTests(unittest.TestCase):
 
     def test_unreaped_child_and_unjoined_reader_retain_ownership_without_replacement(self):
         for mode in ("unreaped", "reader"):
-            process = Mock()
-            process.pid = 40000
-            process.stdin, process.stdout = io.BytesIO(), io.BytesIO()
-            process.poll.return_value = None
+            process = self.mock_process(40000)
             thread = Mock()
             thread.ident = 11
             thread.start.side_effect = RuntimeError("owned startup failure")
             thread.is_alive.return_value = mode == "reader"
-            if mode == "unreaped":
-                process.wait.side_effect = subprocess.TimeoutExpired("owned", .5)
-            else:
-                def reaped(*args, **kwargs):
-                    process.poll.return_value = -15
-                    return -15
-                process.wait.side_effect = reaped
+            process.unreapable = mode == "unreaped"
             with (self.subTest(mode=mode), patch.object(workers.subprocess, "Popen", return_value=process) as spawned,
-                  patch.object(workers.threading, "Thread", return_value=thread), patch.object(workers.os, "killpg"),
+                  patch.object(workers.threading, "Thread", return_value=thread), self.process_signals(),
                   self.assertRaisesRegex(RuntimeError, "owned startup failure") as raised):
                 readers.PublicPageReader()
             owner = raised.exception._mentat_worker_owner
@@ -363,13 +393,25 @@ class PublicResearchWorkerTests(unittest.TestCase):
             self.assertEqual(spawned.call_count, 1)
             with self.assertRaises(LinkPreviewWorkerError):
                 owner.execute(kind="research_page", url="https://python.org/")
-            # Explicit recovery can finish the same ownership; no new child.
-            process.poll.return_value = -15
-            thread.is_alive.return_value = False
-            with patch.object(workers.os, "killpg"):
+            # Cleanup evidence is ambiguous. Retain the same failure and owner;
+            # retry must never regain numeric signal authority or spawn a child.
+            failure = owner._cleanup_state["failure"]
+            self.assertIsInstance(failure, LinkPreviewWorkerError)
+            if mode == "unreaped":
+                self.assertIsInstance(failure.__cause__, subprocess.TimeoutExpired)
+                self.assertIsNone(process.returncode)
+                self.assertFalse(process.stdin.closed or process.stdout.closed)
+            else:
+                self.assertEqual(process.returncode, -signal.SIGTERM)
+                self.assertTrue(process.stdin.closed and process.stdout.closed)
+                thread.join.assert_called_once_with(timeout=0.5)
+            signals = list(process.signals)
+            with self.process_signals(), self.assertRaises(LinkPreviewWorkerError) as repeated:
                 owner.close()
-            self.assertIsNone(owner._process)
-            self.assertIsNone(owner._reader)
+            self.assertIs(repeated.exception, failure)
+            self.assertEqual(process.signals, signals)
+            self.assertIs(owner._process, process)
+            self.assertIs(owner._reader, thread)
 
     def test_actual_first_and_second_slot_start_failure_leave_no_process_or_reader(self):
         original_popen, original_start = workers.subprocess.Popen, workers.threading.Thread.start
@@ -399,14 +441,7 @@ class PublicResearchWorkerTests(unittest.TestCase):
             processes = []
             threads = []
             def process_factory(*args, **kwargs):
-                process = Mock()
-                process.pid = 40000 + len(processes)
-                process.stdin, process.stdout = io.BytesIO(), io.BytesIO()
-                process.poll.return_value = None
-                def reaped(*args, **kwargs):
-                    process.poll.return_value = -15
-                    return -15
-                process.wait.side_effect = reaped
+                process = self.mock_process(40000 + len(processes))
                 processes.append(process)
                 return process
             def thread_factory(*args, **kwargs):
@@ -420,7 +455,7 @@ class PublicResearchWorkerTests(unittest.TestCase):
             with (self.subTest(reader_kind=reader_kind, failing_start=failing_start),
                   patch.object(workers.subprocess, "Popen", side_effect=process_factory),
                   patch.object(workers.threading, "Thread", side_effect=thread_factory),
-                  patch.object(workers.os, "killpg") as signalled,
+                  self.process_signals() as signalled,
                   self.assertRaisesRegex(RuntimeError, "owned startup failure")):
                 if reader_kind == "research":
                     readers.PublicPageReader()
@@ -428,7 +463,11 @@ class PublicResearchWorkerTests(unittest.TestCase):
                     workers.LinkPreviewWorkerPool(command=("fixed",), environ={})
             self.assertEqual(len(processes), failing_start)
             for process in processes:
-                process.wait.assert_called_once()
+                self.assertEqual(process.returncode, -signal.SIGTERM)
+                self.assertEqual(process.signals, [signal.SIGTERM, signal.SIGKILL])
+                self.assertEqual(process.reap_calls, 1)
+                self.assertEqual(process.group_absent_checks, 1)
+                process.wait.assert_not_called()
                 self.assertTrue(process.stdin.closed)
                 self.assertTrue(process.stdout.closed)
                 self.assertIn(process.pid, [call.args[0] for call in signalled.call_args_list])

@@ -72,10 +72,12 @@ function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
 
-async function waitFor(operation, label, timeoutMilliseconds = 15000) {
+async function waitFor(operation, label, timeoutMilliseconds = 15000, terminalError = () => null) {
   const deadline = Date.now() + timeoutMilliseconds;
   let lastError;
   while (Date.now() < deadline) {
+    const terminal = await terminalError();
+    if (terminal) throw terminal;
     try {
       const result = await operation();
       if (result) return result;
@@ -88,11 +90,11 @@ async function waitFor(operation, label, timeoutMilliseconds = 15000) {
 }
 
 async function stopChild(child) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise((resolveExit) => child.once("exit", resolveExit));
   child.kill("SIGTERM");
   await Promise.race([exited, sleep(5000)]);
-  if (child.exitCode === null) {
+  if (child.exitCode === null && child.signalCode === null) {
     child.kill("SIGKILL");
     await Promise.race([new Promise((resolveExit) => child.once("exit", resolveExit)), sleep(1000)]);
   }
@@ -1783,14 +1785,33 @@ async function main() {
       "--no-first-run",
       "--no-default-browser-check",
       "about:blank",
-    ], { stdio: "ignore" });
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    let chromeStartupError;
+    let chromeStderr = "";
+    chrome.on("error", (error) => { chromeStartupError = error; });
+    chrome.stderr.on("data", (chunk) => {
+      chromeStderr = (chromeStderr + chunk.toString()).slice(-4096);
+    });
+    const chromeClosed = new Promise((resolveClose) => chrome.once("close", resolveClose));
+    const startupFailure = async () => {
+      if (chromeStartupError) return new Error(`Chrome launch failed: ${chromeStartupError.message}`);
+      if (chrome.exitCode !== null || chrome.signalCode !== null) {
+        await chromeClosed;
+        return new Error(`Chrome exited before debug readiness (code=${chrome.exitCode}, signal=${chrome.signalCode})`);
+      }
+      return null;
+    };
 
     const page = await waitFor(async () => {
-      const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
+      const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`, {
+        signal: AbortSignal.timeout(2000),
+      });
       if (!response.ok) return null;
       const pages = await response.json();
       return pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl);
-    }, "Chrome debug page", 30000);
+    }, "Chrome debug page", 60000, startupFailure).catch((error) => {
+      throw new Error(`${error.message}\nChrome stderr: ${chromeStderr || "(empty)"}`, { cause: error });
+    });
     const webSocket = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolveOpen, rejectOpen) => {
       webSocket.onopen = resolveOpen;

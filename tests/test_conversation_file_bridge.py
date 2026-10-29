@@ -160,7 +160,10 @@ class ConversationFileBridgeTests(unittest.TestCase):
         self.assertNotIn("path", json.dumps(payload))
         self.assertNotIn("sha256", json.dumps(payload))
 
-    def test_raw_upload_rejects_noncanonical_metadata_and_transfer_encoding(self):
+    @patch.object(local_bridge, "bridge_stage_conversation_upload")
+    def test_raw_upload_rejects_noncanonical_metadata_and_transfer_encoding(self, stage):
+        # Rejected headers must produce a response without receiving a body.
+        # Sending bytes after an early rejection races the Windows TCP reset.
         cases = (
             ({
                 "Content-Type": "text/markdown; charset=utf-8",
@@ -190,7 +193,7 @@ class ConversationFileBridgeTests(unittest.TestCase):
                 status, payload, _response_headers = self.json_request(
                     "POST",
                     f"/bridge/v1/conversations/{CONVERSATION_ID}/attachments",
-                    body=b"hello",
+                    body=b"",
                     headers=headers,
                 )
                 self.assertEqual(status, expected_status)
@@ -202,7 +205,7 @@ class ConversationFileBridgeTests(unittest.TestCase):
         status, payload, _headers = self.json_request(
             "POST",
             f"/bridge/v1/conversations/{CONVERSATION_ID}/attachments",
-            body=b"x",
+            body=b"",
             headers={
                 "Content-Type": "text/markdown",
                 "Content-Length": str(local_bridge.MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES + 1),
@@ -215,7 +218,7 @@ class ConversationFileBridgeTests(unittest.TestCase):
         status, payload, _headers = self.json_request(
             "POST",
             f"/bridge/v1/conversations/{CONVERSATION_ID}/attachments",
-            body=b"x",
+            body=b"",
             headers={
                 "Content-Type": "application/pdf",
                 "Content-Length": "1",
@@ -224,6 +227,7 @@ class ConversationFileBridgeTests(unittest.TestCase):
         )
         self.assertEqual(status, 415)
         self.assertEqual(payload["status"], "unsupported")
+        stage.assert_not_called()
 
     def test_staged_workspace_context_pack_and_media_routes_are_fixed(self):
         workspace = {

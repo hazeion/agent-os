@@ -15,6 +15,7 @@ safer to ship.
 Run these commands from the repository root:
 
 ```bash
+python -m pip install -r requirements.txt -r requirements-test.txt
 python -m compileall -q .
 node --check public/core.js
 node --check public/app.js

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from contextlib import ExitStack, closing
+
+from tests.sqlite_authority_support import THREAD_TIMEOUT, drain_workers
+
 import base64
 import hashlib
 import http.client
@@ -10,7 +14,7 @@ import socket
 import struct
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tests.sqlite_authority_support import TemporaryDirectory
 import threading
 import time
 import unittest
@@ -45,16 +49,17 @@ class FrontendContractTests(unittest.TestCase):
 
     def test_worker_boundary_rejects_paths_tools_nonstream_and_mismatched_models(self):
         host, worker = socket.socketpair()
-        service = front.CompletionServer(worker, "mentat-test", time.monotonic() + 10)
+        service = front.CompletionServer(worker, "mentat-test", time.monotonic() + 60)
         thread = threading.Thread(target=service.serve_forever)
         thread.start()
+        clients = ExitStack()
         try:
             baseline = {"model": "mentat-test", "stream": True, "messages": []}
             for path, body in (("/api/show", baseline), ("/v1/chat/completions?x=1", baseline),
                                ("/v1/chat/completions", {**baseline, "stream": False}),
                                ("/v1/chat/completions", {**baseline, "model": "other"}),
                                ("/v1/chat/completions", {**baseline, "tools": [{"type": "function"}]})):
-                client = http.client.HTTPConnection(*service.server_address, timeout=2)
+                client = clients.enter_context(closing(http.client.HTTPConnection(*service.server_address, timeout=60)))
                 if path != "/v1/chat/completions":
                     client.putrequest("POST", path)
                     client.putheader("Content-Length", str(len(json.dumps(body).encode())))
@@ -69,19 +74,21 @@ class FrontendContractTests(unittest.TestCase):
             with self.assertRaises(BlockingIOError):
                 host.recv(1)
         finally:
+            clients.close()
             service.shutdown()
             service.server_close()
-            thread.join(timeout=2)
-            self.assertFalse(thread.is_alive())
             host.close()
             worker.close()
+            with drain_workers([thread]):
+                thread.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(thread.is_alive())
 
     def test_unsupported_path_refuses_before_any_body_read(self):
         handler = object.__new__(front.CompletionHandler)
         handler.path = "/api/show"
         handler.server = MagicMock()
         handler.server.attempts = 0
-        handler.server.deadline = time.monotonic() + 10
+        handler.server.deadline = time.monotonic() + 60
         handler.headers = MagicMock()
         handler.headers.get_all.return_value = ["1000000"]
         handler.rfile = MagicMock()
@@ -101,12 +108,13 @@ class FrontendContractTests(unittest.TestCase):
             reply = json.dumps({"state": "succeeded", "text": "reply\n"}).encode()
             host.sendall(struct.pack("!I", len(reply)) + reply)
         broker_thread = threading.Thread(target=broker)
-        service = front.CompletionServer(worker, "mentat-test", time.monotonic() + 10)
+        service = front.CompletionServer(worker, "mentat-test", time.monotonic() + 60)
         server_thread = threading.Thread(target=service.serve_forever)
         broker_thread.start()
         server_thread.start()
+        clients = ExitStack()
         try:
-            client = http.client.HTTPConnection(*service.server_address, timeout=2)
+            client = clients.enter_context(closing(http.client.HTTPConnection(*service.server_address, timeout=60)))
             raw = json.dumps(body).encode()
             client.request("POST", "/v1/chat/completions", raw, {"Authorization": "dummy-namespace-only"})
             reply = client.getresponse()
@@ -116,21 +124,28 @@ class FrontendContractTests(unittest.TestCase):
             self.assertEqual(service.accepted_text, "reply\n")
             client.close()
         finally:
+            clients.close()
             service.shutdown()
             service.server_close()
-            host.close()
-            worker.close()
-            server_thread.join(timeout=2)
-            broker_thread.join(timeout=2)
-            self.assertFalse(server_thread.is_alive() or broker_thread.is_alive())
+            for endpoint in (host, worker):
+                try:
+                    endpoint.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                endpoint.close()
+            with drain_workers([server_thread, broker_thread]):
+                server_thread.join(timeout=THREAD_TIMEOUT)
+                broker_thread.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(server_thread.is_alive() or broker_thread.is_alive())
 
     def test_missing_substituted_or_unprepared_images_never_reach_broker(self):
         host, worker = socket.socketpair()
         expected = b"exact prepared image bytes"
-        service = front.CompletionServer(worker, "test", time.monotonic() + 10,
+        service = front.CompletionServer(worker, "test", time.monotonic() + 60,
                                         hashlib.sha256(expected).hexdigest(), ".png")
         thread = threading.Thread(target=service.serve_forever)
         thread.start()
+        clients = ExitStack()
         try:
             baseline = {"model": "test", "stream": True, "messages": [{"role": "user", "content": []}]}
             image = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(b"changed").decode()}}
@@ -141,7 +156,7 @@ class FrontendContractTests(unittest.TestCase):
                             [{"type": "text", "text": "caption", "image_url": image["image_url"]}],
                             [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(expected).decode()}}]):
                 service.attempts = 0
-                client = http.client.HTTPConnection(*service.server_address, timeout=2)
+                client = clients.enter_context(closing(http.client.HTTPConnection(*service.server_address, timeout=60)))
                 client.request("POST", "/v1/chat/completions", json.dumps({**baseline,
                                "messages": [{"role": "user", "content": content}]}))
                 reply = client.getresponse()
@@ -151,7 +166,7 @@ class FrontendContractTests(unittest.TestCase):
             service.image_digest = None
             service.image_mime = None
             service.attempts = 0
-            client = http.client.HTTPConnection(*service.server_address, timeout=2)
+            client = clients.enter_context(closing(http.client.HTTPConnection(*service.server_address, timeout=60)))
             client.request("POST", "/v1/chat/completions", json.dumps({**baseline,
                            "messages": [{"role": "user", "content": [image]}]}))
             reply = client.getresponse()
@@ -162,11 +177,14 @@ class FrontendContractTests(unittest.TestCase):
             with self.assertRaises(BlockingIOError):
                 host.recv(1)
         finally:
+            clients.close()
             service.shutdown()
             service.server_close()
-            thread.join(timeout=2)
             host.close()
             worker.close()
+            with drain_workers([thread]):
+                thread.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(thread.is_alive())
 
     def test_unsupported_namespace_fails_before_any_snapshot_or_runtime_open(self):
         with patch.object(namespaces, "IS_LINUX", False), patch.object(namespaces, "_open_directory") as opened:

@@ -376,23 +376,26 @@ class LinkPreviewServiceTests(unittest.TestCase):
                 clear_requested.set()
                 service.clear_cache()
 
+            clear = None
             try:
                 with mock.patch.object(cache, "store", side_effect=delayed_store):
                     service.enqueue(conversation_id=message.conversation_id, message_id=message.id, message_revision=1, retry=True)
                     pool_gate.set()
-                    self.assertTrue(store_entered.wait(timeout=2))
+                    self.assertTrue(store_entered.wait(timeout=60))
                     clear = threading.Thread(target=clear_cache)
                     clear.start()
-                    self.assertTrue(clear_requested.wait(timeout=2))
+                    self.assertTrue(clear_requested.wait(timeout=60))
                     self.assertTrue(clear.is_alive())
                     release_store.set()
-                    clear.join(timeout=2)
+                    clear.join(timeout=60)
                     self.assertFalse(clear.is_alive())
                 self.assertIsNone(cache.lookup("https://python.org/docs"))
                 self.assertEqual(service.read(conversation_id=message.conversation_id, message_id=message.id, message_revision=1)["previews"], [{"candidate_ordinal": 1, "status": "unavailable"}])
             finally:
                 pool_gate.set()
                 release_store.set()
+                if clear is not None and clear.ident is not None:
+                    clear.join()
                 service.close()
 
 

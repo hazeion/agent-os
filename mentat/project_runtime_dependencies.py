@@ -331,10 +331,18 @@ def _close_audit_group(process):
     return False
 
 
+def audit_platform_supported():
+    """Whether exact non-reaping auditor ownership is available."""
+    return os.name == "posix" and all(
+        hasattr(os, name)
+        for name in ("waitid", "WNOWAIT", "WEXITED", "WNOHANG", "P_PID", "CLD_EXITED")
+    )
+
+
 def run_audit():
     """Run the fixed auditor in this disposable tool environment, never install."""
     from importlib.metadata import PackageNotFoundError, version
-    if os.name != "posix" or any(not hasattr(os, name) for name in ("waitid", "WNOWAIT", "WEXITED", "WNOHANG", "P_PID", "CLD_EXITED")):
+    if not audit_platform_supported():
         _fail("audit_platform")
     try:
         if version("pip-audit") != AUDITOR_VERSION:
