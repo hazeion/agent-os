@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
 
 import mentat_db
 import owner_inbox
@@ -17,48 +18,64 @@ UPDATED = "2026-09-29T12:00:01+00:00"
 def _current_with_runs(path: Path) -> sqlite3.Connection:
     private_console_unit._initialize_database(path)
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute(
-        "INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,"
-        "dispatch_state,created_at,updated_at) "
-        "VALUES('run_console','console','hermes','[]','reserved','reserved',?,?)",
-        (CREATED, UPDATED),
-    )
-    connection.execute(
-        "INSERT INTO mentat_runs(id,source,task_id,task_revision,runtime_type,"
-        "capabilities_json,status,dispatch_state,created_at,updated_at) "
-        "VALUES('run_task','task_dispatch','task_garage',1,'hermes','[]',"
-        "'reserved','reserved',?,?)",
-        (CREATED, UPDATED),
-    )
-    connection.execute(
-        "INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,"
-        "dispatch_state,retry_of_run_id,created_at,updated_at) "
-        "VALUES('run_retry','console','hermes','[]','reserved','reserved',"
-        "'run_console',?,?)", (CREATED, UPDATED),
-    )
-    connection.execute(
-        "INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,"
-        "dispatch_state,resume_of_run_id,created_at,updated_at) "
-        "VALUES('run_resume','console','hermes','[]','reserved','reserved',"
-        "'run_console',?,?)", (CREATED, UPDATED),
-    )
-    connection.execute(
-        "INSERT INTO mentat_agent_events(run_id,sequence,id,event_type,source_type,"
-        "source_key,occurred_at,summary,payload_digest) "
-        "VALUES('run_console',1,'event_created','run.created','run.created',"
-        "'source_event',?,'Run reserved',?)",
-        (CREATED, "a" * 64),
-    )
-    connection.execute(
-        "UPDATE mentat_runs SET status='unknown',dispatch_state='unknown',"
-        "state_revision=state_revision+1 WHERE id='run_console'"
-    )
-    connection.commit()
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,"
+            "dispatch_state,created_at,updated_at) "
+            "VALUES('run_console','console','hermes','[]','reserved','reserved',?,?)",
+            (CREATED, UPDATED),
+        )
+        connection.execute(
+            "INSERT INTO mentat_runs(id,source,task_id,task_revision,runtime_type,"
+            "capabilities_json,status,dispatch_state,created_at,updated_at) "
+            "VALUES('run_task','task_dispatch','task_garage',1,'hermes','[]',"
+            "'reserved','reserved',?,?)",
+            (CREATED, UPDATED),
+        )
+        connection.execute(
+            "INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,"
+            "dispatch_state,retry_of_run_id,created_at,updated_at) "
+            "VALUES('run_retry','console','hermes','[]','reserved','reserved',"
+            "'run_console',?,?)", (CREATED, UPDATED),
+        )
+        connection.execute(
+            "INSERT INTO mentat_runs(id,source,runtime_type,capabilities_json,status,"
+            "dispatch_state,resume_of_run_id,created_at,updated_at) "
+            "VALUES('run_resume','console','hermes','[]','reserved','reserved',"
+            "'run_console',?,?)", (CREATED, UPDATED),
+        )
+        connection.execute(
+            "INSERT INTO mentat_agent_events(run_id,sequence,id,event_type,source_type,"
+            "source_key,occurred_at,summary,payload_digest) "
+            "VALUES('run_console',1,'event_created','run.created','run.created',"
+            "'source_event',?,'Run reserved',?)",
+            (CREATED, "a" * 64),
+        )
+        connection.execute(
+            "UPDATE mentat_runs SET status='unknown',dispatch_state='unknown',"
+            "state_revision=state_revision+1 WHERE id='run_console'"
+        )
+        connection.commit()
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
 class ProjectProposalSourceGuardTests(unittest.TestCase):
+    def test_fixture_sql_failure_closes_connection_before_returning(self):
+        for operation in ("execute", "commit"):
+            with self.subTest(operation=operation):
+                connection = Mock()
+                getattr(connection, operation).side_effect = sqlite3.OperationalError("fixture failure")
+                with patch.object(private_console_unit, "_initialize_database"), patch.object(
+                    sqlite3, "connect", return_value=connection
+                ):
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "fixture failure"):
+                        _current_with_runs(Path("unused.sqlite3"))
+                connection.close.assert_called_once_with()
+
     def test_current_validation_preserves_run_and_dependent_evidence(self):
         with TemporaryDirectory() as temporary:
             with closing(_current_with_runs(Path(temporary) / "current.sqlite3")) as connection:

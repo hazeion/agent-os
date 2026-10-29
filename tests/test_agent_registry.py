@@ -807,7 +807,11 @@ class AgentRegistryTests(unittest.TestCase):
     def test_http_list_maps_sqlite_operational_failure_to_503(self):
         request = self._handler()
         request.path = "/api/orchestration/agents"
-        with patch.object(
+        # A failed first open may leave an empty SQLite file. Keep this fault
+        # injection away from the checkout's shared default data root.
+        with TemporaryDirectory() as tmpdir, patch.object(
+            server, "DATA_DIR", Path(tmpdir)
+        ), patch.object(
             agent_registry.sqlite3,
             "connect",
             side_effect=sqlite3.OperationalError("database is locked"),

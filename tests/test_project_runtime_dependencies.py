@@ -68,6 +68,16 @@ def candidate_fixture(*, source_requirements=(), wheel_requirements=None):
         yield root, artifacts, document, original_load, path
 
 
+AUDIT_PLATFORM = dependencies.audit_platform_supported()
+
+
+@contextmanager
+def synthetic_auditor():
+    # These tests replace Popen with inert Python fixtures, not pip-audit.
+    with patch("importlib.metadata.version", return_value=dependencies.AUDITOR_VERSION):
+        yield
+
+
 class DependencyQualificationTests(unittest.TestCase):
     def test_fixed_reconstructed_comparison_is_twelve_changes_and_not_production(self):
         candidate, baseline, digest = dependencies.load_candidate()
@@ -241,11 +251,31 @@ class DependencyQualificationTests(unittest.TestCase):
                     dependencies.validate_audit_report(json.dumps(changed).encode())
             self.assertEqual(dependencies.audit_requirements(candidate).count(b"==2.0 --hash=sha256:"), 7)
 
-    @unittest.skipUnless(os.name == "posix", "bounded POSIX audit worker")
+    def test_audit_refuses_unsupported_platform_before_tool_or_artifact_access(self):
+        with patch.object(dependencies.os, "name", "nt"), \
+                patch("importlib.metadata.version") as version, \
+                patch.object(dependencies, "load_candidate") as load, \
+                self.assertRaisesRegex(dependencies.DependencyQualificationError, "audit_platform"):
+            dependencies.run_audit()
+        version.assert_not_called()
+        load.assert_not_called()
+
+    @unittest.skipUnless(AUDIT_PLATFORM, "audit worker requires non-reaping POSIX waitid")
+    def test_audit_refuses_missing_or_wrong_tool_before_artifact_access(self):
+        from importlib.metadata import PackageNotFoundError
+        for options, reason in (({"side_effect": PackageNotFoundError("pip-audit")}, "auditor_unavailable"),
+                                ({"return_value": "0.0"}, "auditor_version")):
+            with self.subTest(reason=reason), patch("importlib.metadata.version", **options), \
+                    patch.object(dependencies, "load_candidate") as load, \
+                    self.assertRaisesRegex(dependencies.DependencyQualificationError, reason):
+                dependencies.run_audit()
+            load.assert_not_called()
+
+    @unittest.skipUnless(AUDIT_PLATFORM, "audit worker requires non-reaping POSIX waitid")
     def test_fixed_audit_worker_bounds_output_and_does_not_inherit_secrets(self):
         actual_spawn = subprocess.Popen
         for failure in (None, "oversize", "timeout", "exit"):
-            with self.subTest(failure=failure), candidate_fixture():
+            with self.subTest(failure=failure), candidate_fixture(), synthetic_auditor():
                 candidate, *_rest = dependencies.load_candidate()
                 raw = json.dumps({"dependencies": [{"name": item["name"], "version": item["version"], "vulns": []}
                                                    for item in candidate["wheels"]], "fixes": []}).encode()
@@ -268,7 +298,7 @@ class DependencyQualificationTests(unittest.TestCase):
                     processes.append(process)
                     return process
                 with patch.object(dependencies.subprocess, "Popen", side_effect=spawn), \
-                        patch.object(dependencies, "AUDIT_SECONDS", 0.5), \
+                        patch.object(dependencies, "AUDIT_SECONDS", 0.5 if failure == "timeout" else 5.0), \
                         patch.object(dependencies, "MAX_REPORT_BYTES", 4096), \
                         patch.dict(os.environ, {"OPENAI_API_KEY": "synthetic-never-inherit"}):  # pragma: allowlist secret -- inert refusal fixture
                     if failure:
@@ -281,11 +311,11 @@ class DependencyQualificationTests(unittest.TestCase):
                 self.assertEqual(len(processes), 1)
                 self.assertIsNotNone(processes[0].poll())
 
-    @unittest.skipUnless(os.name == "posix" and hasattr(os, "WNOWAIT"), "non-reaping owned-group cleanup")
+    @unittest.skipUnless(AUDIT_PLATFORM, "audit worker requires non-reaping POSIX waitid")
     def test_leader_exit_cannot_leave_a_descendant_on_success_or_timeout(self):
         actual_spawn = subprocess.Popen
         for inherited_stdout in (True, False):
-            with self.subTest(inherited_stdout=inherited_stdout), candidate_fixture():
+            with self.subTest(inherited_stdout=inherited_stdout), candidate_fixture(), synthetic_auditor():
                 candidate, *_rest = dependencies.load_candidate()
                 raw = json.dumps({"dependencies": [{"name": item["name"], "version": item["version"], "vulns": []}
                                                    for item in candidate["wheels"]], "fixes": []}).encode()
@@ -316,11 +346,11 @@ class DependencyQualificationTests(unittest.TestCase):
                     os.killpg(processes[0].pid, 0)
                 self.assertFalse(roots[0].exists())
 
-    @unittest.skipUnless(os.name == "posix" and hasattr(os, "WNOWAIT"), "non-reaping owned-group cleanup")
+    @unittest.skipUnless(AUDIT_PLATFORM, "audit worker requires non-reaping POSIX waitid")
     def test_unverified_group_closure_refuses_success_and_retains_owned_directory(self):
         actual_spawn = subprocess.Popen
         close = dependencies._close_audit_group
-        with candidate_fixture():
+        with candidate_fixture(), synthetic_auditor():
             candidate, *_rest = dependencies.load_candidate()
             raw = json.dumps({"dependencies": [{"name": item["name"], "version": item["version"], "vulns": []}
                                                for item in candidate["wheels"]], "fixes": []}).encode()

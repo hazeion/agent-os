@@ -258,7 +258,7 @@ class HermesEventRefreshTests(unittest.TestCase):
 
         def blocking(_binding):
             entered.set()
-            release.wait(2)
+            release.wait()
             return {"ok": True}
 
         first = HermesRefreshCoordinator(
@@ -267,13 +267,19 @@ class HermesEventRefreshTests(unittest.TestCase):
             reconciliation_interval=60,
         )
         first.start()
-        self.assertTrue(first.enqueue(event("on_session_start")))
-        self.assertTrue(entered.wait(1))
-        started = time.monotonic()
-        self.assertFalse(first.stop(timeout=0.05))
-        self.assertLess(time.monotonic() - started, 0.25)
-        release.set()
-        self.assertTrue(first.stop(timeout=1))
+        try:
+            self.assertTrue(first.enqueue(event("on_session_start")))
+            self.assertTrue(entered.wait(60))
+            # Observe the exact join budget while the refresh remains blocked.
+            worker = first._thread
+            with patch.object(worker, "join", wraps=worker.join) as join:
+                self.assertFalse(first.stop(timeout=0.05))
+            join.assert_called_once_with(0.05)
+            self.assertFalse(release.is_set())
+            self.assertTrue(worker.is_alive())
+        finally:
+            release.set()
+            self.assertTrue(first.stop(timeout=60))
 
         restarted = threading.Event()
         second = HermesRefreshCoordinator(

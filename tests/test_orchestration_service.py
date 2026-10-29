@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import traceback
-from tempfile import TemporaryDirectory
+from tests.sqlite_authority_support import TemporaryDirectory
 import threading
 import time
 from types import SimpleNamespace
@@ -42,7 +42,11 @@ from run_repository import (
     RunRepositoryValidationError,
     save_authoritative_run_summaries,
 )
-from tests.sqlite_authority_support import ensure_run_sqlite_authority
+from tests.sqlite_authority_support import (
+    THREAD_TIMEOUT,
+    drain_workers,
+    ensure_run_sqlite_authority,
+)
 from task_repository import TaskRepository
 
 
@@ -164,7 +168,7 @@ class FakeRuntime:
             self.capabilities_entered.set()
         if (
             self.capabilities_release is not None
-            and not self.capabilities_release.wait(timeout=5)
+            and not self.capabilities_release.wait(timeout=THREAD_TIMEOUT)
         ):
             raise TimeoutError("test capability gate timed out")
         capabilities = {"run.start"}
@@ -175,7 +179,7 @@ class FakeRuntime:
     def capacity_for_binding(self, runtime_agent_ref):
         if self.capacity_entered is not None:
             self.capacity_entered.set()
-        if self.capacity_release is not None and not self.capacity_release.wait(timeout=5):
+        if self.capacity_release is not None and not self.capacity_release.wait(timeout=THREAD_TIMEOUT):
             raise TimeoutError("test capacity gate timed out")
         return RuntimeCapacity(
             scope=self.capacity_scope or f"fake-runtime:{runtime_agent_ref}",
@@ -215,7 +219,7 @@ class FakeRuntime:
         if self.submit_entered is not None:
             self.submit_entered.set()
         if self.submit_release is not None:
-            if not self.submit_release.wait(timeout=5):
+            if not self.submit_release.wait(timeout=THREAD_TIMEOUT):
                 raise TimeoutError("test submission gate timed out")
         if self.raises:
             raise TimeoutError("acceptance may be unknown")
@@ -247,10 +251,11 @@ class FakeRuntime:
                     failure.append(exc)
 
             worker = threading.Thread(target=complete_run)
-            worker.start()
-            worker.join(timeout=5)
-            if worker.is_alive():
-                raise TimeoutError("test worker did not finish")
+            with drain_workers([worker]):
+                worker.start()
+                worker.join(timeout=THREAD_TIMEOUT)
+                if worker.is_alive():
+                    raise TimeoutError("test worker did not finish")
             if failure:
                 raise failure[0]
         run_status = RunStatus.COMPLETED if self.return_completed else RunStatus.STARTING
@@ -301,7 +306,7 @@ class FakeRuntime:
         self.status_queries.append(run_id)
         if self.status_entered is not None:
             self.status_entered.set()
-        if self.status_release is not None and not self.status_release.wait(timeout=5):
+        if self.status_release is not None and not self.status_release.wait(timeout=THREAD_TIMEOUT):
             raise TimeoutError("test status gate timed out")
         return AgentRun(
             id=context.mentat_run_id,
@@ -2199,7 +2204,7 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             def reconcile(owner):
                 try:
-                    barrier.wait(timeout=5)
+                    barrier.wait(timeout=THREAD_TIMEOUT)
                     reports.append(service.reconcile_run(run_id=first.run.id, owner=owner))
                 except Exception as exc:  # pragma: no cover - surfaced below
                     failures.append(exc)
@@ -2208,14 +2213,15 @@ class OrchestrationServiceTests(unittest.TestCase):
                 threading.Thread(target=reconcile, args=(f"queue_race_owner_{index}",))
                 for index in range(2)
             ]
-            for worker in workers:
-                worker.start()
-            barrier.wait(timeout=5)
-            status_read_started = runtime.status_entered.wait(timeout=10)
-            runtime.status_release.set()
-            for worker in workers:
-                worker.join(timeout=5)
-                self.assertFalse(worker.is_alive())
+            with drain_workers(workers, runtime.status_release):
+                for worker in workers:
+                    worker.start()
+                barrier.wait(timeout=THREAD_TIMEOUT)
+                status_read_started = runtime.status_entered.wait(timeout=THREAD_TIMEOUT)
+                runtime.status_release.set()
+                for worker in workers:
+                    worker.join(timeout=THREAD_TIMEOUT)
+                    self.assertFalse(worker.is_alive())
             if failures:
                 raise failures[0]
             connection = connect(root)
@@ -3516,20 +3522,22 @@ class OrchestrationServiceTests(unittest.TestCase):
                     first_error.append(exc)
 
             worker = threading.Thread(target=first_send)
-            worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            duplicate = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="Concurrent Turn",
-                idempotency_key="conversation-concurrent-key-1",
-            )
-            competing = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="Competing Turn",
-                idempotency_key="conversation-concurrent-key-2",
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
+            with drain_workers([worker], runtime.submit_release):
+                worker.start()
+                self.assertTrue(runtime.submit_entered.wait(timeout=THREAD_TIMEOUT))
+                duplicate = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Concurrent Turn",
+                    idempotency_key="conversation-concurrent-key-1",
+                )
+                competing = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Competing Turn",
+                    idempotency_key="conversation-concurrent-key-2",
+                )
+                runtime.submit_release.set()
+                worker.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(worker.is_alive())
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(first_error, [])
@@ -3539,6 +3547,60 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(competing.disposition, "pending")
         self.assertIsNone(competing.run)
         self.assertEqual(len(runtime.calls), 1)
+
+    def test_conversation_ordering_assertion_failures_drain_before_root_cleanup(self):
+        for method in (
+            "test_concurrent_conversation_replay_and_competing_key_call_runtime_once",
+            "test_preacceptance_completion_waits_for_finalized_event_before_fifo",
+            "test_preacceptance_partial_completion_blocks_fifo_successor",
+            "test_shutdown_gate_leaves_fast_worker_successor_durably_unattempted",
+            "test_concurrent_duplicate_and_competing_dispatches_invoke_runtime_once",
+        ):
+            with self.subTest(method=method):
+                workers, runtimes, cleanup_liveness = [], [], []
+                original_thread = threading.Thread
+                original_temporary = TemporaryDirectory
+                prepare_method = (
+                    "prepare" if method == "test_concurrent_duplicate_and_competing_dispatches_invoke_runtime_once"
+                    else "prepare_conversation"
+                )
+                original_prepare = getattr(self, prepare_method)
+
+                def track_thread(*args, **kwargs):
+                    worker = original_thread(*args, **kwargs)
+                    workers.append(worker)
+                    return worker
+
+                def track_prepare(root, runtime):
+                    runtimes.append(runtime)
+                    return original_prepare(root, runtime)
+
+                class ObservedTemporaryDirectory(original_temporary):
+                    def __exit__(temporary, *args):
+                        cleanup_liveness.append(any(w.is_alive() for w in workers))
+                        # Observe first, then rescue the fixture if cleanup
+                        # regresses, so this regression cannot leak its own root.
+                        for runtime in runtimes:
+                            runtime.submit_release.set()
+                        for worker in workers:
+                            if worker.ident is not None:
+                                worker.join()
+                        return super().__exit__(*args)
+
+                with self.assertRaisesRegex(AssertionError, "injected ordering failure"):
+                    with patch.object(
+                        sys.modules[__name__], "TemporaryDirectory", ObservedTemporaryDirectory,
+                    ), patch.object(
+                        sys.modules[__name__], "threading",
+                        SimpleNamespace(Thread=track_thread, Event=threading.Event),
+                    ), patch.object(
+                        self, prepare_method, side_effect=track_prepare,
+                    ), patch.object(
+                        self, "assertTrue", side_effect=AssertionError("injected ordering failure"),
+                    ):
+                        getattr(self, method)()
+                self.assertEqual(len(workers), 1)
+                self.assertEqual(cleanup_liveness, [False])
 
     def test_conversation_restart_recovery_distinguishes_unattempted_and_uncertain(self):
         for claimed, expected_status, expected_dispatch in (
@@ -4508,17 +4570,18 @@ class OrchestrationServiceTests(unittest.TestCase):
                     first_errors.append(exc)
 
             worker = threading.Thread(target=submit_first)
-            worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            queued = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="Do not auto-run after ambiguous steering",
-                idempotency_key="conversation-fast-partial-key-2",
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
-            self.assertFalse(worker.is_alive())
-            self.assertEqual(first_errors, [])
+            with drain_workers([worker], runtime.submit_release):
+                worker.start()
+                self.assertTrue(runtime.submit_entered.wait(timeout=THREAD_TIMEOUT))
+                queued = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Do not auto-run after ambiguous steering",
+                    idempotency_key="conversation-fast-partial-key-2",
+                )
+                runtime.submit_release.set()
+                worker.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(first_errors, [])
 
             connection = connect(root)
             try:
@@ -4589,15 +4652,16 @@ class OrchestrationServiceTests(unittest.TestCase):
                     first_errors.append(exc)
 
             worker = threading.Thread(target=submit_first)
-            worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            queued = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="Wait until source finalization",
-                idempotency_key="conversation-prefinal-key-2",
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
+            with drain_workers([worker], runtime.submit_release):
+                worker.start()
+                self.assertTrue(runtime.submit_entered.wait(timeout=THREAD_TIMEOUT))
+                queued = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Wait until source finalization",
+                    idempotency_key="conversation-prefinal-key-2",
+                )
+                runtime.submit_release.set()
+                worker.join(timeout=THREAD_TIMEOUT)
             self.assertFalse(worker.is_alive())
             self.assertEqual(first_errors, [])
 
@@ -4734,21 +4798,22 @@ class OrchestrationServiceTests(unittest.TestCase):
                 ):
                     server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = True
                     worker = threading.Thread(target=submit_first)
-                    worker.start()
-                    self.assertTrue(runtime.submit_entered.wait(timeout=5))
-                    queued = service.submit_conversation_turn(
-                        conversation_id=conversation_id,
-                        text="Remain reserved if shutdown wins",
-                        idempotency_key="conversation-shutdown-gate-key-2",
-                    )
-                    with server.AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
-                        runtime.submit_release.set()
-                        self.assertTrue(handler_entered.wait(timeout=5))
-                        # This is the exact state transition performed by
-                        # stop_agent_console_processes while it owns the gate.
-                        server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
-                    worker.join(timeout=5)
-                    self.assertFalse(worker.is_alive())
+                    with drain_workers([worker], runtime.submit_release):
+                        worker.start()
+                        self.assertTrue(runtime.submit_entered.wait(timeout=THREAD_TIMEOUT))
+                        queued = service.submit_conversation_turn(
+                            conversation_id=conversation_id,
+                            text="Remain reserved if shutdown wins",
+                            idempotency_key="conversation-shutdown-gate-key-2",
+                        )
+                        with server.AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+                            runtime.submit_release.set()
+                            self.assertTrue(handler_entered.wait(timeout=THREAD_TIMEOUT))
+                            # This is the exact state transition performed by
+                            # stop_agent_console_processes while it owns the gate.
+                            server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+                        worker.join(timeout=THREAD_TIMEOUT)
+                        self.assertFalse(worker.is_alive())
             finally:
                 runtime.submit_release.set()
                 server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = prior_gate
@@ -5329,25 +5394,26 @@ class OrchestrationServiceTests(unittest.TestCase):
                     first_error.append(exc)
 
             worker = threading.Thread(target=first_dispatch)
-            worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            duplicate = service.dispatch_task(
-                task_id="task-service",
-                expected_revision=1,
-                idempotency_key="concurrent-request-key-1",
-            )
-            with self.assertRaisesRegex(
-                OrchestrationServiceError, "dispatch.task_revision_consumed"
-            ):
-                service.dispatch_task(
+            with drain_workers([worker], runtime.submit_release):
+                worker.start()
+                self.assertTrue(runtime.submit_entered.wait(timeout=THREAD_TIMEOUT))
+                duplicate = service.dispatch_task(
                     task_id="task-service",
                     expected_revision=1,
-                    idempotency_key="concurrent-request-key-2",
+                    idempotency_key="concurrent-request-key-1",
                 )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
+                with self.assertRaisesRegex(
+                    OrchestrationServiceError, "dispatch.task_revision_consumed"
+                ):
+                    service.dispatch_task(
+                        task_id="task-service",
+                        expected_revision=1,
+                        idempotency_key="concurrent-request-key-2",
+                    )
+                runtime.submit_release.set()
+                worker.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(worker.is_alive())
 
-        self.assertFalse(worker.is_alive())
         self.assertEqual(first_error, [])
         self.assertEqual(len(first_result), 1)
         self.assertTrue(duplicate.duplicate)

@@ -528,6 +528,7 @@ python mentat_lifecycle.py stop
 Basic checks:
 
 ```bash
+python -m pip install -r requirements.txt -r requirements-test.txt
 python -m py_compile server.py
 python -m unittest discover -s tests -v
 ```

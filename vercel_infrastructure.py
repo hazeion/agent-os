@@ -8,7 +8,7 @@ import json
 import re
 import socket
 import ssl
-import threading
+from threading import Event, Thread, Timer
 import time
 from typing import Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit
@@ -72,7 +72,7 @@ class _DeadlineSSLContext:
         self,
         delegate: ssl.SSLContext,
         published_socket: list[object | None],
-        expired: threading.Event,
+        expired: Event,
         deadline_at: float,
     ):
         self._delegate = delegate
@@ -144,8 +144,8 @@ def _resolve_before_deadline(
 ) -> tuple[tuple[tuple[object, ...], ...] | None, str | None]:
     """Resolve only; a timed-out worker can never continue into TCP or TLS."""
 
-    done = threading.Event()
-    cancelled = threading.Event()
+    done = Event()
+    cancelled = Event()
     result: dict[str, object] = {"addresses": None, "failure": None}
 
     def resolve() -> None:
@@ -172,7 +172,7 @@ def _resolve_before_deadline(
             result["failure"] = failure
         done.set()
 
-    worker = threading.Thread(target=resolve, daemon=True)
+    worker = Thread(target=resolve, daemon=True)
     worker.start()
     remaining = min(maximum_seconds, deadline_at - time.monotonic())
     if remaining <= 0 or not done.wait(remaining):
@@ -262,12 +262,12 @@ def _fixed_https_request_result(
 
     connection: http.client.HTTPSConnection | None = None
     response: http.client.HTTPResponse | None = None
-    timer: threading.Timer | None = None
+    timer: Timer | None = None
     active_socket: object | None = None
     published_tls_socket: list[object | None] = [None]
     result: VercelHttpResponse | None = None
     failure_code: str | None = None
-    expired = threading.Event()
+    expired = Event()
     deadline_at: float | None = None
 
     def close_active_socket() -> None:
@@ -375,7 +375,7 @@ def _fixed_https_request_result(
         remaining = deadline_at - time.monotonic()
         if remaining <= 0:
             return None, "vercel.request_timeout"
-        timer = threading.Timer(remaining, expire_request)
+        timer = Timer(remaining, expire_request)
         timer.daemon = True
         timer.start()
         failure_code = _connect_resolved_before_deadline(
